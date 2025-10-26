@@ -395,6 +395,11 @@
 				".*": {
 					"sni": "www.baidu.com"
 				}
+			},
+			"*.wikipedia.org": {
+				".*": {
+					"sni": "www.baidu.com"
+				}
 			}
 		},
 		"preSetIpList": {
@@ -705,6 +710,11 @@
 			//startpage
 			"*startpage.com": {
 				"67.63.58.139": true
+			},
+			
+			//wikipedia.org
+			"*.wikipedia.org": {
+				"185.15.59.224": true
 			},
 
 			//其它
