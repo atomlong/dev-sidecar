@@ -400,6 +400,11 @@
 				".*": {
 					"sni": "www.baidu.com"
 				}
+			},
+			"(cdn.)?search.brave.com": {
+				".*": {
+					"sni": "www.baidu.com"
+				}
 			}
 		},
 		"preSetIpList": {
@@ -715,6 +720,24 @@
 			//wikipedia.org
 			"*.wikipedia.org": {
 				"185.15.59.224": true
+			},
+			
+			// brave search
+			"search.brave.com": {
+				"52.222.236.102": true,
+				"52.222.236.48": true,
+				"52.222.236.32": true,
+				"52.222.236.69": true
+			},
+			"cdn.search.brave.com": {
+				"18.238.243.46": true,
+				"18.238.243.80": true,
+				"18.238.243.121": true,
+				"18.238.243.84": true,
+				"18.245.31.115": true,
+				"18.245.31.81": true,
+				"18.245.31.88": true,
+				"18.245.31.93": true
 			},
 
 			//其它
