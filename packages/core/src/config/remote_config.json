@@ -391,6 +391,11 @@
 					"sni": "www.baidu.com"
 				}
 			},
+			"*.wikidata.org": {
+				".*": {
+					"sni": "www.baidu.com"
+				}
+			},
 			"*.wikipedia.org": {
 				".*": {
 					"sni": "www.baidu.com"
@@ -704,6 +709,11 @@
 			//startpage
 			"*startpage.com": {
 				"67.63.58.139": true
+			},
+			
+			//wikidata.org
+			"*.wikidata.org": {
+				"185.15.59.224": true
 			},
 			
 			//wikipedia.org
