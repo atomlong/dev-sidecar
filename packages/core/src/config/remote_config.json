@@ -827,6 +827,14 @@
 			// 删除配置
 			"cn.*": null,
 			"192.168.*": null
+		},
+		"setting": {
+		  "timeoutMapping": {
+			"*.googleapis.com": {
+			  "timeout": 40000,
+			  "keepAliveTimeout": 60000
+			}
+		  }
 		}
 	},
 	"proxy": {
