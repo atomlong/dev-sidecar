@@ -63,7 +63,7 @@ module.exports = {
       compatibleConfig,
     )
 
-    const upgradeHandler = createUpgradeHandler(setting)
+    const upgradeHandler = createUpgradeHandler(createIntercepts, middlewares, externalProxy, dnsConfig, setting)
 
     const fakeServersCenter = createFakeServerCenter({
       maxLength,
