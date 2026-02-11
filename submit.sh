@@ -2238,23 +2238,12 @@ case "$cmd" in
         commits_to_sync=$(git log "$BRANCH_PUBLIC".."$BRANCH_PRIVATE" --reverse --format="%H" --no-merges)
         
         if [ -n "$commits_to_sync" ]; then
-            # Get the merge-base between feature and main for limiting duplicate detection scope
-            main_branch_name=$(get_main_branch_name "$primary_remote")
-            feature_base=$(git merge-base "$BRANCH_PUBLIC" "$primary_remote/$main_branch_name" 2>/dev/null || echo "")
-            
             for commit in $commits_to_sync; do
                 # Check if this commit was already cherry-picked to feature branch
-                # Limit search to commits after feature branch was created (avoid matching inherited markers)
+                # Search last 100 commits to cover recent history without complex merge-base logic
                 already_synced=0
-                if [ -n "$feature_base" ]; then
-                    if git log "$feature_base".."$BRANCH_PUBLIC" --grep="(cherry picked from commit $commit)" --format="%H" 2>/dev/null | grep -q .; then
-                        already_synced=1
-                    fi
-                else
-                    # Fallback: search last 100 commits if no feature_base
-                    if git log -n 100 --grep="(cherry picked from commit $commit)" --format="%H" 2>/dev/null | grep -q .; then
-                        already_synced=1
-                    fi
+                if git log -n 100 --grep="(cherry picked from commit $commit)" --format="%H" 2>/dev/null | grep -q .; then
+                    already_synced=1
                 fi
                 
                 if [ "$already_synced" -eq 1 ]; then
