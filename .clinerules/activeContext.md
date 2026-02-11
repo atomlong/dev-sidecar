@@ -5,13 +5,14 @@
 - 分支调整：将 `master` 分支上的错误提交转移至 `develop`，并重置 `master` 至 v2.0.1。
 
 ## Recent Changes
-- [Act Mode] 合并 `master` 的提交 (83c8afc, 7ba64d3) 到 `develop`。
-- [Act Mode] 重置 `master` 分支到 `5a9fa187` (v2.0.1)。
-- [Docs] 创建 `.clinerules/` 下的 Memory Bank 文件。
+- [Core] 支持 `file://` 协议作为远程配置源，允许加载本地配置文件。
+- [CI/CD] 修复 GitHub Action 在 Windows 环境下的构建错误 (Python 3.10)。
+- [Release] 发布 v2.0.1。
+- [Docs] 初始化 Memory Bank。
 
 ## Next Steps
+- 提交 `file://` 协议支持的代码。
 - 确认项目构建和运行状态（可选）。
-- 根据用户需求进行后续开发。
 
 ## Active Considerations
 - **分支策略**: 采用 Git Flow 变体，`master` 为稳定分支，`develop` 为开发主分支。

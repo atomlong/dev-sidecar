@@ -25,7 +25,7 @@ flowchart TD
 
 ### 2. Core (`@docmirror/dev-sidecar`)
 - **Entry (`index.js` -> `expose.js`)**: 暴露 API 给 GUI 使用。
-- **Config (`config-api.js`)**: 管理用户配置 (user.json) 和默认配置。
+- **Config (`config-api.js`)**: 管理用户配置 (user.json) 和默认配置。支持 HTTP/HTTPS 及 FILE (本地文件) 协议加载远程配置。
 - **System Interaction**:
     - `modules/proxy`: 设置/取消系统代理 (使用 `@starknt/sysproxy`)。
     - `shell/scripts/setup-ca.js`: 安装和信任 CA 证书。

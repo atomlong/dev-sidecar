@@ -6,6 +6,7 @@
 - **Stable Branch**: `master`
 
 ## Completed Features
+- [x] **Configuration**: 支持 HTTP/HTTPS/FILE 协议加载远程配置。
 - [x] **Core Proxy**: HTTP/HTTPS 拦截与代理。
 - [x] **DNS Optimization**: DNS 优选与智能解析。
 - [x] **GitHub Acceleration**: SNI 伪装、Release 加速、Clone 加速。
