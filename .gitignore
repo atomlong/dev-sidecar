@@ -30,7 +30,6 @@ pnpm-debug.log*
 /packages/mitmproxy/ca
 /packages/mitmproxy/test/ca
 /*.log
-/*.diff
 /run
 /release
-/job-logs.txt
+/*.diff
