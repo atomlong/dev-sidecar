@@ -1,5 +1,25 @@
 const REMOVE = '[remove]'
 
+function replaceVar (str, rOptions) {
+  if (typeof str !== 'string') return str
+  const orig = rOptions.origional || {}
+  const hostname = orig.hostname || rOptions.hostname
+  const host = (orig.headers && orig.headers.host) || rOptions.headers.host || hostname
+  const protocol = orig.protocol || rOptions.protocol
+  const port = orig.port || rOptions.port
+  const path = orig.path || rOptions.path
+  const method = orig.method || rOptions.method
+  const url = `${protocol}//${host}${((protocol === 'http:' && port == 80) || (protocol === 'https:' && port == 443)) ? '' : ':' + port}${path}`
+
+  return str.replace(/\$\{hostname\}/g, hostname)
+    .replace(/\$\{host\}/g, host)
+    .replace(/\$\{method\}/g, method)
+    .replace(/\$\{path\}/g, path)
+    .replace(/\$\{protocol\}/g, protocol)
+    .replace(/\$\{port\}/g, port)
+    .replace(/\$\{url\}/g, url)
+}
+
 function replaceRequestHeaders (rOptions, headers, log) {
   for (const key in headers) {
     let value = headers[key]
@@ -8,6 +28,7 @@ function replaceRequestHeaders (rOptions, headers, log) {
     }
 
     if (value) {
+      value = replaceVar(value, rOptions)
       log.debug(`[DS-RequestReplace-Interceptor] replace '${key}': '${rOptions.headers[key.toLowerCase()]}' -> '${value}'`)
       rOptions.headers[key.toLowerCase()] = value
     } else if (rOptions.headers[key.toLowerCase()]) {
