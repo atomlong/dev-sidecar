@@ -1,4 +1,6 @@
 const fs = require('node:fs')
+const path = require('node:path')
+const { fileURLToPath } = require('node:url')
 const jsonApi = require('@docmirror/mitmproxy/src/json')
 const lodash = require('lodash')
 const request = require('request')
@@ -52,6 +54,58 @@ const configApi = {
 
     return new Promise((resolve, reject) => {
       log.info('开始下载远程配置:', remoteConfigUrl)
+
+      if (remoteConfigUrl.startsWith('file://')) {
+        try {
+          const srcPath = fileURLToPath(remoteConfigUrl)
+          if (!fs.existsSync(srcPath)) {
+            const msg = `本地配置文件不存在: ${srcPath}`
+            log.error(msg)
+            reject(new Error(msg))
+            return
+          }
+
+          const body = fs.readFileSync(srcPath).toString()
+          // 校验格式
+          try {
+            jsonApi.parse(body)
+          } catch (e) {
+            const msg = `本地配置内容格式不正确: ${srcPath}`
+            log.error(msg, e)
+            reject(new Error(msg))
+            return
+          }
+
+          const remoteSavePath = configLoader.getRemoteConfigPath(suffix)
+
+          // 检查是否为同一文件，避免覆盖
+          let isSameFile = false
+          if (fs.existsSync(remoteSavePath)) {
+            try {
+              if (fs.realpathSync(srcPath) === fs.realpathSync(remoteSavePath)) {
+                isSameFile = true
+              }
+            } catch (ignore) {}
+          }
+
+          if (isSameFile) {
+            log.info('本地配置文件源与目标一致，跳过写入:', remoteSavePath)
+          } else {
+            // 确保存放目录存在
+            const dir = path.dirname(remoteSavePath)
+            if (!fs.existsSync(dir)) {
+              fs.mkdirSync(dir, { recursive: true })
+            }
+            fs.writeFileSync(remoteSavePath, body)
+            log.info('保存本地配置文件成功:', remoteSavePath)
+          }
+          resolve()
+        } catch (e) {
+          log.error('读取本地配置失败:', e)
+          reject(e)
+        }
+        return
+      }
 
       const headers = {
         'Cache-Control': 'no-cache', // 禁止使用缓存
