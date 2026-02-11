@@ -2282,7 +2282,7 @@ case "$cmd" in
                 fi
                 
                 log_info "Cherry-picking: $commit"
-                if ! git cherry-pick -x --allow-empty --keep-redundant-commits "$commit"; then
+                if ! git cherry-pick -x --allow-empty "$commit"; then
                     log_error "Cherry-pick failed. Please resolve conflicts manually then continue."
                     exit 1
                 fi
