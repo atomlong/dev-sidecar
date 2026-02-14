@@ -1,0 +1,35 @@
+schema: spec-driven
+
+context: |
+  ## Project Overview
+  DevSideCar is a developer tool designed to accelerate network access to resources like GitHub, StackOverflow, etc., via local proxy interception, DNS optimization, and mirror acceleration.
+
+  ## Architecture
+  - **Monorepo**: Managed by pnpm workspaces.
+  - **Core**: Node.js based backend logic (`packages/core`), handling config, plugins, and proxy lifecycle.
+  - **GUI**: Electron + Vue 2 application (`packages/gui`).
+  - **CLI**: Command-line interface (`packages/cli`).
+  - **Mitmproxy**: Custom Node.js implementation of a man-in-the-middle proxy (`packages/mitmproxy`) for intercepting and modifying traffic.
+
+  ## Tech Stack
+  - **Runtime**: Node.js, Electron
+  - **Frontend**: Vue.js 2.7, Ant Design Vue 1.x
+  - **Build**: vue-cli, electron-builder
+  - **Network**: HTTP/HTTPS interception, Certificate generation, Tunneling (CONNECT), Xray integration (via plugin)
+
+  ## Coding Conventions
+  - **Style**: Standard JavaScript style (ESLint configured).
+  - **Async**: Use `async/await` for asynchronous operations.
+  - **Logging**: Use project-specific loggers (`utils/util.log.*.js`).
+  - **Config**: JSON/JSON5 based configuration.
+  - **Plugins**: Modular plugin system in `packages/core/src/modules/plugin`.
+
+rules:
+  design:
+    - Include architecture diagrams (Mermaid) where applicable.
+    - Explicitly state impact on existing proxy logic (mitmproxy).
+    - Consider cross-platform compatibility (Windows, macOS, Linux).
+  tasks:
+    - Separate backend (Core/Mitmproxy) and frontend (GUI) tasks.
+    - Include verification steps for each major feature.
+    - Ensure new dependencies are added to the correct package workspace.

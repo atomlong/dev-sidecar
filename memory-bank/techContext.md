@@ -11,7 +11,10 @@
 
 ### Key Libraries
 - **Proxy**: Custom implementation based on `http`/`net` and `node-forge`.
-- **System Proxy**: `@starknt/sysproxy` (Native addon for system proxy settings).
+- **Tunneling**: Xray Core (integrated via plugin).
+- **System Proxy**: 
+    - Windows/macOS: `@starknt/sysproxy` (Native addon).
+    - Linux: `gsettings` (via `child_process`).
 - **Process Management**: `spawn-sync`, `node-powershell`.
 - **Logging**: `log4js`.
 - **Utils**: `lodash`, `json5`.
@@ -29,6 +32,7 @@
 ├── packages/
 │   ├── cli/            # Command Line Interface
 │   ├── core/           # Core logic, config, plugins
+│   │   ├── modules/plugin/xray # Xray Plugin logic
 │   ├── gui/            # Electron + Vue frontend
 │   └── mitmproxy/      # Proxy server implementation
 ├── .npmrc              # pnpm configuration
@@ -38,6 +42,6 @@
 
 ## Constraints
 - **Certificate**: Requires root certificate installation for HTTPS interception.
-- **Port**: Default proxy port is 1181 (may vary).
+- **Port**: Default proxy port is 1181. Xray uses a dynamic port (default 10801 or random).
 - **System Proxy**: Modifies global system proxy settings, potential conflict with other VPN/Proxy tools.
-- **Platform Specifics**: Windows/Mac/Linux handling for CA installation and proxy settings varies significantly.
+- **Platform Specifics**: Windows/Mac/Linux handling for CA installation and proxy settings varies significantly. Linux requires GNOME for automatic system proxy.
