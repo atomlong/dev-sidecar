@@ -17,7 +17,7 @@ DIFF_LINE_LIMIT=500
 PRIVATE_DIFF_FILE="private.diff"
 PUBLIC_DIFF_FILE="public.diff"
 CHANGELOG_FILE="CHANGELOG.md"
-PROXY_PORTS=(31181 20171)
+LOCAL_PROXY_PORTS=(31181 20171)
 
 # Define Private Patterns List
 # Add any file or directory path that should stay PRIVATE on develop branch
@@ -156,10 +156,10 @@ configure_proxy() {
         fi
     fi
 
-    # 2. Try to find a working proxy from PROXY_PORTS
+    # 2. Try to find a working proxy from LOCAL_PROXY_PORTS
     local found_proxy=""
-    for port in "${PROXY_PORTS[@]}"; do
-        local proxy_url="http://127.0.0.1:$port"
+    for port in "${LOCAL_PROXY_PORTS[@]}"; do
+        local proxy_url="http://localhost:$port"
         log_info "Testing local proxy: $proxy_url..."
         
         if check_github_connection "$proxy_url"; then
