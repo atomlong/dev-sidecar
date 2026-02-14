@@ -393,11 +393,19 @@ jobs:
         run: |
           ls -lah release;
 
-      - name: Create a draft release
-        uses: wangliang181230/github-action-ghr@master
+      - name: Generate Release Notes
+        run: |
+          VERSION="${{ steps.package-info.outputs.version }}"
+          echo "Extracting release notes for v$VERSION"
+          awk "/^## \[v${VERSION}\]/{flag=1;next}/^## \[/{flag=0}flag" CHANGELOG.md > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          draft: true
+          files: release/*
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GHR_PATH: release/
-          GHR_TITLE: ${{ github.ref_name }}
-          GHR_REPLACE: true
-          GHR_DRAFT: true
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
