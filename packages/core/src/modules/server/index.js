@@ -9,6 +9,9 @@ const jsonApi = require('@docmirror/mitmproxy/src/json')
 const log = require('../../utils/util.log.core')
 
 let server = null
+let currentPlugins = null
+let currentMitmproxyPath = null
+
 function fireStatus (status) {
   event.fire('status', { key: 'server.enabled', value: status })
 }
@@ -31,6 +34,9 @@ const serverApi = {
     }
   },
   async start ({ mitmproxyPath, plugins }) {
+    if (mitmproxyPath) currentMitmproxyPath = mitmproxyPath
+    if (plugins) currentPlugins = plugins
+
     const allConfig = config.get()
     const serverConfig = lodash.cloneDeep(allConfig.server)
 
@@ -157,7 +163,57 @@ const serverApi = {
   },
   async restart ({ mitmproxyPath }) {
     await serverApi.kill()
-    await serverApi.start({ mitmproxyPath })
+    await serverApi.start({ mitmproxyPath: mitmproxyPath || currentMitmproxyPath, plugins: currentPlugins })
+  },
+  async reload () {
+    if (server) {
+      const allConfig = config.get()
+      const serverConfig = lodash.cloneDeep(allConfig.server)
+
+      const intercepts = serverConfig.intercepts
+      const dnsMapping = serverConfig.dns.mapping
+
+      if (allConfig.plugin) {
+        lodash.each(allConfig.plugin, (value) => {
+          const plugin = value
+          if (!plugin.enabled) {
+            return
+          }
+          if (plugin.intercepts) {
+            lodash.merge(intercepts, plugin.intercepts)
+          }
+          if (plugin.dns) {
+            lodash.merge(dnsMapping, plugin.dns)
+          }
+        })
+      }
+
+      if (allConfig.app) {
+        serverConfig.app = allConfig.app
+      }
+
+      if (serverConfig.intercept.enabled === false) {
+        // 如果设置为关闭拦截
+        serverConfig.intercepts = {}
+      }
+
+      if (currentPlugins) {
+        for (const key in currentPlugins) {
+          const plugin = currentPlugins[key]
+          if (plugin.overrideRunningConfig) {
+            plugin.overrideRunningConfig(serverConfig)
+          }
+        }
+      }
+      serverConfig.plugin = allConfig.plugin
+
+      if (allConfig.proxy && allConfig.proxy.enabled) {
+        serverConfig.proxy = allConfig.proxy
+      }
+      
+      server.process.send({ type: 'config', event: serverConfig })
+      log.info('已发送配置热加载通知')
+    }
   },
   getServer () {
     return server

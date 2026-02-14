@@ -3,4 +3,5 @@ module.exports = {
   git: require('./git'),
   pip: require('./pip'),
   overwall: require('./overwall'),
+  xray: require('./xray'),
 }
