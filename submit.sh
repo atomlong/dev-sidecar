@@ -16,6 +16,8 @@ set -e
 DIFF_LINE_LIMIT=500
 PRIVATE_DIFF_FILE="private.diff"
 PUBLIC_DIFF_FILE="public.diff"
+CHANGELOG_FILE="CHANGELOG.md"
+PROXY_PORTS=(31181 20171)
 
 # Define Private Patterns List
 # Add any file or directory path that should stay PRIVATE on develop branch
@@ -115,6 +117,73 @@ log_warn() {
 # Exit: 0
 log_error() {
     echo -e "${RED}[ERROR] $1${NC}"
+}
+
+# --- Proxy Configuration Helper ---
+
+# Description: Configure git proxy based on available ports
+# Usage: configure_proxy
+# Params: None
+# Return: None
+# Exit: 0
+configure_proxy() {
+    log_info "Checking proxy configuration..."
+    
+    local current_http_proxy
+    local current_https_proxy
+    current_http_proxy=$(git config --get http.proxy || echo "")
+    current_https_proxy=$(git config --get https.proxy || echo "")
+    
+    # Function to test connectivity to GitHub
+    check_github_connection() {
+        local proxy="$1"
+        local opts="-I -s --connect-timeout 5"
+        if [ -n "$proxy" ]; then
+            opts="$opts --proxy $proxy"
+        fi
+        # Suppress output, return 0 if successful (exit code 0)
+        curl $opts https://github.com >/dev/null 2>&1
+    }
+
+    # 1. Check existing proxy configuration
+    if [ -n "$current_http_proxy" ]; then
+        log_info "Current http.proxy: $current_http_proxy"
+        if check_github_connection "$current_http_proxy"; then
+            log_info "Current proxy is valid. Keeping configuration."
+            return
+        else
+            log_warn "Current proxy is invalid or unreachable."
+        fi
+    fi
+
+    # 2. Try to find a working proxy from PROXY_PORTS
+    local found_proxy=""
+    for port in "${PROXY_PORTS[@]}"; do
+        local proxy_url="http://127.0.0.1:$port"
+        log_info "Testing local proxy: $proxy_url..."
+        
+        if check_github_connection "$proxy_url"; then
+            found_proxy="$proxy_url"
+            log_info "Found valid proxy: $found_proxy"
+            break
+        fi
+    done
+
+    # 3. Apply or clear configuration
+    if [ -n "$found_proxy" ]; then
+        if [ "$found_proxy" != "$current_http_proxy" ]; then
+            log_info "Setting git proxy to $found_proxy"
+            git config http.proxy "$found_proxy"
+            git config https.proxy "$found_proxy"
+        fi
+    else
+        log_info "No valid local proxy found."
+        if [ -n "$current_http_proxy" ] || [ -n "$current_https_proxy" ]; then
+             log_warn "Unsetting invalid git proxy configuration to allow direct connection."
+             git config --unset http.proxy
+             git config --unset https.proxy
+        fi
+    fi
 }
 
 STATUS_ORDER=("modified" "added" "deleted" "renamed" "copied" "unmerged" "untracked" "clean")
@@ -362,6 +431,7 @@ show_help() {
     echo "  --commit-public           Commit public changes. Requires 'COMMIT_MSG_PUBLIC' env var."
     echo "  --push-private            Push current private branch (develop or dev/xxx) to PRIVATE remotes only."
     echo "  --push-public             Sync public commits to public branch (main/feature...), then push to ALL remotes."
+    echo "  --release                 Prepare and push release branch/tag. Auto-detects version from CHANGELOG."
     echo "  --restore-private [ref]   Restore private files. Auto-detects source if ref is omitted."
     echo "  --help                    Show this help message."
     echo ""
@@ -1311,150 +1381,6 @@ print_stat_for_files() {
             [ "$total_deletions" -gt 1 ] && summary+="s"
             summary+="(-)"
         fi
-        # Ensure stat_output ends with newline before appending summary
-        if [ -n "$stat_output" ] && [[ "$stat_output" != *$'\n' ]]; then
-            stat_output+=$'\n'
-        fi
-        stat_output+="$summary"$'\n'
-    fi
-    
-    # Line limit check
-    local line_count
-    line_count=$(echo "$stat_output" | wc -l)
-    
-    if [ "$line_count" -gt "$DIFF_LINE_LIMIT" ]; then
-        echo "$stat_output" > "$diff_file"
-        log_warn "Status output is too large ($line_count lines)."
-        log_info "Status content has been written to: $diff_file"
-    else
-        echo "$stat_output"
-    fi
-}
-
-# Description: Generate stat output string (without line limit check)
-# Usage: generate_stat_output "file_list"
-# Params:
-#   $1 - List of files (newline separated)
-# Return: Stat output string (Stdout)
-# Exit: 0
-generate_stat_output() {
-    local changes="$1"
-    
-    if [ -z "$changes" ]; then
-        return
-    fi
-    
-    local stat_output=""
-    local total_files=0
-    local total_insertions=0
-    local total_deletions=0
-    local max_name_len=0
-    
-    # Build a set of tracked files (single git call)
-    declare -A tracked_files_set
-    while IFS= read -r -d '' tracked_file; do
-        tracked_files_set["$tracked_file"]=1
-    done < <(git ls-files -z 2>/dev/null)
-    
-    # First pass: collect all file info and find max name length
-    declare -a file_info_list=()
-    
-    OLD_IFS="$IFS"
-    IFS=$'\n'
-    for file in $changes; do
-        [ -z "$file" ] && continue
-        
-        local name_len=${#file}
-        if [ "$name_len" -gt "$max_name_len" ]; then
-            max_name_len=$name_len
-        fi
-        
-        if [ -n "${tracked_files_set["$file"]}" ]; then
-            # Tracked file: get diff stats
-            local numstat
-            numstat=$(git diff --numstat -- "$file" 2>/dev/null | head -1)
-            if [ -n "$numstat" ]; then
-                local insertions deletions
-                insertions=$(echo "$numstat" | awk '{print $1}')
-                deletions=$(echo "$numstat" | awk '{print $2}')
-                [ "$insertions" = "-" ] && insertions=0
-                [ "$deletions" = "-" ] && deletions=0
-                file_info_list+=("tracked|$file|$insertions|$deletions")
-                total_insertions=$((total_insertions + insertions))
-                total_deletions=$((total_deletions + deletions))
-                total_files=$((total_files + 1))
-            fi
-        else
-            # Untracked file: detect binary using is_binary_file()
-            if [ -f "$file" ]; then
-                if is_binary_file "$file"; then
-                    local size
-                    size=$(stat -c%s "$file" 2>/dev/null || echo "0")
-                    file_info_list+=("binary|$file|$size|0")
-                    total_files=$((total_files + 1))
-                else
-                    local lines
-                    lines=$(wc -l < "$file" 2>/dev/null || echo "0")
-                    lines=$(echo "$lines" | tr -d ' ')
-                    file_info_list+=("untracked|$file|$lines|0")
-                    total_insertions=$((total_insertions + lines))
-                    total_files=$((total_files + 1))
-                fi
-            fi
-        fi
-    done
-    IFS="$OLD_IFS"
-    
-    # Second pass: format output with aligned columns
-    for info in "${file_info_list[@]}"; do
-        IFS='|' read -r status file value1 value2 <<< "$info"
-        
-        if [ "$status" = "binary" ]; then
-            local size_bytes=$value1
-            local size_human
-            if [ "$size_bytes" -ge 1048576 ]; then
-                size_human="$((size_bytes / 1048576))M"
-            elif [ "$size_bytes" -ge 1024 ]; then
-                size_human="$((size_bytes / 1024))K"
-            else
-                size_human="${size_bytes}B"
-            fi
-            stat_output+=" $(printf "%-${max_name_len}s" "$file") | Bin 0 -> $size_human (untracked)"$'\n'
-        else
-            local insertions=$value1
-            local deletions=$value2
-            local total_changes=$((insertions + deletions))
-            local bar_len=$((total_changes > 50 ? 50 : total_changes))
-            local plus_len=$((bar_len * insertions / (total_changes > 0 ? total_changes : 1)))
-            local minus_len=$((bar_len - plus_len))
-            
-            local bar=""
-            for ((i=0; i<plus_len; i++)); do bar+="+"; done
-            for ((i=0; i<minus_len; i++)); do bar+="-"; done
-            
-            local suffix=""
-            if [ "$status" = "untracked" ]; then
-                suffix=" (untracked)"
-            fi
-            
-            stat_output+=" $(printf "%-${max_name_len}s" "$file") | $(printf "%4d" "$total_changes") ${bar}${suffix}"$'\n'
-        fi
-    done
-    
-    # Add summary line
-    if [ "$total_files" -gt 0 ]; then
-        local summary=""
-        summary=$(printf " %d file%s changed" "$total_files" "$([ $total_files -gt 1 ] && echo 's')")
-        if [ "$total_insertions" -gt 0 ]; then
-            summary+=", $total_insertions insertion"
-            [ "$total_insertions" -gt 1 ] && summary+="s"
-            summary+="(+)"
-        fi
-        if [ "$total_deletions" -gt 0 ]; then
-            summary+=", $total_deletions deletion"
-            [ "$total_deletions" -gt 1 ] && summary+="s"
-            summary+="(-)"
-        fi
         stat_output+="$summary"$'\n'
     fi
     
@@ -1940,6 +1866,9 @@ ensure_git_root
 # 3.2.1 Configure Git to handle non-ASCII filenames correctly
 git config core.quotePath false
 
+# 3.2.2 Configure Proxy
+configure_proxy
+
 # 3.3 Branch Detection
 CURRENT_BRANCH=$(git branch --show-current)
 BRANCH_PRIVATE=""
@@ -2119,6 +2048,93 @@ case "$cmd" in
         rm -f "$PRIVATE_DIFF_FILE" "$PUBLIC_DIFF_FILE"
         ;;
         
+    --release)
+        # 1. Determine Version
+        if [ -f "$CHANGELOG_FILE" ]; then
+            # Extract version from first line like "## [v2.1.0] - ..."
+            # We look for the first line starting with "## [v" or "## ["
+            version_line=$(grep -m 1 "^## \[" "$CHANGELOG_FILE" || true)
+            
+            if [ -z "$version_line" ]; then
+                log_error "No version header found in $CHANGELOG_FILE."
+                exit 1
+            fi
+            
+            # Check for Unreleased
+            if [[ "$version_line" == *"Unreleased"* ]]; then
+                log_error "Current version in CHANGELOG is 'Unreleased'. Nothing to release."
+                exit 1
+            fi
+            
+            # Extract version string (e.g. "v2.1.0")
+            version=$(echo "$version_line" | sed -E 's/^## \[([^]]+)\].*/\1/')
+            
+            log_info "Auto-detected version from CHANGELOG: $version"
+        else
+            log_error "CHANGELOG file not found: $CHANGELOG_FILE"
+            exit 1
+        fi
+
+        # Normalize version (remove v prefix if present)
+        version="${version#v}"
+        
+        # Validate Version format (SemVer)
+        if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            log_error "Invalid version format: $version"
+            echo "Version must follow Semantic Versioning (e.g., 1.0.0, 1.0.0-beta)"
+            exit 1
+        fi
+        
+        tag_name="v$version"
+        # Extract Major.Minor for branch name
+        major=$(echo "$version" | cut -d. -f1)
+        minor=$(echo "$version" | cut -d. -f2)
+        release_branch="release-v$major.$minor.x"
+        
+        log_info "Preparing release for version: $version"
+        log_info "Target Tag:       $tag_name"
+        log_info "Release Branch:   $release_branch"
+        
+        # 2. Determine Base Branch (Public)
+        # We should base the release on the public branch (master/main)
+        if [ -z "$BRANCH_PUBLIC" ]; then
+             BRANCH_PUBLIC=$(get_main_branch_name)
+        fi
+        log_info "Base public branch: $BRANCH_PUBLIC"
+        
+        # 3. Verify local public branch exists
+        if ! git show-ref --verify --quiet "refs/heads/$BRANCH_PUBLIC"; then
+            log_error "Local public branch '$BRANCH_PUBLIC' not found."
+            log_info "Please run './submit.sh --push-public' first to generate/sync the public branch."
+            exit 1
+        fi
+        
+        # 4. Push Release Branch
+        # Push local public branch to remote release branch
+        log_info "Pushing local $BRANCH_PUBLIC to origin/$release_branch..."
+        if git push origin "$BRANCH_PUBLIC:refs/heads/$release_branch"; then
+            log_info "Successfully pushed release branch: $release_branch"
+        else
+            log_error "Failed to push release branch."
+            exit 1
+        fi
+        
+        # 5. Create and Push Tag
+        # We tag the commit that is currently at BRANCH_PUBLIC
+        target_commit=$(git rev-parse "$BRANCH_PUBLIC")
+        
+        log_info "Tagging commit $target_commit as $tag_name..."
+        if git tag -f "$tag_name" "$target_commit"; then
+             log_info "Pushing tag $tag_name..."
+             git push origin "$tag_name"
+        else
+             log_error "Failed to create tag locally."
+             exit 1
+        fi
+
+        log_info "Release workflow triggered successfully."
+        ;;
+
     --push-public)
         log_info "Syncing public changes from $BRANCH_PRIVATE to $BRANCH_PUBLIC..."
         

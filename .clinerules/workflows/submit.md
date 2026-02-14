@@ -11,6 +11,8 @@
 
 私有分支包含所有文件；公共分支仅包含可公开的文件。
 
+还有 `release` 分支（如 `release-v2.1.x`），用于触发 CI，发布软件包。
+
 ## 1. 前置检查
 
 ```bash
@@ -51,13 +53,35 @@ export COMMIT_MSG_PUBLIC="fix(biss): correct CRC calculation"
 
 推送时自动检测仓库可见性，跳过不可达或不适用的仓库。
 
-## 5. 清理
+## 5. 发布新版本
+
+当准备发布新版本时（如 `v2.1.0`）：
+
+1. **更新版本**：修改 `package.json` 版本号，并在 `CHANGELOG.md` 添加发布说明。
+2. **执行发布**：
+
+```bash
+./submit.sh --release
+```
+
+此命令会自动：
+- 从 `CHANGELOG.md` 读取版本号。
+- 创建并推送 Release 分支（如 `release-v2.1.x`）。
+- 创建并推送 Git Tag（如 `v2.1.0`）。
+- 触发 GitHub Actions 自动构建和发布 Release。
+
+## 6. 网络与代理
+
+脚本内置自动代理检测功能（默认检查端口 `31181`, `20171`）。
+如果遇到网络问题（如 `GnuTLS recv error`），请确保本地代理服务已启动。
+
+## 7. 清理
 
 ```bash
 unset COMMIT_MSG_PRIVATE COMMIT_MSG_PUBLIC
 ```
 
-## 6. 报告
+## 8. 报告
 
 向用户报告：
 - 当前分支
