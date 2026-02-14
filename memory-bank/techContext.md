@@ -26,6 +26,14 @@
     - `pnpm install`: Install dependencies.
     - `pnpm run electron:serve` (in `packages/gui`): Start dev server.
 
+## DevOps & Release
+- **CI/CD**: GitHub Actions (`.github/workflows/build-and-release.yml`).
+- **Build Tool**: `electron-builder`.
+- **Release Automation**: 
+    - 自动从 `CHANGELOG.md` 提取版本更新日志。
+    - 使用 `softprops/action-gh-release` 发布 GitHub Release。
+- **Version Control**: `submit.sh` 脚本管理开发/发布分支流程，支持私有/公共仓库分离。
+
 ## Project Structure
 ```text
 /
@@ -37,6 +45,7 @@
 │   └── mitmproxy/      # Proxy server implementation
 ├── .npmrc              # pnpm configuration
 ├── pnpm-workspace.yaml # Workspace definition
+├── CHANGELOG.md        # Release notes
 └── README.md
 ```
 

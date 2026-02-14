@@ -1,28 +1,30 @@
 # Active Context
 
 ## Current Work
-- 完成 Xray 插件开发与集成，支持更强大的代理协议（VLESS, VMess, Reality 等）。
-- 验证并修复了 Reality 协议在特定配置下的崩溃问题（短 ID、公钥长度、传输协议兼容性）。
-- 实现了全局节点去重逻辑。
+- 准备发布 v2.1.0 版本。
+- 完善 CI/CD 流程，支持从 CHANGELOG 自动生成 Release Notes。
+- 修复 `submit.sh` 脚本在处理中文文件名时的转义问题。
 
 ## Recent Changes
+- [Release] **v2.1.0**:
+    - 全线升级包版本至 2.1.0。
+    - 新增 `CHANGELOG.md`。
+    - 优化 GitHub Actions 工作流，使用 `softprops/action-gh-release` 并自动提取变更日志。
+- [DevOps] **Submit 脚本修复**:
+    - 在 `submit.sh` 中强制关闭 git `core.quotePath`，解决中文文件名提交失败的问题。
 - [Plugin] **Xray 集成**:
     - 新增 `packages/core/src/modules/plugin/xray` 模块。
     - 实现订阅解析 (`parser.js`)，支持 Base64、VLESS、VMess、Trojan、SS 等协议。
-    - 支持 Reality 协议配置，并增加了严格的校验逻辑（防止无效配置导致 Xray 崩溃）。
-    - 实现了全局节点去重，防止多订阅源导致重复节点。
+    - 支持 Reality 协议配置，并增加了严格的校验逻辑。
+    - 实现了全局节点去重。
 - [Mitmproxy] **Tunnel 支持**:
     - 支持 `tunnel://` 伪协议，允许通过 HTTP CONNECT 将流量透明转发给 Xray 核心。
     - 实现了动态拦截规则注入 (`injectRules`) 和热重载 (`hot reload`)。
-- [Core] 支持 `file://` 协议作为远程配置源，允许加载本地配置文件。
-- [CI/CD] 修复 GitHub Action 在 Windows 环境下的构建错误 (Python 3.10)。
-- [Docs] 初始化 Memory Bank。
 
 ## Next Steps
-- 监控 Xray 插件的稳定性。
-- 考虑未来支持链式代理配置（目前 Xray 原生支持但插件配置生成逻辑需微调）。
+- 执行提交并推送，触发 v2.1.0 发布流程。
+- 监控 Release 构建状态。
 
 ## Active Considerations
-- **Xray 兼容性**: 确保 parser 能处理各种不规范的订阅链接（已增加多项容错处理）。
-- **端口管理**: Xray 插件自动管理端口，需确保不与主代理冲突。
-- **分支策略**: 采用 Git Flow 变体，`master` 为稳定分支，`develop` 为开发主分支。
+- **发布流程**: 确保 CHANGELOG 格式规范，以便脚本正确提取 Release Notes。
+- **Git 配置**: `submit.sh` 会修改本地 `git config`，这通常是安全的，但需留意对其他工具的影响（通常是正向的）。

@@ -1,11 +1,14 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.0.1 (Released)
+- **Current Version**: 2.1.0 (Released)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
 ## Completed Features
+- [x] **DevOps**: 
+    - 自动化 Release Notes 生成 (Based on CHANGELOG)。
+    - `submit.sh` 脚本优化（修复中文文件名支持）。
 - [x] **Xray Plugin**: 
     - 集成 Xray Core，支持 VLESS, VMess, Trojan, ShadowSocks, Reality 等高级协议。
     - 支持订阅解析与自动更新。
@@ -25,6 +28,6 @@
 - [ ] 与其他代理软件（如 Watt Toolkit、Clash）共存时可能存在端口冲突。
 
 ## Roadmap
-- [ ] **v2.1.0**: 增强插件系统，支持更多自定义脚本。
+- [ ] **v2.2.0**: 增强插件系统，支持更多自定义脚本。
 - [ ] **UI/UX**: 优化设置界面交互，支持暗色模式（已部分支持）。
 - [ ] **Platform**: 更好的 Linux 支持（Snap/Flatpak 打包）。

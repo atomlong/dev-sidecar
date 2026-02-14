@@ -1937,6 +1937,9 @@ fi
 # 3.2 Ensure Git Root (Strict Check)
 ensure_git_root
 
+# 3.2.1 Configure Git to handle non-ASCII filenames correctly
+git config core.quotePath false
+
 # 3.3 Branch Detection
 CURRENT_BRANCH=$(git branch --show-current)
 BRANCH_PRIVATE=""
