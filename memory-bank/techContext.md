@@ -51,6 +51,6 @@
 
 ## Constraints
 - **Certificate**: Requires root certificate installation for HTTPS interception.
-- **Port**: Default proxy port is 1181. Xray uses a dynamic port (default 10801 or random).
+- **Port**: Default proxy port is 31181. Xray uses a dynamic port (default 10801 or random).
 - **System Proxy**: Modifies global system proxy settings, potential conflict with other VPN/Proxy tools.
 - **Platform Specifics**: Windows/Mac/Linux handling for CA installation and proxy settings varies significantly. Linux requires GNOME for automatic system proxy.
