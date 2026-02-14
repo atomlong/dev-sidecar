@@ -43,6 +43,12 @@ module.exports = (serverConfig) => {
   const dnsMapping = serverConfig.dns.mapping
   const setting = serverConfig.setting
 
+  // Runtime configuration container for hot reload
+  const runtimeConfig = {
+    intercepts,
+    whiteList,
+  }
+
   if (!setting.script.dirAbsolutePath) {
     setting.script.dirAbsolutePath = path.join(setting.rootDir, setting.script.defaultDir)
   }
@@ -89,6 +95,7 @@ module.exports = (serverConfig) => {
   const preSetIpList = matchUtil.domainMapRegexply(serverConfig.preSetIpList)
 
   const options = {
+    runtimeConfig,
     host: serverConfig.host,
     port: serverConfig.port,
     dnsConfig: {
@@ -105,6 +112,7 @@ module.exports = (serverConfig) => {
     middlewares,
     sslConnectInterceptor: (req, cltSocket, head) => {
       const hostname = req.url.split(':')[0]
+      const { intercepts, whiteList } = options.runtimeConfig
 
       // 配置了白名单的域名，将跳过代理
       const inWhiteList = !!matchUtil.matchHostname(whiteList, hostname, 'in whiteList')
@@ -124,6 +132,7 @@ module.exports = (serverConfig) => {
     },
     createIntercepts: (context) => {
       const rOptions = context.rOptions
+      const { intercepts } = options.runtimeConfig
       const interceptOpts = matchUtil.matchHostnameAll(intercepts, rOptions.hostname, 'get interceptOpts')
       if (!interceptOpts) { // 该域名没有配置拦截器，直接过
         return

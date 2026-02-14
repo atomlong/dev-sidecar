@@ -12,7 +12,7 @@ const httpAgentCache = {}
 
 let socketId = 0
 
-let httpsOverHttpAgent, httpOverHttpsAgent, httpsOverHttpsAgent
+let httpOverHttpAgent, httpsOverHttpAgent, httpOverHttpsAgent, httpsOverHttpsAgent
 
 function getTimeoutConfig (hostname, serverSetting) {
   const timeoutMapping = serverSetting.timeoutMapping
@@ -176,7 +176,10 @@ util.getOptionsFromRequest = (req, ssl, externalProxy = null, serverSetting, com
 util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
   // eslint-disable-next-line node/no-deprecated-api
   const urlObject = url.parse(externalProxyUrl)
-  const protocol = urlObject.protocol || 'http:'
+  let protocol = urlObject.protocol || 'http:'
+  if (protocol === 'tunnel:') {
+    protocol = 'http:'
+  }
   let port = urlObject.port
   if (!port) {
     port = protocol === 'http:' ? 80 : 443
@@ -207,15 +210,15 @@ util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
     }
   } else {
     if (protocol === 'http:') {
-      // if (!httpOverHttpAgent) {
-      //     httpOverHttpAgent = tunnelAgent.httpOverHttp({
-      //         proxy: {
-      //             host: hostname,
-      //             port: port
-      //         }
-      //     })
-      // }
-      return false
+      if (!httpOverHttpAgent) {
+        httpOverHttpAgent = tunnelAgent.httpOverHttp({
+          proxy: {
+            host: hostname,
+            port,
+          },
+        })
+      }
+      return httpOverHttpAgent
     } else {
       if (!httpOverHttpsAgent) {
         httpOverHttpsAgent = tunnelAgent.httpOverHttps({
