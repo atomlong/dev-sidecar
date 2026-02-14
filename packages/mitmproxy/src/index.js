@@ -6,10 +6,12 @@ const log = require('./utils/util.log.server')
 const { fireError, fireStatus } = require('./utils/util.process')
 
 let servers = []
+let currentProxyOptions = null
 
 const api = {
   async start (config) {
     const proxyOptions = ProxyOptions(config)
+    currentProxyOptions = proxyOptions
     const setting = config.setting
     if (setting) {
       if (setting.userBasePath) {
@@ -47,6 +49,44 @@ const api = {
 
     registerProcessListener()
   },
+  updateConfig (config) {
+    log.info('Received configuration update request')
+    try {
+      // 补全 rootDir，防止 options.js 报错
+      if (currentProxyOptions && currentProxyOptions.setting && currentProxyOptions.setting.rootDir) {
+        if (!config.setting) config.setting = {}
+        if (!config.setting.rootDir) {
+          config.setting.rootDir = currentProxyOptions.setting.rootDir
+        }
+      }
+
+      const newProxyOptions = ProxyOptions(config)
+      
+      if (currentProxyOptions && currentProxyOptions.runtimeConfig && newProxyOptions.runtimeConfig) {
+        Object.assign(currentProxyOptions.runtimeConfig, newProxyOptions.runtimeConfig)
+        log.info('Updated runtime config (intercepts, whitelist, etc)')
+      }
+
+      if (currentProxyOptions && currentProxyOptions.setting && newProxyOptions.setting) {
+        Object.assign(currentProxyOptions.setting, newProxyOptions.setting)
+        log.info('Updated global setting')
+      }
+      
+      // Update dnsConfig mapping if needed
+      if (currentProxyOptions && currentProxyOptions.dnsConfig && newProxyOptions.dnsConfig) {
+        if (newProxyOptions.dnsConfig.mapping) {
+          currentProxyOptions.dnsConfig.mapping = newProxyOptions.dnsConfig.mapping
+        }
+        if (newProxyOptions.dnsConfig.preSetIpList) {
+          currentProxyOptions.dnsConfig.preSetIpList = newProxyOptions.dnsConfig.preSetIpList
+        }
+      }
+
+      log.info('Hot reload completed successfully')
+    } catch (e) {
+      log.error('Hot reload failed:', e)
+    }
+  },
   async close () {
     return new Promise((resolve, reject) => {
       if (servers && servers.length > 0) {
@@ -79,9 +119,11 @@ const api = {
 
 function registerProcessListener () {
   process.on('message', (msg) => {
-    log.info('child get msg:', JSON.stringify(msg))
+    // log.info('child get msg:', JSON.stringify(msg))
     if (msg.type === 'action') {
       api[msg.event.key](msg.event.params)
+    } else if (msg.type === 'config') {
+      api.updateConfig(msg.event)
     } else if (msg.type === 'speed') {
       speedTest.action(msg.event)
     }

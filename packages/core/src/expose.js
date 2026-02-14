@@ -6,12 +6,15 @@ const shell = require('./shell')
 const status = require('./status')
 const log = require('./utils/util.log.core')
 
+const server = modules.server
+
 const context = {
   config,
   shell,
   status,
   event,
   log,
+  server,
 }
 
 function setupPlugin (key, plugin, context, config) {
@@ -34,7 +37,6 @@ for (const key in modules.plugin) {
   plugin[key] = api
 }
 config.resetDefault()
-const server = modules.server
 const serverStart = server.start
 
 function newServerStart ({ mitmproxyPath }) {

@@ -2,6 +2,7 @@ import Index from '../pages/index'
 import Git from '../pages/plugin/git'
 import Node from '../pages/plugin/node'
 import Overwall from '../pages/plugin/overwall'
+import Xray from '../pages/plugin/xray'
 import Pip from '../pages/plugin/pip'
 import Proxy from '../pages/proxy'
 import Server from '../pages/server'
@@ -17,6 +18,7 @@ const routes = [
   { path: '/help', component: Help },
   { path: '/plugin/node', component: Node },
   { path: '/plugin/git', component: Git },
+  { path: '/plugin/xray', component: Xray },
   { path: '/plugin/pip', component: Pip },
   { path: '/plugin/overwall', component: Overwall },
 ]

@@ -1,5 +1,6 @@
 const url = require('node:url')
 const lodash = require('lodash')
+const commonUtil = require('../../../proxy/common/util')
 
 function replacePlaceholder0 (url, matched, pre) {
   if (matched) {
@@ -61,7 +62,20 @@ function buildTargetUrl (rOptions, urlConf, interceptOpt, matched, hostnameMatch
   return targetUrl
 }
 
-function doProxy (proxyConf, rOptions, req, interceptOpt, matched, hostnameMatched) {
+function doProxy (proxyConf, rOptions, req, interceptOpt, matched, hostnameMatched, context) {
+  if (proxyConf && proxyConf.startsWith('tunnel://')) {
+    // eslint-disable-next-line node/no-deprecated-api
+    const urlObject = url.parse(proxyConf)
+    const hostname = urlObject.hostname
+    let port = urlObject.port
+    if (port === '0' && context && context.setting && context.setting.xrayPort) {
+      port = context.setting.xrayPort
+    }
+    const tunnelUrl = `tunnel://${hostname}:${port}`
+    rOptions.agent = commonUtil.getTunnelAgent(rOptions.protocol === 'https:', tunnelUrl)
+    return tunnelUrl
+  }
+
   // 获取代理目标地址
   const proxyTarget = buildTargetUrl(rOptions, proxyConf, interceptOpt, matched, hostnameMatched)
 
@@ -120,7 +134,7 @@ module.exports = {
     }
 
     // 替换 rOptions 中的地址，并返回代理目标地址
-    const proxyTarget = doProxy(proxyConf, rOptions, req, interceptOpt, matched, hostnameMatched)
+    const proxyTarget = doProxy(proxyConf, rOptions, req, interceptOpt, matched, hostnameMatched, context)
 
     if (context.requestCount) {
       log.info('proxy choice:', JSON.stringify(context.requestCount))
