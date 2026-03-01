@@ -20,7 +20,14 @@ function getEnableLoopbackPath () {
   return path.join(extraPath, 'EnableLoopback.exe')
 }
 
+function getXrayExePath () {
+  const extraPath = getExtraPath()
+  const exeName = process.platform === 'win32' ? 'xray.exe' : 'xray'
+  return path.join(extraPath, 'xray', exeName)
+}
+
 module.exports = {
   getProxyExePath,
   getEnableLoopbackPath,
+  getXrayExePath,
 }
