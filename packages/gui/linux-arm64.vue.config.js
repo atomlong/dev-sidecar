@@ -145,6 +145,18 @@ module.exports = defineConfig({
             from: 'extra/xray/${os}/${arch}',
             to: 'extra/xray',
           },
+          {
+            from: 'extra/xray',
+            to: 'extra/xray',
+            filter: [
+              'geoip.dat',
+              'geosite.dat'
+            ]
+          },
+          {
+            from: 'extra/xray/${os}/${arch}',
+            to: 'extra/xray'
+          }
         ],
         appId: 'cn.docmirror.DevSidecar',
         productName: 'dev-sidecar',
