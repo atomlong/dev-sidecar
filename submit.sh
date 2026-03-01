@@ -1170,16 +1170,14 @@ is_binary_file() {
     return 1
 }
 
-# Description: Print git diff --stat style output for changed files
-# Usage: print_stat_for_files "file_list" "output_file"
+# Description: Generate git diff --stat style output for changed files
+# Usage: generate_stat_output "file_list"
 # Params:
 #   $1 - List of files (newline separated)
-#   $2 - Filename to write to if output is too large
-# Return: Stat output (Stdout) or info message
+# Return: Stat output (Stdout)
 # Exit: 0
-print_stat_for_files() {
+generate_stat_output() {
     local changes="$1"
-    local diff_file="$2"
     
     if [ -z "$changes" ]; then
         return
@@ -1462,14 +1460,14 @@ generate_diff_output() {
     echo "$raw_diff"
 }
 
-# Description: Print combined stat + diff output (like git show)
-# Usage: print_show_for_files "file_list" "output_file"
+# Description: Print combined stat + diff output safely (like git show), writing to file if too large
+# Usage: print_show_safe "file_list" "output_file"
 # Params:
 #   $1 - List of files (newline separated)
 #   $2 - Filename to write to if output is too large
 # Return: Combined output (Stdout) or info message
 # Exit: 0
-print_show_for_files() {
+print_show_safe() {
     local changes="$1"
     local diff_file="$2"
     
@@ -1926,14 +1924,14 @@ case "$cmd" in
     --print-private-status)
         changes=$(get_private_changes)
         if [ -n "$changes" ]; then
-            print_stat_for_files "$changes" "$PRIVATE_DIFF_FILE"
+            generate_stat_output "$changes"
         fi
         ;;
         
     --print-public-status)
         changes=$(get_public_changes)
         if [ -n "$changes" ]; then
-            print_stat_for_files "$changes" "$PUBLIC_DIFF_FILE"
+            generate_stat_output "$changes"
         fi
         ;;
 
@@ -1954,14 +1952,14 @@ case "$cmd" in
     --print-private-show)
         changes=$(get_private_changes)
         if [ -n "$changes" ]; then
-            print_show_for_files "$changes" "$PRIVATE_DIFF_FILE"
+            print_show_safe "$changes" "$PRIVATE_DIFF_FILE"
         fi
         ;;
 
     --print-public-show)
         changes=$(get_public_changes)
         if [ -n "$changes" ]; then
-            print_show_for_files "$changes" "$PUBLIC_DIFF_FILE"
+            print_show_safe "$changes" "$PUBLIC_DIFF_FILE"
         fi
         ;;
         
