@@ -69,7 +69,23 @@ module.exports = defineConfig({
           {
             from: 'extra',
             to: 'extra',
+            filter: [
+              '**/*',
+              '!xray/**'
+            ]
           },
+          {
+            from: 'extra/xray',
+            to: 'extra/xray',
+            filter: [
+              'geoip.dat',
+              'geosite.dat'
+            ]
+          },
+          {
+            from: 'extra/xray/${os}/${arch}',
+            to: 'extra/xray'
+          }
         ],
         appId: 'dev-sidecar',
         productName: 'dev-sidecar',

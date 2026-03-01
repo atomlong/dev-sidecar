@@ -1,27 +1,12 @@
 # Xray 插件使用说明
 
-DevSideCar 内置了 **Xray 插件**，用于支持自定义代理节点（VLESS, VMess, Trojan, Shadowsocks 等），帮助你更灵活地访问被墙资源。
+DevSideCar 内置了 **Xray 插件**及其核心引擎，开箱即用，用于支持自定义代理节点（VLESS, VMess, Trojan, Shadowsocks 等），帮助你更灵活地访问被墙资源。
 
 > **注意**：本功能需要你自备可用的 Xray 节点或订阅链接。
 
 ---
 
-## 1. 准备工作
-
-### 下载 Xray-core
-你需要先下载 Xray 的核心程序（Core），DevSideCar 仅负责调用它，并未内置该二进制文件。
-
-1.  前往 [Xray-core Release](https://github.com/XTLS/Xray-core/releases) 页面。
-2.  根据你的操作系统下载对应的版本：
-    *   **Windows**: `Xray-windows-64.zip`
-    *   **macOS (Intel)**: `Xray-macos-64.zip`
-    *   **macOS (M1/M2)**: `Xray-macos-arm64-v8a.zip`
-    *   **Linux**: `Xray-linux-64.zip`
-3.  解压下载的文件，记住 `xray` (Linux/macOS) 或 `xray.exe` (Windows) 所在的路径。
-
----
-
-## 2. 启用插件
+## 1. 启用插件
 
 1.  打开 DevSideCar 设置界面。
 2.  找到 **插件配置 -> Xray**。
@@ -29,12 +14,7 @@ DevSideCar 内置了 **Xray 插件**，用于支持自定义代理节点（VLESS
 
 ---
 
-## 3. 基础配置
-
-### 核心路径 (`binPath`)
-*   填入你在第 1 步解压得到的 `xray` 可执行文件的完整路径。
-    *   **Windows 示例**: `D:\Tools\Xray\xray.exe`
-    *   **macOS/Linux 示例**: `/usr/local/bin/xray`
+## 2. 基础配置
 
 ### 本地端口 (`localPort`)
 *   Xray 插件将在本地启动一个 HTTP 代理服务。默认端口为 **0**（自动选择可用端口），通常无需修改。
@@ -42,7 +22,7 @@ DevSideCar 内置了 **Xray 插件**，用于支持自定义代理节点（VLESS
 
 ---
 
-## 4. 添加节点
+## 3. 添加节点
 
 你可以通过以下两种方式添加代理节点：
 
@@ -58,7 +38,7 @@ DevSideCar 内置了 **Xray 插件**，用于支持自定义代理节点（VLESS
 
 ---
 
-## 5. 路由规则 (`rules`)
+## 4. 路由规则 (`rules`)
 
 DevSideCar 会根据你配置的域名规则，将流量转发给 Xray 插件。
 
@@ -88,16 +68,13 @@ DevSideCar 会根据你配置的域名规则，将流量转发给 Xray 插件。
 
 ---
 
-## 6. 常见问题
-
-**Q: 启动失败，提示 "Xray binary not found"？**
-A: 请检查 **核心路径 (`binPath`)** 是否正确，路径中不要包含引号，且必须指向可执行文件本身（而不是文件夹）。
+## 5. 常见问题
 
 **Q: 节点无法连接？**
 A: 
 1. 确保你的节点本身是可用的（可以在其他客户端测试）。
 2. 检查系统时间是否准确（Xray 对时间同步要求较高）。
-3. 尝试更换一个端口，或者将 `localPort` 设置为 `0` 让系统自动选择。
+3. 尝试更换一个端口，或者将 `localPort` 设为 `0` 让系统自动选择可用端口。
 
 **Q: 如何查看日志？**
 A: DevSideCar 的日志文件中会包含 Xray 插件的运行日志，如果遇到问题，可以查看日志以获取更多线索。

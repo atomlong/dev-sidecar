@@ -1,6 +1,5 @@
 import { ipcRenderer, shell } from 'electron'
 import lodash from 'lodash'
-import path from 'node:path'
 
 let inited = false
 let apiObj = null
@@ -35,7 +34,14 @@ export function apiInit (app) {
         await shell.openExternal(href)
       },
       openPath (file) {
-        shell.openPath(path.resolve(file))
+        // Can't use node:path here directly in frontend without polyfill
+        // We just invoke backend IPC for openPath or do naive replace
+        // Usually file here is already resolved by vue components?
+        // Wait, openPath shouldn't use node:path if webpack 5 doesn't polyfill it
+        // Or we use another IPC channel to open path.
+        // Actually, the vue components probably just send the raw path and open it.
+        // If we just use shell.openPath(file) it might work since the backend path is absolute.
+        shell.openPath(file)
       },
     },
   }

@@ -8,6 +8,7 @@ const processApi = require('./process')
 const portFinder = require('./port-finder')
 const parser = require('./parser')
 const genConfig = require('./gen_config')
+const { getXrayExePath } = require('../../../shell/scripts/extra-path/index')
 
 function download (url) {
   return new Promise((resolve, reject) => {
@@ -39,8 +40,9 @@ const Plugin = function (context) {
         return
       }
 
-      if (!cfg.binPath || !fs.existsSync(cfg.binPath)) {
-        log.error('Xray 启动失败: 未找到 Xray 可执行文件，请在配置中指定 binPath')
+      const binPath = getXrayExePath()
+      if (!fs.existsSync(binPath)) {
+        log.error(`Xray 启动失败: 未找到内置 Xray 可执行文件 (${binPath})`)
         throw new Error('Xray binary not found')
       }
 
@@ -123,7 +125,7 @@ const Plugin = function (context) {
       log.info(`Xray 配置文件已生成: ${configPath}`)
 
       // 4. Start Process
-      await processApi.start(cfg.binPath, configPath)
+      await processApi.start(binPath, configPath)
       event.fire('status', { key: 'plugin.xray.enabled', value: true })
       event.fire('status', { key: 'plugin.xray.port', value: port })
 
