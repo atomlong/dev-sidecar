@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.1.0 (Released)
+- **Current Version**: 2.1.1 (Released)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
@@ -10,6 +10,7 @@
     - 自动化 Release Notes 生成 (Based on CHANGELOG)。
     - `submit.sh` 脚本优化（修复中文文件名支持）。
 - [x] **Xray Plugin**: 
+    - 内置打包 Xray Core 二进制文件与 `*.dat` 资源（自动下载构建），开箱即用，无需手动配置 `binPath`。
     - 集成 Xray Core，支持 VLESS, VMess, Trojan, ShadowSocks, Reality 等高级协议。
     - 支持订阅解析与自动更新。
     - 支持 `tunnel://` 透明代理转发。

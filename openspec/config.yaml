@@ -15,7 +15,7 @@ context: |
   - **Runtime**: Node.js, Electron
   - **Frontend**: Vue.js 2.7, Ant Design Vue 1.x
   - **Build**: vue-cli, electron-builder
-  - **Network**: HTTP/HTTPS interception, Certificate generation, Tunneling (CONNECT), Xray integration (via plugin)
+  - **Network**: HTTP/HTTPS interception, Certificate generation, Tunneling (CONNECT), Xray integration (built-in binaries via plugin)
 
   ## Coding Conventions
   - **Style**: Standard JavaScript style (ESLint configured).
@@ -25,6 +25,8 @@ context: |
   - **Plugins**: Modular plugin system in `packages/core/src/modules/plugin`.
 
 rules:
+  general:
+    - ALWAYS ask for the user's review and explicit permission after creating or modifying ANY artifact (proposal, design, specs, tasks, etc.) before proceeding to the next step or implementing code changes.
   design:
     - Include architecture diagrams (Mermaid) where applicable.
     - Explicitly state impact on existing proxy logic (mitmproxy).

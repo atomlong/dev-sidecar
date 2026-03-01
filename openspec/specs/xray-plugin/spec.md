@@ -12,7 +12,6 @@ The system SHALL define a configuration schema for the Xray plugin in `config.js
 - **WHEN** the plugin configuration is initialized or saved
 - **THEN** it SHALL support the following fields:
   - `enabled`: (Boolean) Enable/disable the plugin.
-  - `binPath`: (String) Absolute path to the Xray core binary (supports Windows/Linux/macOS paths).
   - `localPort`: (Number) Local port for Xray inbound (default: 10801). If 0, a random available port will be selected. If non-zero and occupied, the plugin SHALL fail to start.
   - `subscriptions`: (Array<String>) List of subscription URLs.
   - `nodes`: (Array<String>) List of manually added node links (vmess://, vless://, etc.).
@@ -32,7 +31,9 @@ The system SHALL manage the lifecycle of the Xray Core subprocess, including sta
   - If `localPort` is 0, find a random available port.
 - **AND** the system SHALL save the actual runtime port to `context.config.get().server.setting.xrayPort` (for `mitmproxy` to resolve port 0)
 - **AND** the system SHALL generate the configuration with this runtime port
-- **AND** the system SHALL spawn the Xray binary process using the `binPath` from configuration
+- **AND** the system SHALL resolve the built-in Xray binary located in the app's `extra` resources directory (ignoring any user-provided path).
+- **AND** the system SHALL ensure the Xray database files (`geoip.dat` and `geosite.dat`) are available in the directory of the executed Xray binary.
+- **AND** the system SHALL spawn the Xray binary process using the resolved built-in path.
 - **AND** the system SHALL log the process PID, actual runtime port, and stdout/stderr
 - **AND** the system SHALL expose the runtime port to the GUI for display
 
