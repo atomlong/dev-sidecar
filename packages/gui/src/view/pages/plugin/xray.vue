@@ -74,10 +74,6 @@ export default {
           </a-tag>
         </a-form-item>
 
-        <a-form-item label="Xray 路径" :label-col="labelCol" :wrapper-col="wrapperCol">
-          <a-input v-model="config.plugin.xray.binPath" placeholder="Xray 可执行文件的绝对路径" />
-        </a-form-item>
-
         <a-form-item label="监听端口" :label-col="labelCol" :wrapper-col="wrapperCol">
           <a-input-number v-model="config.plugin.xray.localPort" :min="0" :max="65535" />
           <span style="margin-left: 10px; color: #999;">(0 表示自动选择可用端口；非 0 则强制使用该端口，占用会报错)</span>

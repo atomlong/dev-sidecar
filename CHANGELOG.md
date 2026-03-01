@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.1.1] - 2026-03-01
+
+### Added
+- **Built-in Xray Core**: DevSideCar now bundles the Xray Core binaries and necessary `.dat` database files for all major platforms (Windows, macOS, Linux). Users no longer need to manually download or configure the `binPath`. The plugin is truly out-of-the-box.
+
+### Changed
+- Removed the manual `binPath` configuration option from the UI and backend logic.
+- Automated downloading of specific Xray versions during the build process, reducing setup complexity.
+- Updated documentation to reflect the new out-of-the-box Xray plugin experience.
+
 ## [v2.1.0] - 2026-02-14
 
 ### Added
