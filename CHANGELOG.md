@@ -1,0 +1,37 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [v2.1.2] - 2026-04-07
+
+### Fixed
+- Hardened the mitmproxy interception pipeline against missing `agent.options` values, fixing crashes on `daily-cloudcode-pa.googleapis.com` and related Google API requests.
+- Added null-safe `rejectUnauthorized` access across request, upgrade, SNI, proxy, and unVerifySsl handlers.
+
+## [v2.1.1] - 2026-03-01
+
+### Added
+- **Built-in Xray Core**: DevSideCar now bundles the Xray Core binaries and necessary `.dat` database files for all major platforms (Windows, macOS, Linux). Users no longer need to manually download or configure the `binPath`. The plugin is truly out-of-the-box.
+
+### Changed
+- Removed the manual `binPath` configuration option from the UI and backend logic.
+- Automated downloading of specific Xray versions during the build process, reducing setup complexity.
+- Updated documentation to reflect the new out-of-the-box Xray plugin experience.
+
+## [v2.1.0] - 2026-02-14
+
+### Added
+- **Xray Plugin**: Integrated Xray Core as a plugin, supporting advanced proxy protocols like VLESS, VMess, Trojan, and ShadowSocks.
+- **Reality Support**: Added full support for VLESS/Trojan Reality protocol, including strict validation to prevent core crashes.
+- **Tunnel Protocol**: Introduced `tunnel://` pseudo-protocol to support transparent HTTP CONNECT tunneling to local proxies.
+- **Global Deduplication**: Implemented intelligent global deduplication for proxy nodes across multiple subscription sources.
+- **Configuration**: Enhanced configuration schema to support plugin settings and routing rules.
+
+### Fixed
+- Fixed Reality protocol validation issues (shortId hex check, publicKey length check).
+- Fixed Xray Core crash when using incompatible transport protocols (e.g., WebSocket) with Reality.
+- Fixed potential port conflicts by implementing dynamic port allocation for Xray.
+
+### Changed
+- Updated `mitmproxy` to support dynamic hot reloading of interception rules.
+- Optimized subscription parsing logic to handle various link formats and edge cases.
