@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.1.1 (Released)
+- **Current Version**: 2.1.2 (Released)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
@@ -15,6 +15,14 @@
     - 支持订阅解析与自动更新。
     - 支持 `tunnel://` 透明代理转发。
     - 支持全局节点去重。
+- [x] **Release v2.1.2**:
+    - 同步升级各 package 版本至 2.1.2。
+    - 更新 `CHANGELOG.md`，记录 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复。
+    - 验证 `daily-cloudcode-pa.googleapis.com` 可正常拦截。
+- [x] **Mitmproxy Robustness**:
+    - 修复 `agent.options` 为空导致的拦截崩溃问题。
+    - `sni`、`proxy`、`unVerifySsl`、普通请求与 Upgrade 请求路径已改为空值安全访问。
+    - 已验证 `daily-cloudcode-pa.googleapis.com` 可正常拦截。
 - [x] **Configuration**: 支持 HTTP/HTTPS/FILE 协议加载远程配置。
 - [x] **Core Proxy**: HTTP/HTTPS 拦截与代理。
 - [x] **DNS Optimization**: DNS 优选与智能解析。
