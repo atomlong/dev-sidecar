@@ -3,7 +3,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const AdmZip = require('adm-zip');
 
-const VERSION = '26.2.6';
+const VERSION = '26.3.27';
 const BASE_URL = `https://github.com/XTLS/Xray-core/releases/download/v${VERSION}/`;
 
 const TARGETS = [
