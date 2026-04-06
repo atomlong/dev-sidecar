@@ -4,7 +4,8 @@ module.exports = {
   requestIntercept (context, interceptOpt, req, res, ssl, next) {
     const { rOptions, log } = context
 
-    if (rOptions.agent.options.rejectUnauthorized && rOptions.agent.unVerifySslAgent) {
+    const agentOptions = rOptions.agent && rOptions.agent.options ? rOptions.agent.options : {}
+    if (agentOptions.rejectUnauthorized && rOptions.agent && rOptions.agent.unVerifySslAgent) {
       rOptions.agent = rOptions.agent.unVerifySslAgent
       log.info(`unVerifySsl intercept: ${rOptions.hostname}, unVerifySsl`)
       res.setHeader('DS-Interceptor', 'unVerifySsl')

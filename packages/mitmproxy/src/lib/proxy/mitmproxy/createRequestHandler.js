@@ -145,8 +145,9 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
 
           // 自动兼容程序：2
           if (rOptions.agent) {
+            const agentOptions = rOptions.agent.options ? rOptions.agent.options : {}
             const compatibleConfig = compatible.getRequestCompatibleConfig(rOptions, rOptions.compatibleConfig)
-            if (compatibleConfig && compatibleConfig.rejectUnauthorized != null && rOptions.agent.options.rejectUnauthorized !== compatibleConfig.rejectUnauthorized) {
+            if (compatibleConfig && compatibleConfig.rejectUnauthorized != null && agentOptions.rejectUnauthorized !== compatibleConfig.rejectUnauthorized) {
               if (compatibleConfig.rejectUnauthorized === false && rOptions.agent.unVerifySslAgent) {
                 log.info(`【自动兼容程序】${rOptions.hostname}:${rOptions.port}: 设置 'rOptions.agent.options.rejectUnauthorized = ${compatibleConfig.rejectUnauthorized}'`)
                 rOptions.agent = rOptions.agent.unVerifySslAgent
