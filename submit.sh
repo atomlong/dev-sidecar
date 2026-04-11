@@ -443,6 +443,8 @@ show_help() {
     echo "Environment Variables:"
     echo "  COMMIT_MSG_PRIVATE        Commit message for private changes."
     echo "  COMMIT_MSG_PUBLIC         Commit message for public changes."
+    echo "  SUBMIT_PUBLIC_CONFLICT_STRATEGY"
+    echo "                            Optional auto-retry strategy for '--push-public' conflicts: ours or theirs."
 }
 
 # --- Cleanup ---
@@ -1842,6 +1844,141 @@ detect_repo_visibility() {
     esac
 }
 
+# --- Public Sync Conflict Helpers ---
+
+# Description: Validate optional automatic conflict strategy for public sync.
+# Usage: validate_public_conflict_strategy
+# Return: strategy value (Stdout) or exits on invalid value
+validate_public_conflict_strategy() {
+    local strategy="${SUBMIT_PUBLIC_CONFLICT_STRATEGY:-}"
+
+    case "$strategy" in
+        "")
+            echo ""
+            ;;
+        ours|theirs)
+            echo "$strategy"
+            ;;
+        *)
+            log_error "Invalid SUBMIT_PUBLIC_CONFLICT_STRATEGY: '$strategy'"
+            log_error "Allowed values: ours, theirs"
+            exit 1
+            ;;
+    esac
+}
+
+# Description: Enable git rerere so repeated conflict patterns can be reused automatically.
+# Usage: enable_rerere_for_public_sync
+enable_rerere_for_public_sync() {
+    git config rerere.enabled true
+    git config rerere.autoupdate true
+    log_info "Enabled git rerere for public sync conflict reuse."
+}
+
+# Description: Build the ordered list of public commits that still need syncing.
+#              Uses git cherry (patch-id aware) to avoid replaying already-equivalent commits.
+# Usage: get_unsynced_public_commits <public_branch> <private_branch>
+# Return: newline-separated commit hashes (Stdout)
+get_unsynced_public_commits() {
+    local public_branch="$1"
+    local private_branch="$2"
+    local candidate_commits
+    local cherry_output
+    local line
+    local marker
+    local hash
+    local commit
+    local old_ifs
+    declare -A unsynced_commit_map=()
+
+    candidate_commits=$(git log "$public_branch".."$private_branch" --reverse --format="%H" --no-merges)
+    if [ -z "$candidate_commits" ]; then
+        return 0
+    fi
+
+    cherry_output=$(git cherry "$public_branch" "$private_branch" || true)
+    old_ifs="$IFS"
+    IFS=$'\n'
+    for line in $cherry_output; do
+        [ -z "$line" ] && continue
+        marker="${line%% *}"
+        hash="${line##* }"
+        if [ "$marker" = "+" ]; then
+            unsynced_commit_map["$hash"]=1
+        fi
+    done
+
+    for commit in $candidate_commits; do
+        if [ -n "${unsynced_commit_map["$commit"]:-}" ]; then
+            echo "$commit"
+        fi
+    done
+    IFS="$old_ifs"
+}
+
+# Description: If rerere resolved all conflicts, continue the cherry-pick automatically.
+# Usage: continue_public_cherry_pick_if_resolved <commit>
+# Exit: 0 if continued successfully, 1 otherwise
+continue_public_cherry_pick_if_resolved() {
+    local commit="$1"
+    local unmerged
+
+    if ! git rev-parse --verify --quiet CHERRY_PICK_HEAD >/dev/null 2>&1; then
+        return 1
+    fi
+
+    unmerged=$(git diff --name-only --diff-filter=U || true)
+    if [ -n "$unmerged" ]; then
+        return 1
+    fi
+
+    log_info "All conflicts for $commit were resolved automatically. Continuing cherry-pick..."
+    git cherry-pick --continue
+}
+
+# Description: Cherry-pick a public commit with optional automatic retry strategy.
+# Usage: attempt_public_cherry_pick <commit> <strategy>
+# Exit: 0 on success, 1 on unresolved conflict
+attempt_public_cherry_pick() {
+    local commit="$1"
+    local strategy="$2"
+
+    log_info "Cherry-picking: $commit"
+    if git cherry-pick -x --allow-empty "$commit"; then
+        return 0
+    fi
+
+    if continue_public_cherry_pick_if_resolved "$commit"; then
+        log_info "rerere auto-resolved commit: $commit"
+        return 0
+    fi
+
+    if [ -n "$strategy" ]; then
+        log_warn "Cherry-pick failed for $commit. Retrying with SUBMIT_PUBLIC_CONFLICT_STRATEGY=$strategy ..."
+        git cherry-pick --abort || true
+
+        if git cherry-pick -x -X "$strategy" --allow-empty "$commit"; then
+            log_info "Cherry-pick succeeded with strategy '$strategy': $commit"
+            return 0
+        fi
+
+        if continue_public_cherry_pick_if_resolved "$commit"; then
+            log_info "rerere/strategy auto-resolved commit: $commit"
+            return 0
+        fi
+    fi
+
+    if [ -n "$strategy" ]; then
+        log_error "Automatic retry with strategy '$strategy' failed for commit: $commit"
+    else
+        log_error "Cherry-pick failed for commit: $commit"
+        log_error "Tip: set SUBMIT_PUBLIC_CONFLICT_STRATEGY=ours or theirs to auto-retry once."
+    fi
+
+    log_error "Leaving repository on public branch for manual conflict resolution."
+    return 1
+}
+
 # ==========================================
 # 3. Main Logic
 # ==========================================
@@ -2135,6 +2272,11 @@ case "$cmd" in
 
     --push-public)
         log_info "Syncing public changes from $BRANCH_PRIVATE to $BRANCH_PUBLIC..."
+        public_conflict_strategy=$(validate_public_conflict_strategy)
+        if [ -n "$public_conflict_strategy" ]; then
+            log_info "Automatic public conflict retry strategy: $public_conflict_strategy"
+        fi
+        enable_rerere_for_public_sync
         
         # Ensure we are on the expected private branch
         if [ "$CURRENT_BRANCH" != "$BRANCH_PRIVATE" ]; then
@@ -2250,24 +2392,12 @@ case "$cmd" in
             git pull --rebase || log_warn "Pull failed or no upstream."
         fi
 
-        # Find Sync Range using merge-base (reliable, no dependency on cherry-pick markers)
+        # Build sync range using patch-id aware detection to avoid replaying equivalent commits.
         log_info "Calculating commits to sync from $BRANCH_PUBLIC to $BRANCH_PRIVATE..."
-        commits_to_sync=$(git log "$BRANCH_PUBLIC".."$BRANCH_PRIVATE" --reverse --format="%H" --no-merges)
+        commits_to_sync=$(get_unsynced_public_commits "$BRANCH_PUBLIC" "$BRANCH_PRIVATE")
         
         if [ -n "$commits_to_sync" ]; then
             for commit in $commits_to_sync; do
-                # Check if this commit was already cherry-picked to feature branch
-                # Search last 100 commits to cover recent history without complex merge-base logic
-                already_synced=0
-                if git log -n 100 --grep="(cherry picked from commit $commit)" --format="%H" 2>/dev/null | grep -q .; then
-                    already_synced=1
-                fi
-                
-                if [ "$already_synced" -eq 1 ]; then
-                    log_info "Skipping already synced commit: $commit"
-                    continue
-                fi
-
                 # Check private files
                 files=$(git show --name-only --format= "$commit")
                 is_private=0
@@ -2287,9 +2417,8 @@ case "$cmd" in
                     continue
                 fi
                 
-                log_info "Cherry-picking: $commit"
-                if ! git cherry-pick -x --allow-empty "$commit"; then
-                    log_error "Cherry-pick failed. Please resolve conflicts manually then continue."
+                if ! attempt_public_cherry_pick "$commit" "$public_conflict_strategy"; then
+                    trap - EXIT
                     exit 1
                 fi
             done

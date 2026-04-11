@@ -3,8 +3,15 @@
 ## Current Work
 - 版本发布：已完成 v2.1.2 发布，包含 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复；当前关注相关 Google / Copilot 请求的稳定性。
 - CI 修复：正在处理 GitHub Actions 的跨平台构建稳定性，重点是 Windows 的 `node-gyp` Python 绑定，以及 macOS 下 Xray 资源参与 universal 合并导致的打包失败。
+- 工作流增强：已完成 `submit.sh --push-public` 冲突自动化改造与测试，当前正按 `.clinerules/workflows/submit.md` 执行提交与同步。
 
 ## Recent Changes
+- [Workflow] **`submit.sh` 公共同步增强**：
+    - `--push-public` 现改为通过 `git cherry` 做 patch-id aware 去重，只同步真正尚未进入公共分支的 public commit，避免等价补丁被重复 cherry-pick。
+    - 公共同步前会自动启用 `git rerere` 与 `rerere.autoupdate`，复用历史冲突解决结果。
+    - 新增环境变量 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=ours|theirs`，当首次 `git cherry-pick -x --allow-empty` 冲突时，可自动 `--abort` 后使用 `git cherry-pick -X <strategy>` 重试一次。
+    - 若 rerere 或自动策略已把冲突清空，则脚本会自动执行 `git cherry-pick --continue`；若仍有未解决冲突，则保留现场并提示人工处理。
+    - 已通过 `bash -n submit.sh` 语法检查、临时仓库 patch-id 跳过测试、以及真实文本冲突的自动重试策略测试。
 - [CI] **GitHub Actions 构建修复**：
     - 在 `.github/workflows/build-and-release.yml` 中显式将 `PYTHON`、`npm_config_python`、`NODE_GYP_FORCE_PYTHON` 绑定到 `actions/setup-python` 提供的 Python 3.10，避免 Windows 上 `node-gyp` 落回 Python 3.12 并触发 `distutils` 缺失错误。
     - 增加 CI 调试输出，便于在日志中确认 `node-gyp` 实际使用的 Python 解释器。
@@ -30,6 +37,8 @@
     - 同步更新了 `doc/wiki/Xray插件使用说明.md`。
 
 ## Next Steps
+- 确认本次 `submit.sh` 改动的 private/public 远程同步结果，并在需要时继续发布流程。
+- 若需要进一步接近真实环境验证，可在实际仓库上演练一次 `./submit.sh --push-public`，并优先确认私有 `gitlab` remote 的可达性。
 - 观察 v2.1.2 发布后的 `daily-cloudcode-pa.googleapis.com` 及其他 Google APIs 拦截路径的实际运行情况。
 - 重新触发并观察修复后的 GitHub Actions `build-and-release` / `test-and-upload` 是否在 Windows / macOS / Linux 三个平台稳定通过，尤其确认 macOS `universal` DMG 已恢复正常产出。
 - 如需要对外发布补丁版本，更新 `CHANGELOG.md` 并走 `submit.sh` 发布流程。
@@ -37,3 +46,5 @@
 ## Active Considerations
 - **发布流程**: 在打包 Xray Core 后可能会导致应用程序整体大小略有增加（约十几MB），需要观察下载体验的影响。后续需保持对 Xray-core release 版本的关注，在必要时再次发起内置核心更新的变更。
 - **拦截器健壮性**: Mitmproxy 的请求拦截链路中，`agent.options` 不能假定存在；后续新增规则需继续采用空值安全访问，避免类似空指针问题再次出现。
+- **分支纪律**: `develop` 属于私有分支，禁止推送到公共仓库；公共发布面应始终通过 `submit.sh --push-public` 同步到 `master` / `feature/*`。
+- **同步策略**: 当前 public sync 已具备 patch-id 去重、rerere 复用与一次性自动冲突重试能力，但若私有 `gitlab` remote 不可达，后续完整提交流程仍需先恢复网络连通性。
