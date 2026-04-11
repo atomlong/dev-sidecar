@@ -30,22 +30,49 @@ function getMacLipoArch(targetArch) {
   throw new Error(`Unsupported mac arch for lipo thinning: ${targetArch}`);
 }
 
+function getMacBinaryArchs(exePath) {
+  const archOutput = execFileSync('lipo', ['-archs', exePath], { encoding: 'utf8' }).trim();
+  const archs = archOutput.split(/\s+/).filter(Boolean);
+
+  if (archs.length === 0) {
+    throw new Error(`Unable to detect mac binary architectures for ${exePath}`);
+  }
+
+  return archs;
+}
+
 function thinMacBinary(exePath, targetArch) {
   if (process.platform !== 'darwin') {
     return;
   }
 
   const lipoArch = getMacLipoArch(targetArch);
-  const tempPath = `${exePath}.${lipoArch}.thin`;
   const beforeInfo = execFileSync('lipo', ['-info', exePath], { encoding: 'utf8' }).trim();
+  const beforeArchs = getMacBinaryArchs(exePath);
   console.log(`[Mac] lipo info before thinning (${targetArch}): ${beforeInfo}`);
+  console.log(`[Mac] lipo archs before thinning (${targetArch}): ${beforeArchs.join(', ')}`);
 
+  if (!beforeArchs.includes(lipoArch)) {
+    throw new Error(
+      `Downloaded mac binary ${exePath} does not contain target architecture ${lipoArch}. Found: ${beforeArchs.join(', ')}`,
+    );
+  }
+
+  if (beforeArchs.length === 1) {
+    console.log(`[Mac] Skip thinning (${targetArch}) because binary is already single-arch: ${beforeArchs[0]}`);
+    fs.chmodSync(exePath, 0o755);
+    return;
+  }
+
+  const tempPath = `${exePath}.${lipoArch}.thin`;
   execFileSync('lipo', ['-thin', lipoArch, exePath, '-output', tempPath], { stdio: 'inherit' });
   fs.renameSync(tempPath, exePath);
   fs.chmodSync(exePath, 0o755);
 
   const afterInfo = execFileSync('lipo', ['-info', exePath], { encoding: 'utf8' }).trim();
+  const afterArchs = getMacBinaryArchs(exePath);
   console.log(`[Mac] lipo info after thinning (${targetArch}): ${afterInfo}`);
+  console.log(`[Mac] lipo archs after thinning (${targetArch}): ${afterArchs.join(', ')}`);
 }
 
 async function download(urlStr, dest) {
@@ -98,8 +125,10 @@ async function main() {
           }
           if (target.os === 'mac') {
             // 某些上游 macOS 产物可能已经是 fat/universal Mach-O。
+            // 也可能已经是目标架构的 thin Mach-O。
             // electron-builder 在制作 universal App 时会再次对 extraResources 中
-            // 的 Mach-O 执行 lipo；如果这里不先裁剪到目标架构，就会因为架构重叠报错。
+            // 的 Mach-O 执行 lipo；因此这里只在上游产物为 fat/universal 时
+            // 才裁剪到目标架构，若本身已是目标单架构则直接复用。
             thinMacBinary(exePath, target.arch);
           }
           console.log(`Extracted ${entry.entryName} to ${target.os}/${target.arch}`);

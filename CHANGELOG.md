@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - Added null-safe `rejectUnauthorized` access across request, upgrade, SNI, proxy, and unVerifySsl handlers.
 - Pinned GitHub Actions native module rebuilds to Python 3.10, avoiding Windows build failures caused by Python 3.12 removing `distutils`.
 - Restored macOS `universal` DMG packaging by thinning bundled Xray binaries to the target architecture before electron-builder performs universal `lipo` merging.
+- Fixed macOS CI on arm64 runners by skipping `lipo -thin` when the downloaded Xray binary is already a single-architecture Mach-O for the target arch.
 - Synchronized `build-and-release.yml` and `test-and-upload.yml` so cross-platform build behavior and macOS artifact outputs remain consistent.
 
 ## [v2.1.1] - 2026-03-01
