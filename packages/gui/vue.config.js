@@ -114,6 +114,8 @@ module.exports = defineConfig({
           icon: './build/mac/icon.icns',
           target: {
             target: 'dmg',
+            // download-xray.js 会先把 Xray 的 mac 二进制裁剪为精确架构，
+            // 这样 electron-builder 在生成 universal DMG 时可以安全执行二次 lipo 合并。
             arch: ['x64', 'arm64', 'universal'],
           },
           category: 'public.app-category.developer-tools',

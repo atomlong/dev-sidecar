@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 const AdmZip = require('adm-zip');
 
 const VERSION = '26.3.27';
@@ -19,6 +19,34 @@ const TARGETS = [
 
 const EXTRA_DIR = path.join(__dirname, '../extra/xray');
 const CACHE_DIR = path.join(__dirname, '../node_modules/.cache/xray-downloads');
+
+function getMacLipoArch(targetArch) {
+  if (targetArch === 'x64') {
+    return 'x86_64';
+  }
+  if (targetArch === 'arm64') {
+    return 'arm64';
+  }
+  throw new Error(`Unsupported mac arch for lipo thinning: ${targetArch}`);
+}
+
+function thinMacBinary(exePath, targetArch) {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  const lipoArch = getMacLipoArch(targetArch);
+  const tempPath = `${exePath}.${lipoArch}.thin`;
+  const beforeInfo = execFileSync('lipo', ['-info', exePath], { encoding: 'utf8' }).trim();
+  console.log(`[Mac] lipo info before thinning (${targetArch}): ${beforeInfo}`);
+
+  execFileSync('lipo', ['-thin', lipoArch, exePath, '-output', tempPath], { stdio: 'inherit' });
+  fs.renameSync(tempPath, exePath);
+  fs.chmodSync(exePath, 0o755);
+
+  const afterInfo = execFileSync('lipo', ['-info', exePath], { encoding: 'utf8' }).trim();
+  console.log(`[Mac] lipo info after thinning (${targetArch}): ${afterInfo}`);
+}
 
 async function download(urlStr, dest) {
   if (fs.existsSync(dest)) {
@@ -67,6 +95,12 @@ async function main() {
           const exePath = path.join(targetDir, entry.entryName);
           if (target.os !== 'win') {
             fs.chmodSync(exePath, 0o755); // Make executable on mac/linux
+          }
+          if (target.os === 'mac') {
+            // 某些上游 macOS 产物可能已经是 fat/universal Mach-O。
+            // electron-builder 在制作 universal App 时会再次对 extraResources 中
+            // 的 Mach-O 执行 lipo；如果这里不先裁剪到目标架构，就会因为架构重叠报错。
+            thinMacBinary(exePath, target.arch);
           }
           console.log(`Extracted ${entry.entryName} to ${target.os}/${target.arch}`);
         } else if (!datExtracted && (entry.entryName === 'geoip.dat' || entry.entryName === 'geosite.dat')) {

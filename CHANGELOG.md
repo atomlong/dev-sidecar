@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - Hardened the mitmproxy interception pipeline against missing `agent.options` values, fixing crashes on `daily-cloudcode-pa.googleapis.com` and related Google API requests.
 - Added null-safe `rejectUnauthorized` access across request, upgrade, SNI, proxy, and unVerifySsl handlers.
+- Pinned GitHub Actions native module rebuilds to Python 3.10, avoiding Windows build failures caused by Python 3.12 removing `distutils`.
+- Restored macOS `universal` DMG packaging by thinning bundled Xray binaries to the target architecture before electron-builder performs universal `lipo` merging.
+- Synchronized `build-and-release.yml` and `test-and-upload.yml` so cross-platform build behavior and macOS artifact outputs remain consistent.
 
 ## [v2.1.1] - 2026-03-01
 
