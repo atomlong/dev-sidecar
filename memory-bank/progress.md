@@ -8,8 +8,8 @@
 ## Completed Features
 - [x] **CI Build Stability**:
     - GitHub Actions 工作流已显式固定 `node-gyp` 使用 `actions/setup-python` 安装的 Python 3.10，降低 Windows 平台因 Python 3.12 缺少 `distutils` 导致的原生模块重编译失败风险。
-    - 已定位 macOS `universal` 打包失败根因为：Xray 的 macOS 二进制在进入 electron-builder 的 universal 合并流程前没有被裁剪到精确架构，导致 `extra/xray/xray` 在二次 `lipo` 时发生架构重叠。
-    - 已在 `packages/gui/scripts/download-xray.js` 中对 macOS 的 Xray 二进制执行 `lipo -thin` 裁剪，并恢复 `universal` DMG 构建。
+    - 已定位 macOS `universal` 打包失败根因为：Xray 的 macOS 二进制在进入 electron-builder 的 universal 合并流程前需要按实际架构状态处理；若是 fat/universal 需要先裁剪，若本身已是目标单架构则不能再无条件执行 `lipo -thin`。
+    - 已在 `packages/gui/scripts/download-xray.js` 中加入 `lipo -archs` 架构检测，仅对 fat/universal 的 macOS Xray 二进制执行 `lipo -thin`，并在已为目标单架构时直接复用，恢复 `universal` DMG 构建链路。
     - `build-and-release.yml` 与 `test-and-upload.yml` 已同步固定 Python 解释器，避免两个工作流在 Windows 原生模块重建行为上出现漂移。
 - [x] **DevOps**: 
     - 自动化 Release Notes 生成 (Based on CHANGELOG)。

@@ -9,8 +9,8 @@
     - 在 `.github/workflows/build-and-release.yml` 中显式将 `PYTHON`、`npm_config_python`、`NODE_GYP_FORCE_PYTHON` 绑定到 `actions/setup-python` 提供的 Python 3.10，避免 Windows 上 `node-gyp` 落回 Python 3.12 并触发 `distutils` 缺失错误。
     - 增加 CI 调试输出，便于在日志中确认 `node-gyp` 实际使用的 Python 解释器。
     - 已确认此前移除 macOS `universal` DMG 只是临时止血，不是根因修复。
-    - 根因是上游 Xray 的 macOS 二进制可能已经是 fat/universal Mach-O，electron-builder 在合并 universal App 时又会对 `extra/xray/xray` 再次执行 `lipo`，从而因架构重叠报错。
-    - 现改为在 `packages/gui/scripts/download-xray.js` 中对 macOS 的 Xray 二进制先按目标架构执行 `lipo -thin` 裁剪，再在 `packages/gui/vue.config.js` 中恢复 `universal` DMG 构建。
+    - 根因已进一步细化：上游 Xray 的 macOS 二进制既可能是 fat/universal Mach-O，也可能已经是目标架构的 thin Mach-O；此前无条件执行 `lipo -thin` 会在 GitHub Actions 的 macOS arm64 runner 上因为输入文件本身就是单架构而失败。
+    - 现改为在 `packages/gui/scripts/download-xray.js` 中先通过 `lipo -archs` 检测实际架构：若已是目标单架构则直接跳过，若为 fat/universal 且包含目标架构才执行 `lipo -thin`，再由 `electron-builder` 继续生成 `universal` DMG。
     - `.github/workflows/test-and-upload.yml` 也同步固定 `node-gyp` Python 解释器，避免测试工作流与发布工作流行为不一致。
 - [Release] **v2.1.2**：
     - 同步升级 package 版本到 2.1.2。
@@ -31,7 +31,7 @@
 
 ## Next Steps
 - 观察 v2.1.2 发布后的 `daily-cloudcode-pa.googleapis.com` 及其他 Google APIs 拦截路径的实际运行情况。
-- 观察修复后的 GitHub Actions `build-and-release` / `test-and-upload` 是否在 Windows / macOS / Linux 三个平台稳定通过，尤其确认 macOS `universal` DMG 已恢复正常产出。
+- 重新触发并观察修复后的 GitHub Actions `build-and-release` / `test-and-upload` 是否在 Windows / macOS / Linux 三个平台稳定通过，尤其确认 macOS `universal` DMG 已恢复正常产出。
 - 如需要对外发布补丁版本，更新 `CHANGELOG.md` 并走 `submit.sh` 发布流程。
 
 ## Active Considerations
