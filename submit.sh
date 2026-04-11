@@ -444,7 +444,7 @@ show_help() {
     echo "  COMMIT_MSG_PRIVATE        Commit message for private changes."
     echo "  COMMIT_MSG_PUBLIC         Commit message for public changes."
     echo "  SUBMIT_PUBLIC_CONFLICT_STRATEGY"
-    echo "                            Optional auto-retry strategy for '--push-public' conflicts: ours or theirs."
+    echo "                            Auto-resolve strategy for '--push-public' conflicts: ours or theirs (default: ours)."
 }
 
 # --- Cleanup ---
@@ -1846,16 +1846,13 @@ detect_repo_visibility() {
 
 # --- Public Sync Conflict Helpers ---
 
-# Description: Validate optional automatic conflict strategy for public sync.
+# Description: Validate automatic conflict strategy for public sync.
 # Usage: validate_public_conflict_strategy
-# Return: strategy value (Stdout) or exits on invalid value
+# Return: strategy value (Stdout) or exits on invalid value. Defaults to 'ours'.
 validate_public_conflict_strategy() {
-    local strategy="${SUBMIT_PUBLIC_CONFLICT_STRATEGY:-}"
+    local strategy="${SUBMIT_PUBLIC_CONFLICT_STRATEGY:-ours}"
 
     case "$strategy" in
-        "")
-            echo ""
-            ;;
         ours|theirs)
             echo "$strategy"
             ;;
@@ -1936,6 +1933,55 @@ continue_public_cherry_pick_if_resolved() {
     git cherry-pick --continue
 }
 
+# Description: Force-resolve any remaining conflicted paths with the selected strategy.
+# Usage: resolve_unmerged_public_paths_with_strategy <strategy>
+# Exit: 0 if all unmerged paths are resolved, 1 otherwise
+resolve_unmerged_public_paths_with_strategy() {
+    local strategy="$1"
+    local desired_stage
+    local unmerged
+    local file
+    local stages
+    local old_ifs
+
+    if [ "$strategy" = "ours" ]; then
+        desired_stage="2"
+    else
+        desired_stage="3"
+    fi
+
+    unmerged=$(git diff --name-only --diff-filter=U || true)
+    if [ -z "$unmerged" ]; then
+        return 0
+    fi
+
+    log_warn "Force-resolving remaining conflicts with strategy '$strategy'..."
+    old_ifs="$IFS"
+    IFS=$'\n'
+    for file in $unmerged; do
+        [ -z "$file" ] && continue
+        stages=$(git ls-files -u -- "$file" | awk '{print $3}')
+
+        if echo "$stages" | grep -qx "$desired_stage"; then
+            git checkout "--$strategy" -- "$file" 2>/dev/null || true
+        else
+            git rm -f -- "$file" >/dev/null 2>&1 || true
+        fi
+
+        git add -A -- "$file" >/dev/null 2>&1 || true
+    done
+    IFS="$old_ifs"
+
+    unmerged=$(git diff --name-only --diff-filter=U || true)
+    if [ -n "$unmerged" ]; then
+        log_error "Unable to auto-resolve these paths with strategy '$strategy':"
+        echo "$unmerged"
+        return 1
+    fi
+
+    return 0
+}
+
 # Description: Cherry-pick a public commit with optional automatic retry strategy.
 # Usage: attempt_public_cherry_pick <commit> <strategy>
 # Exit: 0 on success, 1 on unresolved conflict
@@ -1953,27 +1999,25 @@ attempt_public_cherry_pick() {
         return 0
     fi
 
-    if [ -n "$strategy" ]; then
-        log_warn "Cherry-pick failed for $commit. Retrying with SUBMIT_PUBLIC_CONFLICT_STRATEGY=$strategy ..."
-        git cherry-pick --abort || true
+    log_warn "Cherry-pick failed for $commit. Retrying with strategy '$strategy' ..."
+    git cherry-pick --abort || true
 
-        if git cherry-pick -x -X "$strategy" --allow-empty "$commit"; then
-            log_info "Cherry-pick succeeded with strategy '$strategy': $commit"
-            return 0
-        fi
-
-        if continue_public_cherry_pick_if_resolved "$commit"; then
-            log_info "rerere/strategy auto-resolved commit: $commit"
-            return 0
-        fi
+    if git cherry-pick -x -X "$strategy" --allow-empty "$commit"; then
+        log_info "Cherry-pick succeeded with strategy '$strategy': $commit"
+        return 0
     fi
 
-    if [ -n "$strategy" ]; then
-        log_error "Automatic retry with strategy '$strategy' failed for commit: $commit"
-    else
-        log_error "Cherry-pick failed for commit: $commit"
-        log_error "Tip: set SUBMIT_PUBLIC_CONFLICT_STRATEGY=ours or theirs to auto-retry once."
+    if continue_public_cherry_pick_if_resolved "$commit"; then
+        log_info "rerere/strategy auto-resolved commit: $commit"
+        return 0
     fi
+
+    if resolve_unmerged_public_paths_with_strategy "$strategy" && continue_public_cherry_pick_if_resolved "$commit"; then
+        log_info "Force auto-resolved commit with strategy '$strategy': $commit"
+        return 0
+    fi
+
+    log_error "Automatic retry with strategy '$strategy' failed for commit: $commit"
 
     log_error "Leaving repository on public branch for manual conflict resolution."
     return 1

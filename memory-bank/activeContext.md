@@ -9,8 +9,8 @@
 - [Workflow] **`submit.sh` 公共同步增强**：
     - `--push-public` 现改为通过 `git cherry` 做 patch-id aware 去重，只同步真正尚未进入公共分支的 public commit，避免等价补丁被重复 cherry-pick。
     - 公共同步前会自动启用 `git rerere` 与 `rerere.autoupdate`，复用历史冲突解决结果。
-    - 新增环境变量 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=ours|theirs`，当首次 `git cherry-pick -x --allow-empty` 冲突时，可自动 `--abort` 后使用 `git cherry-pick -X <strategy>` 重试一次。
-    - 若 rerere 或自动策略已把冲突清空，则脚本会自动执行 `git cherry-pick --continue`；若仍有未解决冲突，则保留现场并提示人工处理。
+    - `--push-public` 现在默认使用 `ours` 策略自动处理冲突；也可通过 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs` 覆盖默认行为。
+    - 当首次 `git cherry-pick -x --allow-empty` 冲突时，脚本会自动 `--abort` 后使用 `git cherry-pick -X <strategy>` 重试；若仍有未合并路径，则继续对剩余冲突文件执行 `--ours/--theirs` 强制收敛，再自动 `git cherry-pick --continue`。
     - 已通过 `bash -n submit.sh` 语法检查、临时仓库 patch-id 跳过测试、以及真实文本冲突的自动重试策略测试。
 - [CI] **GitHub Actions 构建修复**：
     - 在 `.github/workflows/build-and-release.yml` 中显式将 `PYTHON`、`npm_config_python`、`NODE_GYP_FORCE_PYTHON` 绑定到 `actions/setup-python` 提供的 Python 3.10，避免 Windows 上 `node-gyp` 落回 Python 3.12 并触发 `distutils` 缺失错误。
@@ -47,4 +47,4 @@
 - **发布流程**: 在打包 Xray Core 后可能会导致应用程序整体大小略有增加（约十几MB），需要观察下载体验的影响。后续需保持对 Xray-core release 版本的关注，在必要时再次发起内置核心更新的变更。
 - **拦截器健壮性**: Mitmproxy 的请求拦截链路中，`agent.options` 不能假定存在；后续新增规则需继续采用空值安全访问，避免类似空指针问题再次出现。
 - **分支纪律**: `develop` 属于私有分支，禁止推送到公共仓库；公共发布面应始终通过 `submit.sh --push-public` 同步到 `master` / `feature/*`。
-- **同步策略**: 当前 public sync 已具备 patch-id 去重、rerere 复用与一次性自动冲突重试能力，但若私有 `gitlab` remote 不可达，后续完整提交流程仍需先恢复网络连通性。
+- **同步策略**: 当前 public sync 已具备 patch-id 去重、rerere 复用以及默认 `ours` 的自动冲突收敛能力；若特定场景更需要保留私有分支冲突块，可临时使用 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs`。
