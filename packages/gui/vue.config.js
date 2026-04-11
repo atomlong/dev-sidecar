@@ -123,6 +123,10 @@ module.exports = defineConfig({
               target: 'tar.gz',
               arch: ['x64', 'arm64', 'armv7l'],
             },
+            {
+              target: 'rpm',
+              arch: ['x64', 'arm64', 'armv7l'],
+            },
           ],
           category: 'System',
         },
