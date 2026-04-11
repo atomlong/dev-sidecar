@@ -2,8 +2,16 @@
 
 ## Current Work
 - 版本发布：已完成 v2.1.2 发布，包含 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复；当前关注相关 Google / Copilot 请求的稳定性。
+- CI 修复：正在处理 GitHub Actions 的跨平台构建稳定性，重点是 Windows 的 `node-gyp` Python 绑定，以及 macOS 下 Xray 资源参与 universal 合并导致的打包失败。
 
 ## Recent Changes
+- [CI] **GitHub Actions 构建修复**：
+    - 在 `.github/workflows/build-and-release.yml` 中显式将 `PYTHON`、`npm_config_python`、`NODE_GYP_FORCE_PYTHON` 绑定到 `actions/setup-python` 提供的 Python 3.10，避免 Windows 上 `node-gyp` 落回 Python 3.12 并触发 `distutils` 缺失错误。
+    - 增加 CI 调试输出，便于在日志中确认 `node-gyp` 实际使用的 Python 解释器。
+    - 已确认此前移除 macOS `universal` DMG 只是临时止血，不是根因修复。
+    - 根因是上游 Xray 的 macOS 二进制可能已经是 fat/universal Mach-O，electron-builder 在合并 universal App 时又会对 `extra/xray/xray` 再次执行 `lipo`，从而因架构重叠报错。
+    - 现改为在 `packages/gui/scripts/download-xray.js` 中对 macOS 的 Xray 二进制先按目标架构执行 `lipo -thin` 裁剪，再在 `packages/gui/vue.config.js` 中恢复 `universal` DMG 构建。
+    - `.github/workflows/test-and-upload.yml` 也同步固定 `node-gyp` Python 解释器，避免测试工作流与发布工作流行为不一致。
 - [Release] **v2.1.2**：
     - 同步升级 package 版本到 2.1.2。
     - 更新 `CHANGELOG.md`，记录 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复。
@@ -23,6 +31,7 @@
 
 ## Next Steps
 - 观察 v2.1.2 发布后的 `daily-cloudcode-pa.googleapis.com` 及其他 Google APIs 拦截路径的实际运行情况。
+- 观察修复后的 GitHub Actions `build-and-release` / `test-and-upload` 是否在 Windows / macOS / Linux 三个平台稳定通过，尤其确认 macOS `universal` DMG 已恢复正常产出。
 - 如需要对外发布补丁版本，更新 `CHANGELOG.md` 并走 `submit.sh` 发布流程。
 
 ## Active Considerations
