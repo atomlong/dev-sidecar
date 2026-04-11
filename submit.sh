@@ -17,7 +17,8 @@ DIFF_LINE_LIMIT=500
 PRIVATE_DIFF_FILE="private.diff"
 PUBLIC_DIFF_FILE="public.diff"
 CHANGELOG_FILE="CHANGELOG.md"
-LOCAL_PROXY_PORTS=(31181 20171)
+UPSTREAM_REMOTE_NAME="upstream"
+UPSTREAM_REMOTE_URL="https://github.com/docmirror/dev-sidecar.git"
 
 # Define Private Patterns List
 # Add any file or directory path that should stay PRIVATE on develop branch
@@ -117,73 +118,6 @@ log_warn() {
 # Exit: 0
 log_error() {
     echo -e "${RED}[ERROR] $1${NC}"
-}
-
-# --- Proxy Configuration Helper ---
-
-# Description: Configure git proxy based on available ports
-# Usage: configure_proxy
-# Params: None
-# Return: None
-# Exit: 0
-configure_proxy() {
-    log_info "Checking proxy configuration..."
-    
-    local current_http_proxy
-    local current_https_proxy
-    current_http_proxy=$(git config --get http.proxy || echo "")
-    current_https_proxy=$(git config --get https.proxy || echo "")
-    
-    # Function to test connectivity to GitHub
-    check_github_connection() {
-        local proxy="$1"
-        local opts="-I -s --connect-timeout 5"
-        if [ -n "$proxy" ]; then
-            opts="$opts --proxy $proxy"
-        fi
-        # Suppress output, return 0 if successful (exit code 0)
-        curl $opts https://github.com >/dev/null 2>&1
-    }
-
-    # 1. Check existing proxy configuration
-    if [ -n "$current_http_proxy" ]; then
-        log_info "Current http.proxy: $current_http_proxy"
-        if check_github_connection "$current_http_proxy"; then
-            log_info "Current proxy is valid. Keeping configuration."
-            return
-        else
-            log_warn "Current proxy is invalid or unreachable."
-        fi
-    fi
-
-    # 2. Try to find a working proxy from LOCAL_PROXY_PORTS
-    local found_proxy=""
-    for port in "${LOCAL_PROXY_PORTS[@]}"; do
-        local proxy_url="http://localhost:$port"
-        log_info "Testing local proxy: $proxy_url..."
-        
-        if check_github_connection "$proxy_url"; then
-            found_proxy="$proxy_url"
-            log_info "Found valid proxy: $found_proxy"
-            break
-        fi
-    done
-
-    # 3. Apply or clear configuration
-    if [ -n "$found_proxy" ]; then
-        if [ "$found_proxy" != "$current_http_proxy" ]; then
-            log_info "Setting git proxy to $found_proxy"
-            git config http.proxy "$found_proxy"
-            git config https.proxy "$found_proxy"
-        fi
-    else
-        log_info "No valid local proxy found."
-        if [ -n "$current_http_proxy" ] || [ -n "$current_https_proxy" ]; then
-             log_warn "Unsetting invalid git proxy configuration to allow direct connection."
-             git config --unset http.proxy
-             git config --unset https.proxy
-        fi
-    fi
 }
 
 STATUS_ORDER=("modified" "added" "deleted" "renamed" "copied" "unmerged" "untracked" "clean")
@@ -431,6 +365,7 @@ show_help() {
     echo "  --commit-public           Commit public changes. Requires 'COMMIT_MSG_PUBLIC' env var."
     echo "  --push-private            Push current private branch (develop or dev/xxx) to PRIVATE remotes only."
     echo "  --push-public             Sync public commits to public branch (main/feature...), then push to ALL remotes."
+    echo "  --sync-upstream           Fetch public changes from upstream, merge into local public branch, then merge back into develop."
     echo "  --release                 Prepare and push release branch/tag. Auto-detects version from CHANGELOG."
     echo "  --restore-private [ref]   Restore private files. Auto-detects source if ref is omitted."
     echo "  --help                    Show this help message."
@@ -489,6 +424,21 @@ get_main_branch_name() {
         # Default fallback if neither found (unlikely in valid repo)
         echo "main"
     fi
+}
+
+# Description: Get the configured upstream remote name.
+# Usage: get_upstream_remote_name
+get_upstream_remote_name() {
+    echo "$UPSTREAM_REMOTE_NAME"
+}
+
+# Description: List remotes that are allowed to receive pushes from submit workflow.
+#              The upstream remote is fetch-only and must never be pushed to.
+# Usage: get_push_remotes
+get_push_remotes() {
+    local upstream_remote
+    upstream_remote=$(get_upstream_remote_name)
+    git remote | grep -vx "$upstream_remote" || true
 }
 
 # --- Sanity Checks ---
@@ -1802,29 +1752,10 @@ detect_repo_visibility() {
     fi
     
     http_url=${http_url%.git}
-    
-    # Check for git proxy configuration
-    local git_proxy
-    git_proxy=$(git config --get http.proxy || echo "")
-    if [ -z "$git_proxy" ]; then
-        git_proxy=$(git config --get https.proxy || echo "")
-    fi
-    
-    # Strip potential carriage return from git config output
-    git_proxy=$(echo "$git_proxy" | tr -d '\r')
-
-    local curl_opts=""
-    if [ -n "$git_proxy" ]; then
-        export http_proxy="$git_proxy"
-        export https_proxy="$git_proxy"
-        # User suggested '-k' if proxy is used
-        curl_opts="-k"
-    fi
 
     # Check with curl (5s timeout)
     # "000" indicates connection failure.
-    # shellcheck disable=SC2086
-    local status_code=$(curl -I -s -o /dev/null -w "%{http_code}" --max-time 5 $curl_opts "$http_url")
+    local status_code=$(curl -I -s -o /dev/null -w "%{http_code}" --max-time 5 "$http_url")
     
     [ -n "$status_code" ] || status_code="000"
 
@@ -1842,6 +1773,102 @@ detect_repo_visibility() {
             echo "public"
             ;;
     esac
+}
+
+# Description: Ensure the upstream remote exists for fetching public changes.
+# Usage: ensure_upstream_remote
+ensure_upstream_remote() {
+    local upstream_remote
+    local existing_url
+
+    upstream_remote=$(get_upstream_remote_name)
+    existing_url=$(git remote get-url "$upstream_remote" 2>/dev/null || echo "")
+
+    if [ -z "$existing_url" ]; then
+        log_info "Adding upstream remote '$upstream_remote' -> $UPSTREAM_REMOTE_URL"
+        git remote add "$upstream_remote" "$UPSTREAM_REMOTE_URL"
+    else
+        log_info "Using existing upstream remote '$upstream_remote': $existing_url"
+    fi
+}
+
+# Description: Resolve the public branch ref to use from upstream.
+# Usage: get_upstream_public_ref <upstream_remote> <preferred_public_branch>
+get_upstream_public_ref() {
+    local upstream_remote="$1"
+    local preferred_public_branch="$2"
+    local detected_public_branch
+
+    if git show-ref --verify --quiet "refs/remotes/$upstream_remote/$preferred_public_branch"; then
+        echo "$upstream_remote/$preferred_public_branch"
+        return 0
+    fi
+
+    detected_public_branch=$(get_main_branch_name "$upstream_remote")
+    if git show-ref --verify --quiet "refs/remotes/$upstream_remote/$detected_public_branch"; then
+        echo "$upstream_remote/$detected_public_branch"
+        return 0
+    fi
+
+    log_error "Cannot find a public branch on upstream remote '$upstream_remote'."
+    return 1
+}
+
+# Description: Sync upstream public changes into local public branch, then merge them back into develop.
+# Usage: sync_upstream_branches
+sync_upstream_branches() {
+    local upstream_remote
+    local upstream_public_ref
+
+    if [ "$CURRENT_BRANCH" != "develop" ]; then
+        log_error "'--sync-upstream' currently only supports running from 'develop'."
+        exit 1
+    fi
+
+    upstream_remote=$(get_upstream_remote_name)
+    ensure_upstream_remote
+
+    log_info "Fetching $upstream_remote..."
+    if ! git fetch "$upstream_remote"; then
+        log_error "Failed to fetch upstream remote '$upstream_remote'."
+        exit 1
+    fi
+
+    upstream_public_ref=$(get_upstream_public_ref "$upstream_remote" "$BRANCH_PUBLIC") || exit 1
+
+    trap cleanup EXIT
+
+    if ! git show-ref --verify --quiet "refs/heads/$BRANCH_PUBLIC"; then
+        log_info "Creating local public branch '$BRANCH_PUBLIC' from '$upstream_public_ref'..."
+        git branch "$BRANCH_PUBLIC" "$upstream_public_ref"
+    fi
+
+    git checkout "$BRANCH_PUBLIC"
+    if git merge-base --is-ancestor "$upstream_public_ref" HEAD; then
+        log_info "Local '$BRANCH_PUBLIC' already contains '$upstream_public_ref'."
+    else
+        log_info "Merging '$upstream_public_ref' into '$BRANCH_PUBLIC'..."
+        if ! git merge --no-edit "$upstream_public_ref"; then
+            log_error "Upstream merge failed on '$BRANCH_PUBLIC'. Resolve conflicts manually."
+            trap - EXIT
+            exit 1
+        fi
+    fi
+
+    git checkout "$BRANCH_PRIVATE"
+    if git merge-base --is-ancestor "$BRANCH_PUBLIC" HEAD; then
+        log_info "'$BRANCH_PRIVATE' already contains the latest '$BRANCH_PUBLIC'."
+    else
+        log_info "Merging '$BRANCH_PUBLIC' back into '$BRANCH_PRIVATE'..."
+        if ! git merge --no-edit "$BRANCH_PUBLIC"; then
+            log_error "Merge of '$BRANCH_PUBLIC' into '$BRANCH_PRIVATE' failed. Resolve conflicts manually."
+            trap - EXIT
+            exit 1
+        fi
+    fi
+
+    trap - EXIT
+    log_info "Upstream sync completed locally. Review changes, then run '$0 --push-private' and/or '$0 --push-public'."
 }
 
 # --- Public Sync Conflict Helpers ---
@@ -2051,10 +2078,7 @@ ensure_git_root
 # 3.2.1 Configure Git to handle non-ASCII filenames correctly
 git config core.quotePath false
 
-# 3.2.2 Configure Proxy
-configure_proxy
-
-# 3.3 Branch Detection
+# 3.2.2 Branch Detection
 CURRENT_BRANCH=$(git branch --show-current)
 BRANCH_PRIVATE=""
 BRANCH_PUBLIC=""
@@ -2076,14 +2100,14 @@ else
     fi
 fi
 
-# 3.4 Sanity Check (Private Base Detection)
+# 3.3 Sanity Check (Private Base Detection)
 # Only verify base for private branches (develop or dev/*)
 # Skip check for read-only commands
 if [[ "$1" != "--print"* && "$1" != "--help" && -n "$BRANCH_PRIVATE" ]]; then
     check_private_base
 fi
 
-# 3.5 Command Processing
+# 3.4 Command Processing
 cmd="$1"
 
 case "$cmd" in
@@ -2207,11 +2231,15 @@ case "$cmd" in
         echo "$changes" | xargs git add
         git commit -m "$msg"
         ;;
+
+    --sync-upstream)
+        sync_upstream_branches
+        ;;
         
     --push-private)
-        remotes=$(git remote)
+        remotes=$(get_push_remotes)
         if [ -z "$remotes" ]; then
-            log_error "No remotes defined."
+            log_error "No push remotes defined."
             exit 1
         fi
 
@@ -2334,14 +2362,15 @@ case "$cmd" in
             exit 1
         fi
 
-        # Determine Primary Remote for fetching 'main' or public branch base
+        # Determine Primary Remote for fetching public branch base
+        push_remotes=$(get_push_remotes)
         primary_remote="origin"
-        if ! git remote | grep -q "^origin$"; then
-            primary_remote=$(git remote | head -n 1)
+        if ! echo "$push_remotes" | grep -q "^origin$"; then
+            primary_remote=$(echo "$push_remotes" | head -n 1)
         fi
         
         if [ -z "$primary_remote" ]; then
-            log_error "No remotes found. Cannot sync."
+            log_error "No push remotes found. Cannot sync."
             exit 1
         fi
         
@@ -2477,7 +2506,7 @@ case "$cmd" in
         fi
         
         # Multi-Remote Push Logic
-        remotes=$(git remote)
+        remotes=$(get_push_remotes)
         for remote in $remotes; do
             echo ""
             log_info "--- Processing remote: $remote ---"

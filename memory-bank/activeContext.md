@@ -3,7 +3,7 @@
 ## Current Work
 - 版本发布：已完成 v2.1.2 发布，包含 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复；当前关注相关 Google / Copilot 请求的稳定性。
 - CI 修复：正在处理 GitHub Actions 的跨平台构建稳定性，重点是 Windows 的 `node-gyp` Python 绑定，以及 macOS 下 Xray 资源参与 universal 合并导致的打包失败。
-- 工作流增强：已完成 `submit.sh --push-public` 冲突自动化改造与测试，当前正按 `.clinerules/workflows/submit.md` 执行提交与同步。
+- 工作流增强：正在继续演进 `submit.sh`，本轮聚焦于移除自动代理检测、补齐上游公共仓库同步能力，并保证现有 submit/release 流程职责清晰。
 
 ## Recent Changes
 - [Workflow] **`submit.sh` 公共同步增强**：
@@ -13,6 +13,10 @@
     - 当首次 `git cherry-pick -x --allow-empty` 冲突时，脚本会自动 `--abort` 后使用 `git cherry-pick -X <strategy>` 重试；若仍有未合并路径，则继续对剩余冲突文件执行 `--ours/--theirs` 强制收敛，再自动 `git cherry-pick --continue`。
     - 若自动解决后发现该 cherry-pick 实际已变成空提交，脚本会自动执行 `git cherry-pick --skip`，不再把仓库卡在“已解决冲突但无法 continue”的中间状态。
     - 已通过 `bash -n submit.sh` 语法检查、临时仓库 patch-id 跳过测试、以及真实文本冲突的自动重试策略测试。
+- [Workflow] **`submit.sh` 上游同步与网络职责收敛**：
+    - 删除脚本对本地代理端口的自动探测与 git proxy 自动改写，网络配置改由外部环境或用户自行控制。
+    - 新增 `--sync-upstream`，用于抓取 `docmirror/dev-sidecar` 的公共分支更新，先合并进本地 `master`/`main`，再回灌到 `develop`。
+    - 新增 fetch-only 的 `upstream` remote 约定，并在 `--push-private` / `--push-public` 中显式排除该 remote，避免把私有或发布分支误推到上游仓库。
 - [CI] **GitHub Actions 构建修复**：
     - 在 `.github/workflows/build-and-release.yml` 中显式将 `PYTHON`、`npm_config_python`、`NODE_GYP_FORCE_PYTHON` 绑定到 `actions/setup-python` 提供的 Python 3.10，避免 Windows 上 `node-gyp` 落回 Python 3.12 并触发 `distutils` 缺失错误。
     - 增加 CI 调试输出，便于在日志中确认 `node-gyp` 实际使用的 Python 解释器。
@@ -38,7 +42,7 @@
     - 同步更新了 `doc/wiki/Xray插件使用说明.md`。
 
 ## Next Steps
-- 确认本次 `submit.sh` 改动的 private/public 远程同步结果，并在需要时继续发布流程。
+- 通过临时仓库验证 `--sync-upstream` 的分支更新路径，并继续确认既有 `--push-private` / `--push-public` / `--release` 不受影响。
 - 若需要进一步接近真实环境验证，可在实际仓库上演练一次 `./submit.sh --push-public`，并优先确认私有 `gitlab` remote 的可达性。
 - 观察 v2.1.2 发布后的 `daily-cloudcode-pa.googleapis.com` 及其他 Google APIs 拦截路径的实际运行情况。
 - 重新触发并观察修复后的 GitHub Actions `build-and-release` / `test-and-upload` 是否在 Windows / macOS / Linux 三个平台稳定通过，尤其确认 macOS `universal` DMG 已恢复正常产出。
@@ -49,3 +53,4 @@
 - **拦截器健壮性**: Mitmproxy 的请求拦截链路中，`agent.options` 不能假定存在；后续新增规则需继续采用空值安全访问，避免类似空指针问题再次出现。
 - **分支纪律**: `develop` 属于私有分支，禁止推送到公共仓库；公共发布面应始终通过 `submit.sh --push-public` 同步到 `master` / `feature/*`。
 - **同步策略**: 当前 public sync 已具备 patch-id 去重、rerere 复用、默认 `ours` 的自动冲突收敛能力，以及空 cherry-pick 自动 skip；若特定场景更需要保留私有分支冲突块，可临时使用 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs`。
+- **上游约束**: `upstream` 仅用于 fetch 公共更新，不能参与 `--push-private` / `--push-public` 的推送目标集合。

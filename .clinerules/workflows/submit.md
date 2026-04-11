@@ -53,7 +53,31 @@ export COMMIT_MSG_PUBLIC="fix(biss): correct CRC calculation"
 
 推送时自动检测仓库可见性，跳过不可达或不适用的仓库。
 
-## 5. 发布新版本
+如需覆盖 `--push-public` 的默认冲突策略，可显式设置：
+
+```bash
+# 默认等价于 ours，一般无需设置
+export SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs
+./submit.sh --push-public
+```
+
+默认行为：
+- `--push-public` 默认按 `ours` 自动收敛冲突。
+- 如果自动解决后发现 cherry-pick 变成空提交，会自动 `git cherry-pick --skip`。
+
+## 5. 同步上游公共仓库
+
+```bash
+./submit.sh --sync-upstream
+```
+
+说明：
+- 当前建议只在 `develop` 上执行。
+- 脚本会确保存在 fetch-only 的 `upstream` remote（默认指向 `https://github.com/docmirror/dev-sidecar.git`）。
+- 会先抓取上游公共分支，再合并到本地 `master`/`main`，最后再把更新后的公共分支合并回 `develop`。
+- **不会自动 push**；完成后请按需要继续执行 `./submit.sh --push-private` 和/或 `./submit.sh --push-public`。
+
+## 6. 发布新版本
 
 当准备发布新版本时（如 `v2.1.0`）：
 
@@ -70,18 +94,18 @@ export COMMIT_MSG_PUBLIC="fix(biss): correct CRC calculation"
 - 创建并推送 Git Tag（如 `v2.1.0`）。
 - 触发 GitHub Actions 自动构建和发布 Release。
 
-## 6. 网络与代理
+## 7. 网络与代理
 
-脚本内置自动代理检测功能（默认检查端口 `31181`, `20171`）。
-如果遇到网络问题（如 `GnuTLS recv error`），请确保本地代理服务已启动。
+脚本不再自动检测或改写 git 代理配置。
+如果遇到网络问题（如 `GnuTLS recv error`），请自行配置系统网络环境、环境变量代理，或 git 的 proxy 设置。
 
-## 7. 清理
+## 8. 清理
 
 ```bash
-unset COMMIT_MSG_PRIVATE COMMIT_MSG_PUBLIC
+unset COMMIT_MSG_PRIVATE COMMIT_MSG_PUBLIC SUBMIT_PUBLIC_CONFLICT_STRATEGY
 ```
 
-## 8. 报告
+## 9. 报告
 
 向用户报告：
 - 当前分支

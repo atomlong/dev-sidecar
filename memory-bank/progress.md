@@ -17,6 +17,8 @@
     - 默认使用 `ours` 自动收敛 `--push-public` 冲突，并支持 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs` 覆盖默认策略。
     - 在 `git cherry-pick -X <strategy>` 仍有未合并路径时，会继续对剩余冲突文件执行 `--ours/--theirs` 强制收敛并自动 `git cherry-pick --continue`。
     - 当自动解决后发现 cherry-pick 已变成空提交时，会自动执行 `git cherry-pick --skip`，避免脚本停在公共分支等待人工处理。
+    - 已移除自动代理探测 / git proxy 自动改写逻辑，避免脚本隐式修改网络配置。
+    - 已新增 `--sync-upstream`，支持把 `docmirror/dev-sidecar` 的公共更新合并到本地公共分支并回灌到 `develop`，同时显式排除 `upstream` remote 的推送路径。
     - 已完成 shell 语法检查、patch-id skip 集成测试，以及真实文本冲突场景下的自动重试策略测试。
 - [x] **DevOps**: 
     - 自动化 Release Notes 生成 (Based on CHANGELOG)。
