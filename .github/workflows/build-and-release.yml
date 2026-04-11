@@ -64,6 +64,25 @@ jobs:
           echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
           "$PYTHON" --version
 
+      - name: Pin node-gyp to setup-python interpreter
+        shell: bash
+        run: |
+          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
+          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
+          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
+          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
+
+      - name: Print pinned node-gyp python
+        shell: bash
+        run: |
+          echo "======================================================================"
+          echo "Pinned Python for node-gyp"
+          echo "--------------------"
+          echo "PYTHON=$PYTHON"
+          echo "npm_config_python=$npm_config_python"
+          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
+          "$PYTHON" --version
+
       - name: Get package info
         id: package-info
         uses: luizfelipelaviola/get-package-info@v1
