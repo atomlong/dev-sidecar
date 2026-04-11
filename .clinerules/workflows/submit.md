@@ -64,6 +64,7 @@ export SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs
 默认行为：
 - `--push-public` 默认按 `ours` 自动收敛冲突。
 - 如果自动解决后发现 cherry-pick 变成空提交，会自动 `git cherry-pick --skip`。
+- 若本地公共分支已领先远程（例如刚合并了上游公共仓库），脚本会跳过 `pull --rebase`，避免把本地 merge 历史错误改写；仅在需要时做 fast-forward 或普通 merge。
 
 ## 5. 同步上游公共仓库
 

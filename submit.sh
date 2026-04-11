@@ -1871,6 +1871,52 @@ sync_upstream_branches() {
     log_info "Upstream sync completed locally. Review changes, then run '$0 --push-private' and/or '$0 --push-public'."
 }
 
+# Description: Synchronize the current public branch with its tracked upstream without
+#              blindly rebasing local merge history.
+# Usage: sync_current_public_branch_with_upstream
+# Exit: 0 on success, 1 on conflict/failure
+sync_current_public_branch_with_upstream() {
+    local upstream_ref
+    local counts
+    local behind
+    local ahead
+
+    upstream_ref=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "")
+    if [ -z "$upstream_ref" ]; then
+        return 0
+    fi
+
+    counts=$(git rev-list --left-right --count "@{u}...HEAD")
+    behind=$(echo "$counts" | awk '{print $1}')
+    ahead=$(echo "$counts" | awk '{print $2}')
+
+    if [ "$behind" -eq 0 ]; then
+        if [ "$ahead" -eq 0 ]; then
+            log_info "'$BRANCH_PUBLIC' is already up to date with '$upstream_ref'."
+        else
+            log_info "'$BRANCH_PUBLIC' is ahead of '$upstream_ref' by $ahead commit(s); skipping pull/rebase."
+        fi
+        return 0
+    fi
+
+    if [ "$ahead" -eq 0 ]; then
+        log_info "Fast-forwarding '$BRANCH_PUBLIC' from '$upstream_ref'..."
+        if ! git merge --ff-only "$upstream_ref"; then
+            log_error "Failed to fast-forward '$BRANCH_PUBLIC' from '$upstream_ref'."
+            return 1
+        fi
+        return 0
+    fi
+
+    log_warn "'$BRANCH_PUBLIC' has diverged from '$upstream_ref' (ahead: $ahead, behind: $behind). Merging remote changes instead of rebasing..."
+    if ! git merge --no-edit "$upstream_ref"; then
+        log_error "Failed to merge '$upstream_ref' into '$BRANCH_PUBLIC'. Resolve conflicts manually."
+        return 1
+    fi
+
+    return 0
+}
+
 # --- Public Sync Conflict Helpers ---
 
 # Description: Validate automatic conflict strategy for public sync.
@@ -2465,10 +2511,12 @@ case "$cmd" in
             git checkout "$BRANCH_PUBLIC"
         fi
 
-        # Pull latest changes if tracked
+        # Synchronize tracked public branch without rewriting local merge history.
         if git rev-parse --verify @{u} >/dev/null 2>&1; then
-            log_info "Pulling latest changes for $BRANCH_PUBLIC..."
-            git pull --rebase || log_warn "Pull failed or no upstream."
+            if ! sync_current_public_branch_with_upstream; then
+                trap - EXIT
+                exit 1
+            fi
         fi
 
         # Build sync range using patch-id aware detection to avoid replaying equivalent commits.

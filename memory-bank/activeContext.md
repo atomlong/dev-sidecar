@@ -17,6 +17,7 @@
     - 删除脚本对本地代理端口的自动探测与 git proxy 自动改写，网络配置改由外部环境或用户自行控制。
     - 新增 `--sync-upstream`，用于抓取 `docmirror/dev-sidecar` 的公共分支更新，先合并进本地 `master`/`main`，再回灌到 `develop`。
     - 新增 fetch-only 的 `upstream` remote 约定，并在 `--push-private` / `--push-public` 中显式排除该 remote，避免把私有或发布分支误推到上游仓库。
+    - 修复 `--push-public` 在本地公共分支已经领先远程时仍执行 `git pull --rebase` 的问题；现在会根据 ahead/behind 状态选择跳过、fast-forward 或 merge，避免把上游同步得到的 merge 历史改写成 rebase 冲突现场。
 - [CI] **GitHub Actions 构建修复**：
     - 在 `.github/workflows/build-and-release.yml` 中显式将 `PYTHON`、`npm_config_python`、`NODE_GYP_FORCE_PYTHON` 绑定到 `actions/setup-python` 提供的 Python 3.10，避免 Windows 上 `node-gyp` 落回 Python 3.12 并触发 `distutils` 缺失错误。
     - 增加 CI 调试输出，便于在日志中确认 `node-gyp` 实际使用的 Python 解释器。
