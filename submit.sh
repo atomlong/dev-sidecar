@@ -1929,6 +1929,12 @@ continue_public_cherry_pick_if_resolved() {
         return 1
     fi
 
+    if git diff --cached --quiet --ignore-submodules -- && git diff --quiet --ignore-submodules --; then
+        log_info "Cherry-pick for $commit became empty after automatic resolution. Skipping it..."
+        git cherry-pick --skip
+        return 0
+    fi
+
     log_info "All conflicts for $commit were resolved automatically. Continuing cherry-pick..."
     git cherry-pick --continue
 }
