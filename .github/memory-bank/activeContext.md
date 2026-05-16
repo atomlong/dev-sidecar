@@ -1,8 +1,8 @@
 # Active Context
 
 ## Current Work
-- Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除，以及“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化；工作重点已转入 v2.1.3 发布前收尾与验证。
-- 版本发布：当前处于 v2.1.3 预发布阶段，已更新四个工作区版本号、收缩 `CHANGELOG.md`、并重新构建安装包；下一步聚焦发布前核查而非继续扩展功能。
+- Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除，以及“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化；当前重点已转为发布后观察而非继续扩展功能。
+- 版本发布：`v2.1.3` 已于 2026-05-16 完成公开发布推送（`origin/master`、`origin/release-v2.1.x`、tag `v2.1.3`）；后续重点是观察 GitHub release / Actions 结果并补齐私有远端同步。
 - CI 修复：正在处理 GitHub Actions 的跨平台构建稳定性，重点是 Windows 的 `node-gyp` Python 绑定，以及 macOS 下 Xray 资源参与 universal 合并导致的打包失败。
 - 工作流增强：正在继续演进 `submit.sh`，本轮聚焦于移除自动代理检测、补齐上游公共仓库同步能力，并保证现有 submit/release 流程职责清晰。
 
@@ -11,6 +11,10 @@
     - 四个工作区包版本（core / cli / gui / mitmproxy）已提升到 `2.1.3`；根 `package.json` 无版本号，不需要改。
     - `CHANGELOG.md` 的 `v2.1.3` 条目已收敛到 staged workflow、阶段门控、egress probe 清理、Linux 打包依赖修复、Stage 3 observatory 覆盖修复与 SQLite 缩容修复。
     - 已重新构建一版 `2.1.3` 安装包。
+- [Release] **v2.1.3 已发布**：
+    - `CHANGELOG.md` 顶部版本日期已落到 `2026-05-16`。
+    - 已在 GitHub `origin` 上推送 `master`、`release-v2.1.x` 和 tag `v2.1.3`，三者当前指向同一提交 `121daf5`。
+    - `submit.sh --push-private` / `--push-public` 在 `gitlab` 远端都因 HTTP Basic / token 鉴权失败而中断，因此私有远端 `gitlab/develop` 当前仍落后本地 `develop` 2 个提交；公开发布已通过手动 `git push origin master` + `./submit.sh --release` 完成。
 - [Plugin] **Xray 阶段门控与缓存优先模式**：
     - 新增 `subscriptionSyncLowWatermark`：当“有效缓存数”（按 stable/maxDelay/country/owner SQLite 过滤统计）达到阈值时，第二阶段跳过远端订阅抓取，但仍保留本地源合并与缓存写回。
     - 新增 `cacheRefreshEnabled`：允许显式关闭第三阶段后台周期探测与 metadata 回填；默认值保持兼容，为 `true`。
@@ -71,8 +75,9 @@
     - 同步更新了 `doc/wiki/Xray插件使用说明.md`。
 
 ## Next Steps
-- 完成 v2.1.3 发布前最后核查：确认 `CHANGELOG.md`、四个工作区版本号、安装包构建产物命名、以及运行态日志结论一致。
+- 观察 GitHub Actions / GitHub Release 是否基于 `release-v2.1.x` 与 tag `v2.1.3` 正常产出发布页和附件。
 - 继续观察 `nodes_cache.state.json` 方案在真实运行中的稳定性，确认仅基于 `cfg.nodes` 的签名范围足够，或决定是否把更多本地输入纳入签名。
+- 单独处理 `gitlab` 远端鉴权，决定是否要补推本地 `develop` 的 2 个 release 相关提交到私有仓库。
 - 决定是否在正式发布前保留当前个人配置中的“缓存优先 + 第三阶段关闭”模式，或仅将其作为高级可选能力而非默认推荐路径。
 - 针对 `NXDOMAIN`、无 country、无 owner 的节点进一步评估处理策略，决定是更激进地在第三阶段淘汰，还是引入额外轻量标记字段辅助排查。
 - 当前代码已经进入预发布整理阶段；后续优先级是发布核查，不是继续扩展新功能。
@@ -92,5 +97,6 @@
 - **发布流程**: 在打包 Xray Core 后可能会导致应用程序整体大小略有增加（约十几MB），需要观察下载体验的影响。后续需保持对 Xray-core release 版本的关注，在必要时再次发起内置核心更新的变更。
 - **拦截器健壮性**: Mitmproxy 的请求拦截链路中，`agent.options` 不能假定存在；后续新增规则需继续采用空值安全访问，避免类似空指针问题再次出现。
 - **分支纪律**: `develop` 属于私有分支，禁止推送到公共仓库；公共发布面应始终通过 `submit.sh --push-public` 同步到 `master` / `feature/*`。
+- **远端现实状态**: 当前公开发布已成功落到 GitHub `origin`，但 `gitlab` 鉴权失败导致私有远端仍未同步；后续若要恢复标准流程，需要先修复 GitLab token / password 配置。
 - **同步策略**: 当前 public sync 已具备 patch-id 去重、rerere 复用、默认 `ours` 的自动冲突收敛能力，以及空 cherry-pick 自动 skip；若特定场景更需要保留私有分支冲突块，可临时使用 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs`。
 - **上游约束**: `upstream` 仅用于 fetch 公共更新，不能参与 `--push-private` / `--push-public` 的推送目标集合。

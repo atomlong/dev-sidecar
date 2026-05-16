@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.1.3 (Release Prep)
+- **Current Version**: 2.1.3 (Released on 2026-05-16)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
@@ -45,6 +45,11 @@
     - 已重新构建一版 2.1.3 Linux 安装包。
     - 已通过运行日志验证：在个人配置 `subscriptionSyncLowWatermark=1`、`cacheRefreshEnabled=false` 下，第二阶段会跳过 245 个订阅 URL 抓取，第三阶段会在缓存同步后明确跳过。
     - 已重新部署到 `/opt/dev-sidecar`，第一次重启成功写出 `nodes_cache.state.json`，第二次重启已在系统日志中验证“订阅跳过且本地输入未变化 => 第二阶段整段跳过”。
+- [x] **Release v2.1.3 Publish**:
+    - 已将 `CHANGELOG.md` 顶部版本日期设置为 `2026-05-16`。
+    - 已推送 GitHub `origin/master`。
+    - 已推送 GitHub `origin/release-v2.1.x`。
+    - 已创建并推送 tag `v2.1.3`。
 - [x] **Release v2.1.2**:
     - 同步升级各 package 版本至 2.1.2。
     - 更新 `CHANGELOG.md`，记录 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复。
@@ -67,6 +72,7 @@
 - [ ] 与其他代理软件（如 Watt Toolkit、Clash）共存时可能存在端口冲突。
 - [ ] 当前 Xray staged workflow 已有定向测试与真实日志验证，但距离完整发布回归仍有差距，发布前仍应至少复查核心构建与关键运行态日志。
 - [ ] `nodes_cache.state.json` 当前只覆盖手工节点签名；若后续需要把更多本地来源纳入“本地输入未变化”的判定，需扩展签名范围并同步升级语义版本。
+- [ ] `gitlab` 远端当前因 HTTP Basic / token 鉴权失败，私有分支 `develop` 尚未补推本地最新 2 个 release 提交；若私有仓库仍是正式工作流的一部分，需要后续单独修复凭据并补同步。
 - [ ] 部分节点会因域名本身解析失败而长期缺少 country / owner，例如 `sg1n.asasone.cyou` 当前解析结果为 `NXDOMAIN`；这类节点的清理策略仍需进一步确认。
 
 ## Roadmap
