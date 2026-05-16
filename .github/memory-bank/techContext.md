@@ -33,6 +33,7 @@
     - 自动从 `CHANGELOG.md` 提取版本更新日志。
     - 使用 `softprops/action-gh-release` 发布 GitHub Release。
 - **Version Control**: `submit.sh` 脚本管理开发/发布分支流程，支持私有/公共仓库分离。
+- **Current Release Prep**: `v2.1.3` 当前只同步四个工作区包版本（core / cli / gui / mitmproxy）；根 `package.json` 无版本号。Linux 安装版已成功重新构建为 `2.1.3`。
 
 ## Project Structure
 ```text
@@ -54,3 +55,5 @@
 - **Port**: Default proxy port is 31181. Xray uses a dynamic port (default 10801 or random).
 - **System Proxy**: Modifies global system proxy settings, potential conflict with other VPN/Proxy tools.
 - **Platform Specifics**: Windows/Mac/Linux handling for CA installation and proxy settings varies significantly. Linux requires GNOME for automatic system proxy.
+- **Xray Cache Gatekeeping**: `subscriptionSyncLowWatermark` 通过 SQLite 过滤计数决定是否跳过远端订阅抓取；`cacheRefreshEnabled` 会直接控制第三阶段调度与后续定时刷新。
+- **Xray Local Input State**: 第二阶段现使用 `nodes_cache.state.json` sidecar 文件记录本地输入签名。状态文件与 `nodes_cache.sqlite` 同目录，采用 JSON 文本、临时文件写入后原子 `rename` 覆盖；缺失或损坏时自动回退到完整第二阶段。

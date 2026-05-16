@@ -40,6 +40,11 @@ flowchart TD
         - 生成 Xray 配置文件 (`gen_config.js`)。
         - 管理 Xray 子进程。
         - 动态注入 `tunnel://` 拦截规则到 Mitmproxy。
+        - 当前采用明确的三阶段流水线：
+            - 第一阶段：从旧缓存中按 `allowedCountries`、`allowedOwners`、延迟条件筛出少量候选，做启动前快速复检，仅用于尽快拉起 Xray。
+            - 第二阶段：默认会汇总本地源（运行配置备份、旧缓存、手动节点），并仅在有效缓存数低于 `subscriptionSyncLowWatermark` 时抓取远端订阅；若订阅已跳过且 `nodes_cache.state.json` 记录的本地输入签名与当前一致，则整段第二阶段直接跳过。
+            - 第三阶段：仅在 `cacheRefreshEnabled !== false` 时运行；按批次探测缓存节点，并在探测成功后补充 `country` / `owner` 等 metadata，同时逐步淘汰不可用节点。
+        - 第一阶段的 `bootstrapCandidateLimit` 表示“启动前最多进入快速复检的候选节点上限”，不是第三阶段那种批处理 batch size。
 
 ### 3. Mitmproxy (`@docmirror/mitmproxy`)
 - **Server**: 启动 HTTP/HTTPS 代理服务器。
@@ -63,3 +68,10 @@ flowchart TD
 2.  **请求处理 (普通)**: App -> System Proxy -> Mitmproxy -> (Interceptor Check) -> (DNS Lookup) -> Target Server。
 3.  **请求处理 (Xray)**: App -> System Proxy -> Mitmproxy -> (Match Rule: `tunnel://`) -> Mitmproxy Tunnel Agent -> Xray Core (Local Port) -> VLESS/VMess -> Target Server.
 4.  **日志**: Proxy/Core -> LogUtil -> GUI Log Viewer (通过 IPC 或文件读取)。
+
+## Xray Metadata Notes
+- 第一阶段为了避免拖慢冷启动，只消费缓存里已有的 `country` / `owner`；启动前快速复检不再启动 egress metadata probe。
+- 第二阶段会保留上一次缓存中已有的 metadata，不会把已存在的 `country` / `owner` 清掉；当候选集未变化时，会跳过缓存重写。
+- 第二阶段的本地输入状态 sidecar 文件固定命名为 `nodes_cache.state.json`，与 `nodes_cache.sqlite` 同目录；当前签名只覆盖 `cfg.nodes` 解析后的手工节点集合，不覆盖 `liveConfigBak`。
+- 第三阶段的 `annotateProbeEntries` 仍是主动 metadata 补全的主入口；如果用户关闭 `cacheRefreshEnabled`，则自动 metadata 校正也会一起停掉。
+- `subscriptionSyncLowWatermark` 的判断依赖 SQLite `countCacheEntries()` 与 stable/maxDelay/country/owner 过滤，目标是统计“对第一阶段真正有意义的有效缓存数”。

@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.1.2 (Released)
+- **Current Version**: 2.1.3 (Release Prep)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
@@ -30,6 +30,21 @@
     - 支持订阅解析与自动更新。
     - 支持 `tunnel://` 透明代理转发。
     - 支持全局节点去重。
+    - 已新增 `subscriptionSyncLowWatermark`，允许在有效缓存已足够时跳过第二阶段远端订阅抓取。
+    - 已新增 `cacheRefreshEnabled`，允许显式关闭第三阶段后台周期探测。
+    - 已新增 `nodes_cache.state.json` 本地输入状态文件；当订阅已跳过且手工节点签名未变化时，第二阶段可整段跳过。
+    - 第一阶段快速复检已改为直接复用缓存 `country` / `owner`，不再启动 egress metadata probe。
+    - egress metadata 临时 Xray 进程已改为在拿到出口 IP 后立即停止，避免空闲子进程泄漏。
+    - 第一阶段现支持 `allowedOwners`，可按 owner 名称做大小写不敏感匹配与排除，例如 `!cloudflare`。
+    - 第一阶段 bootstrap 候选选择已改为边筛边取，达到 `bootstrapCandidateLimit` 即停止，减少大缓存场景下的冷启动拖延。
+    - 第二阶段已恢复为轻量缓存同步：保留旧缓存已存在的 `country` / `owner` 等 metadata，但不再对全量候选主动回填，避免阻塞第三阶段。
+    - 当前同时支持“第二阶段快速完成后进入第三阶段”和“缓存优先 + 第三阶段关闭”的两种运行模式。
+- [x] **Release v2.1.3 Prep**:
+    - 已同步升级四个工作区 package 版本至 2.1.3。
+    - 已更新并收缩 `CHANGELOG.md` 的 v2.1.3 条目。
+    - 已重新构建一版 2.1.3 Linux 安装包。
+    - 已通过运行日志验证：在个人配置 `subscriptionSyncLowWatermark=1`、`cacheRefreshEnabled=false` 下，第二阶段会跳过 245 个订阅 URL 抓取，第三阶段会在缓存同步后明确跳过。
+    - 已重新部署到 `/opt/dev-sidecar`，第一次重启成功写出 `nodes_cache.state.json`，第二次重启已在系统日志中验证“订阅跳过且本地输入未变化 => 第二阶段整段跳过”。
 - [x] **Release v2.1.2**:
     - 同步升级各 package 版本至 2.1.2。
     - 更新 `CHANGELOG.md`，记录 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复。
@@ -50,6 +65,9 @@
 - [ ] Windows 下关机/重启时若未退出应用，可能导致系统代理未还原（已在 1.8.9 修复，但需持续关注）。
 - [ ] 部分 Linux 系统下系统代理设置可能不生效或需要 root 权限（目前仅支持 GNOME `gsettings`）。
 - [ ] 与其他代理软件（如 Watt Toolkit、Clash）共存时可能存在端口冲突。
+- [ ] 当前 Xray staged workflow 已有定向测试与真实日志验证，但距离完整发布回归仍有差距，发布前仍应至少复查核心构建与关键运行态日志。
+- [ ] `nodes_cache.state.json` 当前只覆盖手工节点签名；若后续需要把更多本地来源纳入“本地输入未变化”的判定，需扩展签名范围并同步升级语义版本。
+- [ ] 部分节点会因域名本身解析失败而长期缺少 country / owner，例如 `sg1n.asasone.cyou` 当前解析结果为 `NXDOMAIN`；这类节点的清理策略仍需进一步确认。
 
 ## Roadmap
 - [ ] **v2.2.0**: 增强插件系统，支持更多自定义脚本。

@@ -31,12 +31,16 @@ PRIVATE_PATTERNS=(
     "^\.kilocode/"
     "^\.roo/"
     "^\.continue/"
+    "^\.github/instructions/"
+    "^\.github/memory-bank/"
+    "^\.github/prompts/"
     "^\.clineignore"
     "^\.rooignore"
     "^\.kilocodeignore"
     "^memory-bank/"
     "^AGENTS\.md"
     "^CLINE\.md"
+    "^\.github/.*-instructions.md"
     "^openspec/"
     "^scripts/"
     "^images/"
@@ -691,8 +695,20 @@ find_best_parent() {
 # Return: List of filenames (Stdout), with directories expanded to individual files
 # Exit: 0
 get_changed_files() {
-    # Use git status with -uall to expand directories automatically
-    git status --porcelain -uall | sed 's/^...//'
+    # Use git status with -uall to expand directories automatically.
+    # For rename/copy entries, emit both the old and new path so callers can
+    # safely stage the deletion/addition pair with pathspec-aware git add.
+    git status --porcelain -uall | sed 's/^...//' | while IFS= read -r file; do
+        case "$file" in
+            *" -> "*)
+                printf '%s\n' "${file%% -> *}"
+                printf '%s\n' "${file#* -> }"
+                ;;
+            *)
+                printf '%s\n' "$file"
+                ;;
+        esac
+    done
 }
 
 # Description: Check if a file matches private patterns
@@ -2251,7 +2267,7 @@ case "$cmd" in
         fi
         
         log_info "Committing Private changes..."
-        echo "$changes" | xargs git add
+        printf '%s\n' "$changes" | git add -A --pathspec-from-file=-
         git commit -m "$msg"
         ;;
         
@@ -2274,7 +2290,7 @@ case "$cmd" in
         fi
         
         log_info "Committing Public changes..."
-        echo "$changes" | xargs git add
+        printf '%s\n' "$changes" | git add -A --pathspec-from-file=-
         git commit -m "$msg"
         ;;
 
