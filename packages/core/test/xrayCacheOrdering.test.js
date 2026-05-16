@@ -47,7 +47,7 @@ describe('xray cache ordering', () => {
         {
           node: createNode('1.1.1.1', 80),
           stable: false,
-          delay: null,
+          delay: 300,
           source: 'source-sync',
           updatedAt: '2026-05-10T00:00:00.000+08:00',
         },
