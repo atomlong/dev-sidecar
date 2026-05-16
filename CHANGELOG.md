@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.1.3] - 2026-05-16
+
+### Added
+- Added staged Xray workflow controls, including startup filters and cache refresh settings.
+- Added Xray stage-gating options: `subscriptionSyncLowWatermark` and `cacheRefreshEnabled`.
+
+### Changed
+- Changed Xray startup to prefer stable nodes from the previous SQLite cache and to reuse cached `country`/`owner` metadata during stage 1 quick recheck.
+- Changed post-start refresh into a multi-source cache rebuild with optional remote subscription fetching, followed by optional stage 3 cache-only probing.
+- Changed stage 3 to use fixed rotating SQLite rowid batches and to keep only live cache entries with current metadata.
+
+### Fixed
+- Fixed Xray cache persistence to retain `stable`/`delay`/`country`/`owner` metadata for later startup selection.
+- Fixed packaged Linux runtime cache access by bundling the missing `better-sqlite3` runtime dependencies.
+- Fixed idle egress metadata probe process leaks by stopping temporary Xray instances immediately after exit-IP detection.
+- Fixed Linux packaging noise by skipping RPM targets automatically when `rpmbuild` is unavailable and by bundling required Xray platform resources.
+- Fixed stage 3 batch acceptance to require full observatory coverage before write-back, preventing partial-metrics misdeletion.
+- Fixed SQLite shrink behavior after large stage 3 deletions by allowing aggressive incremental vacuum when the cache file is mostly free pages.
+
 ## [v2.1.2] - 2026-04-07
 
 ### Fixed

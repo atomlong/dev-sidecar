@@ -1,7 +1,8 @@
 {
   "name": "@docmirror/dev-sidecar-gui",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "private": false,
+  "description": "给开发者的加速代理工具图形界面",
   "author": {
     "email": "xiaojunnuo@qq.com",
     "name": "Greper"
@@ -27,8 +28,11 @@
     "@vscode/sudo-prompt": "^9.3.1",
     "adm-zip": "^0.5.16",
     "ant-design-vue": "^1.7.8",
+    "better-sqlite3": "11.10.0",
+    "bindings": "^1.5.0",
     "electron-baidu-tongji": "^1.0.5",
     "electron-updater": "^6.3.9",
+    "file-uri-to-path": "^1.0.0",
     "json5": "^2.2.3",
     "lodash": "^4.17.21",
     "request-progress": "^3.0.0",
