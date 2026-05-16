@@ -145,9 +145,11 @@ module.exports = {
       let unVerifySsl = agentOptions.rejectUnauthorized === false
 
       rOptions.servername = interceptOpt.sni
-      if (agentOptions.rejectUnauthorized && rOptions.agent && rOptions.agent.unVerifySslAgent) {
-        // rOptions.agent.options.rejectUnauthorized = false // 不能直接在agent上修改属性值，因为它采用了单例模式，所有请求共用这个对象的
-        rOptions.agent = rOptions.agent.unVerifySslAgent
+      if (!unVerifySsl && rOptions.protocol === 'https:') {
+        if (rOptions.agent && rOptions.agent.unVerifySslAgent) {
+          rOptions.agent = rOptions.agent.unVerifySslAgent
+        }
+        rOptions.rejectUnauthorized = false
         unVerifySsl = true
       }
 

@@ -36,6 +36,7 @@
 4. [在Arch/Fedora下的证书安装](https://github.com/docmirror/dev-sidecar/issues/204)
 5. [Mac安装：`无法打开“dev-sidecar”，因为无法验证开发者。` 的解决方案](https://github.com/docmirror/dev-sidecar/issues/147)
 6. [在 WSL 中的使用方法](https://github.com/docmirror/dev-sidecar/issues/73)
+7. [VS Code 登录微软账户与 WSL2 代理](https://github.com/docmirror/dev-sidecar/wiki/VSCode%E7%99%BB%E5%BD%95%E5%BE%AE%E8%BD%AF%E8%B4%A6%E6%88%B7%E4%B8%8EWSL2%E4%BB%A3%E7%90%86)
 
 [> 点击前往Issue区查找更多帮助信息](https://github.com/docmirror/dev-sidecar/issues)
 

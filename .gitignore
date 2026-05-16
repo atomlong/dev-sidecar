@@ -33,3 +33,7 @@ pnpm-debug.log*
 /run
 /release
 /*.diff
+
+/.feedback
+_script/__pycache__/
+_script/xray-invalid-nodes-report*.json

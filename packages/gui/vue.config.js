@@ -1,10 +1,42 @@
 const path = require('node:path')
+const { spawnSync } = require('node:child_process')
 const { defineConfig } = require('@vue/cli-service')
 const webpack = require('webpack')
+
+process.env.BROWSERSLIST_IGNORE_OLD_DATA = 'true'
 
 const publishUrl = process.env.VUE_APP_PUBLISH_URL
 const publishProvider = process.env.VUE_APP_PUBLISH_PROVIDER
 console.log('Publish url:', publishUrl)
+
+function hasExecutable (command, args = ['--version']) {
+  const result = spawnSync(command, args, { stdio: 'ignore' })
+  return !result.error && result.status === 0
+}
+
+const linuxTargets = [
+  {
+    target: 'deb',
+    arch: ['x64', 'arm64', 'armv7l'],
+  },
+  {
+    target: 'AppImage',
+    arch: ['x64', 'arm64', 'armv7l'],
+  },
+  {
+    target: 'tar.gz',
+    arch: ['x64', 'arm64', 'armv7l'],
+  },
+]
+
+if (hasExecutable('rpmbuild')) {
+  linuxTargets.push({
+    target: 'rpm',
+    arch: ['x64', 'arm64', 'armv7l'],
+  })
+} else {
+  console.log('Skip linux rpm target: rpmbuild not found')
+}
 
 module.exports = defineConfig({
   pages: {
@@ -15,6 +47,12 @@ module.exports = defineConfig({
   },
   lintOnSave: false,
   configureWebpack: {
+    ignoreWarnings: [
+      {
+        module: /log4js[\\/]lib[\\/]appenders[\\/]index\.js$/,
+        message: /Critical dependency: the request of a dependency is an expression/,
+      },
+    ],
     plugins: [
       new webpack.DefinePlugin({ 'global.GENTLY': true }),
     ],
@@ -37,6 +75,9 @@ module.exports = defineConfig({
       // Ref: https://github.com/nklayman/vue-cli-plugin-electron-builder/issues/1891
       customFileProtocol: './',
       externals: [
+        'better-sqlite3',
+        'bindings',
+        'file-uri-to-path',
         '@starknt/sysproxy',
         '@starknt/sysproxy-win32-ia32-msvc',
         '@starknt/sysproxy-win32-x64-msvc',
@@ -71,21 +112,23 @@ module.exports = defineConfig({
             to: 'extra',
             filter: [
               '**/*',
-              '!xray/**'
-            ]
+              '!xray/**',
+            ],
           },
           {
             from: 'extra/xray',
             to: 'extra/xray',
             filter: [
+              '*.mmdb',
               'geoip.dat',
-              'geosite.dat'
-            ]
+              'geosite.dat',
+            ],
           },
           {
+            // eslint-disable-next-line no-template-curly-in-string
             from: 'extra/xray/${os}/${arch}',
-            to: 'extra/xray'
-          }
+            to: 'extra/xray',
+          },
         ],
         appId: 'dev-sidecar',
         productName: 'dev-sidecar',
@@ -110,24 +153,7 @@ module.exports = defineConfig({
         },
         linux: {
           icon: 'build/mac/',
-          target: [
-            {
-              target: 'deb',
-              arch: ['x64', 'arm64', 'armv7l'],
-            },
-            {
-              target: 'AppImage',
-              arch: ['x64', 'arm64', 'armv7l'],
-            },
-            {
-              target: 'tar.gz',
-              arch: ['x64', 'arm64', 'armv7l'],
-            },
-            {
-              target: 'rpm',
-              arch: ['x64', 'arm64', 'armv7l'],
-            },
-          ],
+          target: linuxTargets,
           category: 'System',
         },
         mac: {
@@ -147,6 +173,14 @@ module.exports = defineConfig({
         },
       },
       chainWebpackMainProcess (config) {
+        config.merge({
+          ignoreWarnings: [
+            {
+              module: /log4js[\\/]lib[\\/]appenders[\\/]index\.js$/,
+              message: /Critical dependency: the request of a dependency is an expression/,
+            },
+          ],
+        })
         config.entry('mitmproxy').add(path.join(__dirname, 'src/bridge/mitmproxy.js'))
       },
     },

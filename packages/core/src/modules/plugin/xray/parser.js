@@ -15,6 +15,101 @@ function safeBase64Decode (b64) {
   return Buffer.from(str, 'base64').toString('utf-8')
 }
 
+function normalizeVlessFlow (value) {
+  const flow = String(value || '').trim()
+  if (!flow || flow === 'none') {
+    return ''
+  }
+
+  return /^(xtls-rprx-vision|xtls-rprx-vision-udp443)$/.test(flow) ? flow : ''
+}
+
+function sanitizeNodeForCurrentXray (node) {
+  if (!node || typeof node !== 'object') {
+    return node
+  }
+
+  if (node.protocol !== 'vless') {
+    return node
+  }
+
+  const users = node.settings?.vnext?.[0]?.users
+  if (!Array.isArray(users)) {
+    return node
+  }
+
+  for (const user of users) {
+    if (!user || typeof user !== 'object') {
+      continue
+    }
+
+    user.flow = normalizeVlessFlow(user.flow)
+  }
+
+  return node
+}
+
+function isValidHostnameOrIp (value) {
+  const text = String(value || '').trim()
+  if (!text) {
+    return false
+  }
+
+  if (/\s/.test(text) || /:\/\//.test(text) || /[\[\]\(\)\/]/.test(text)) {
+    return false
+  }
+
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(text)) {
+    return text.split('.').every((segment) => {
+      const value = Number(segment)
+      return Number.isInteger(value) && value >= 0 && value <= 255
+    })
+  }
+
+  return /^(?=.{1,253}\.?$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])\.?$/.test(text)
+}
+
+function isNodeSupportedByCurrentXray (node) {
+  if (!node || typeof node !== 'object') {
+    return false
+  }
+
+  const streamSettings = node.streamSettings || {}
+  if (streamSettings.network === 'xhttp' && (streamSettings.security === 'tls' || streamSettings.security === 'reality')) {
+    const serverName = streamSettings.security === 'reality'
+      ? streamSettings.realitySettings && streamSettings.realitySettings.serverName
+      : streamSettings.tlsSettings && streamSettings.tlsSettings.serverName
+
+    if (!isValidHostnameOrIp(serverName)) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function normalizeRealitySpiderX (value) {
+  const spiderX = String(value || '').trim()
+  if (!spiderX) {
+    return ''
+  }
+
+  if (!spiderX.startsWith('/') || /[\s\x00-\x1F\x7F]/.test(spiderX)) {
+    return ''
+  }
+
+  return spiderX
+}
+
+function getBase64DecodedByteLength (value) {
+  let normalized = String(value || '').trim().replace(/-/g, '+').replace(/_/g, '/')
+  while (normalized.length % 4) {
+    normalized += '='
+  }
+
+  return Buffer.from(normalized, 'base64').length
+}
+
 /**
  * Parses a VLESS link.
  */
@@ -38,7 +133,7 @@ function parseVless (link) {
               const e = (params.get('encryption') || 'none').trim().replace(/[=]/g, '')
               return e === 'none' ? 'none' : 'none'
             })(),
-            flow: (params.get('flow') || '').trim(),
+            flow: normalizeVlessFlow(params.get('flow')),
           }],
         }],
       },
@@ -46,7 +141,7 @@ function parseVless (link) {
         network: (function () {
           const n = (params.get('type') || 'tcp').trim()
           // Allow only valid Xray transport protocols
-          return /^(tcp|kcp|ws|http|domainsocket|quic|grpc|httpupgrade|xhttp)$/.test(n) ? n : 'tcp'
+          return /^(tcp|kcp|ws|http|domainsocket|grpc|httpupgrade|xhttp)$/.test(n) ? n : 'tcp'
         })(),
         security: (function () {
           const s = (params.get('security') || 'none').trim()
@@ -79,7 +174,7 @@ function parseVless (link) {
           const sid = (params.get('sid') || '').trim()
           return /^[0-9a-fA-F]+$/.test(sid) ? sid : ''
         })(),
-        spiderX: (params.get('spx') || '').trim(),
+        spiderX: normalizeRealitySpiderX(params.get('spx')),
       }
     }
 
@@ -159,7 +254,7 @@ function parseVmess (link) {
       streamSettings: {
         network: (function () {
           const n = (config.net || 'tcp').trim()
-          return /^(tcp|kcp|ws|http|domainsocket|quic|grpc|httpupgrade|xhttp)$/.test(n) ? n : 'tcp'
+          return /^(tcp|kcp|ws|http|domainsocket|grpc|httpupgrade|xhttp)$/.test(n) ? n : 'tcp'
         })(),
         security: config.tls === 'tls' ? 'tls' : 'none',
         tlsSettings: {},
@@ -242,7 +337,7 @@ function parseTrojan (link) {
       streamSettings: {
         network: (function () {
           const n = (params.get('type') || 'tcp').trim()
-          return /^(tcp|kcp|ws|http|domainsocket|quic|grpc|httpupgrade|xhttp)$/.test(n) ? n : 'tcp'
+          return /^(tcp|kcp|ws|http|domainsocket|grpc|httpupgrade|xhttp)$/.test(n) ? n : 'tcp'
         })(),
         security: (function () {
           const s = (params.get('security') || 'tls').trim()
@@ -274,7 +369,7 @@ function parseTrojan (link) {
                 const sid = (params.get('sid') || '').trim()
                 return /^[0-9a-fA-F]+$/.test(sid) ? sid : ''
               })(),
-              spiderX: (params.get('spx') || '').trim(),
+              spiderX: normalizeRealitySpiderX(params.get('spx')),
             }
           }
           return undefined
@@ -395,7 +490,81 @@ function parseSs (link) {
   }
 }
 
+function parseHttpProxy (link) {
+  try {
+    link = link.replace(/\s+#/g, '#').replace(/ /g, '%20')
+    const url = new URL(link)
+    const isHttps = url.protocol === 'https:'
+    const tag = decodeURIComponent(url.hash).substring(1)
+    const server = {
+      address: url.hostname,
+      port: Number.parseInt(url.port, 10),
+    }
+
+    if (url.username || url.password) {
+      server.users = [{
+        user: decodeURIComponent(url.username || ''),
+        pass: decodeURIComponent(url.password || ''),
+      }]
+    }
+
+    const proxy = {
+      tag: tag || `${isHttps ? 'https' : 'http'}-${server.address}:${server.port}`,
+      protocol: 'http',
+      settings: {
+        servers: [server],
+      },
+    }
+
+    if (isHttps) {
+      proxy.streamSettings = {
+        security: 'tls',
+        tlsSettings: {
+          serverName: url.hostname,
+        },
+      }
+    }
+
+    return proxy
+  } catch (e) {
+    console.error('Parse HTTP proxy error:', e)
+    return null
+  }
+}
+
+function parseSocksProxy (link) {
+  try {
+    link = link.replace(/\s+#/g, '#').replace(/ /g, '%20')
+    const url = new URL(link)
+    const tag = decodeURIComponent(url.hash).substring(1)
+    const server = {
+      address: url.hostname,
+      port: Number.parseInt(url.port, 10),
+    }
+
+    if (url.username || url.password) {
+      server.users = [{
+        user: decodeURIComponent(url.username || ''),
+        pass: decodeURIComponent(url.password || ''),
+      }]
+    }
+
+    return {
+      tag: tag || `socks-${server.address}:${server.port}`,
+      protocol: 'socks',
+      settings: {
+        servers: [server],
+      },
+    }
+  } catch (e) {
+    console.error('Parse SOCKS proxy error:', e)
+    return null
+  }
+}
+
 module.exports = {
+  sanitizeNodeForCurrentXray,
+  isNodeSupportedByCurrentXray,
   parse (text) {
     const proxies = []
     if (!text) return proxies
@@ -408,7 +577,7 @@ module.exports = {
     text = text.replace(/<br\s*\/?>/gi, '\n')
 
     // Handle concatenated links (e.g. vmess://...vmess://...) by ensuring they are on separate lines
-    text = text.replace(/(vmess|vless|ss|trojan):\/\//gi, '\n$1://')
+    text = text.replace(/(vmess|vless|ss|trojan|https?|socks5?|socks):\/\//gi, '\n$1://')
 
     // Check if whole text is Base64 (Subscription)
     let decodedText = text
@@ -434,9 +603,15 @@ module.exports = {
         p = parseTrojan(line)
       } else if (line.startsWith('ss://')) {
         p = parseSs(line)
+      } else if (line.startsWith('http://') || line.startsWith('https://')) {
+        p = parseHttpProxy(line)
+      } else if (line.startsWith('socks://') || line.startsWith('socks5://')) {
+        p = parseSocksProxy(line)
       }
 
       if (p) {
+        sanitizeNodeForCurrentXray(p)
+
         // Validate proxy node
         let isValid = false
         if (p.protocol === 'vless' || p.protocol === 'vmess') {
@@ -513,6 +688,11 @@ module.exports = {
               }
             }
           }
+        } else if (p.protocol === 'http' || p.protocol === 'socks') {
+          const server = p.settings.servers?.[0]
+          if (server && server.address && server.port > 0 && server.port < 65536) {
+            isValid = true
+          }
         }
 
         // Validate Reality settings
@@ -526,10 +706,7 @@ module.exports = {
           if (isValid && (!reality || !reality.publicKey)) {
             isValid = false
           } else if (isValid) {
-            // Validate publicKey (Curve25519 public key in Base64)
-            // 32 bytes encoded in Base64 is approx 43 chars.
-            // If length is too short (e.g. 32 chars 'XYZ...'), it is invalid and causes Xray crash.
-            if (reality.publicKey.length < 40) {
+            if (!/^[A-Za-z0-9_-]+={0,2}$/.test(reality.publicKey) || getBase64DecodedByteLength(reality.publicKey) !== 32) {
               isValid = false
             }
           }
@@ -542,6 +719,10 @@ module.exports = {
 
         // Filter out deprecated mKCP (header/seed removed in recent Xray)
         if (isValid && p.streamSettings?.network === 'kcp') {
+          isValid = false
+        }
+
+        if (isValid && !isNodeSupportedByCurrentXray(p)) {
           isValid = false
         }
 

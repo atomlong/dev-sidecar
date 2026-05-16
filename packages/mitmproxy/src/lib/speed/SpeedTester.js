@@ -170,20 +170,36 @@ class SpeedTester {
       const timeout = 5000
       let timeoutId = null
 
-      const client = net.createConnection({ host, port: this.port }, () => {
+      const finishResolve = (value) => {
+        if (isOver) {
+          return
+        }
         isOver = true
         clearTimeout(timeoutId)
+        resolve(value)
+      }
 
+      const finishReject = (error) => {
+        if (isOver) {
+          return
+        }
+        isOver = true
+        clearTimeout(timeoutId)
+        reject(error)
+      }
+
+      const client = net.createConnection({ host, port: this.port }, () => {
         const connectionTime = Date.now()
-        resolve({ status: 'success', by: 'TCP', target: `${host}:${this.port}`, time: connectionTime - startTime })
+        finishResolve({ status: 'success', by: 'TCP', target: `${host}:${this.port}`, time: connectionTime - startTime })
         client.end()
       })
       client.on('error', (e) => {
-        isOver = true
-        clearTimeout(timeoutId)
+        if (isOver) {
+          return
+        }
 
         log.warn('[speed] test by TCP error:  ', this.hostname, `➜ ${host}:${this.port} from DNS '${dns}', cost: ${Date.now() - startTime} ms, errorMsg:`, e.message)
-        reject(e)
+        finishReject(e)
         client.end()
       })
 
@@ -193,8 +209,8 @@ class SpeedTester {
         }
 
         log.warn('[speed] test by TCP timeout:', this.hostname, `➜ ${host}:${this.port} from DNS '${dns}', cost: ${Date.now() - startTime} ms`)
-        reject(new Error('timeout'))
-        client.end()
+        finishReject(new Error('timeout'))
+        client.destroy()
       }, timeout)
     })
   }

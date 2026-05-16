@@ -106,10 +106,10 @@ function connect (req, cltSocket, head, hostname, port, dnsConfig = null, isDire
 
     // ---------------------------------------------------------------------------------------------------
 
+    const connectTimeout = 10000
     const options = {
       port,
       host: hostname,
-      connectTimeout: 10000,
     }
     if (dnsConfig && dnsConfig.dnsMap) {
       const dns = DnsUtil.getDNS(dnsConfig, hostname)
@@ -119,6 +119,8 @@ function connect (req, cltSocket, head, hostname, port, dnsConfig = null, isDire
     }
     // 代理连接事件监听
     const proxySocket = net.connect(options, () => {
+      proxySocket.setTimeout(0)
+
       if (!isDirect) {
         log.info(`Proxy connect start: ${hostport}`)
       } else {
@@ -133,12 +135,14 @@ function connect (req, cltSocket, head, hostname, port, dnsConfig = null, isDire
 
       cltSocket.pipe(proxySocket)
     })
+    proxySocket.setTimeout(connectTimeout)
     proxySocket.on('timeout', () => {
       const cost = Date.now() - start
       const errorMsg = `${isDirect ? '直连' : '代理连接'}超时: ${hostport}, cost: ${cost} ms`
       log.error(errorMsg)
 
       cltSocket.destroy()
+      proxySocket.destroy()
 
       if (isDnsIntercept && isDnsIntercept.dns && isDnsIntercept.ip !== isDnsIntercept.hostname) {
         const { dns, ip, hostname } = isDnsIntercept
@@ -153,6 +157,7 @@ function connect (req, cltSocket, head, hostname, port, dnsConfig = null, isDire
       log.error(`${errorMsg}\r\n`, e)
 
       cltSocket.destroy()
+      proxySocket.destroy()
 
       if (isDnsIntercept && isDnsIntercept.dns && isDnsIntercept.ip !== isDnsIntercept.hostname) {
         const { dns, ip, hostname } = isDnsIntercept

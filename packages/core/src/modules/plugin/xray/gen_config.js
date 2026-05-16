@@ -1,4 +1,14 @@
-module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval) {
+const parser = require('./parser')
+
+module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval, options = {}) {
+  const {
+    metricsPort = null,
+    observatoryEnableConcurrency = true,
+    probeMode = 'observatory',
+    probeSamples = 1,
+    probeTimeoutSeconds = 15,
+  } = options
+
   const proxyTags = []
   const outbounds = []
 
@@ -25,9 +35,9 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
     // Generate a unique tag if not present
     const tag = `proxy_${index}`
     proxyTags.push(tag)
-    
+
     // Clone node to avoid mutation issues
-    const outbound = JSON.parse(JSON.stringify(node))
+    const outbound = parser.sanitizeNodeForCurrentXray(JSON.parse(JSON.stringify(node)))
     outbound.tag = tag
     outbounds.push(outbound)
   })
@@ -46,29 +56,37 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
 
   // Routing
   const routingRules = []
-  
+
   // Custom rules from config
   if (rules && Array.isArray(rules)) {
-    rules.forEach(rule => {
+    rules.forEach((rule) => {
       if (rule.domain) {
         const domainList = Array.isArray(rule.domain) ? rule.domain : [rule.domain]
+        const requestedBalancerTag = rule.balancerTag || (rule.outboundTag === 'balancer-proxy' ? 'balancer-proxy' : null)
         const ruleConfig = {
           type: 'field',
           domain: domainList,
         }
-        if (rule.balancerTag) {
-          ruleConfig.balancerTag = rule.balancerTag
+        if (requestedBalancerTag) {
+          // Only reference a balancer if proxy nodes exist
+          if (proxyTags.length > 0) {
+            ruleConfig.balancerTag = requestedBalancerTag
+          } else {
+            ruleConfig.outboundTag = 'direct'
+          }
         } else if (rule.outboundTag) {
           ruleConfig.outboundTag = rule.outboundTag
-        } else {
-          // Default to balancer if no tag specified
+        } else if (proxyTags.length > 0) {
+          // Default to balancer if no tag specified and proxies exist
           ruleConfig.balancerTag = 'balancer-proxy'
+        } else {
+          ruleConfig.outboundTag = 'direct'
         }
         routingRules.push(ruleConfig)
       }
     })
   }
-  
+
   // Default rule: If we have proxies, route everything else to direct?
   // Or route everything to balancer?
   // DevSideCar only sends traffic to Xray that matches its own rules (tunnel://).
@@ -76,35 +94,63 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
   // But Xray also has "direct" outbound.
   // If DevSideCar sends google.com to Xray, it expects Xray to proxy it.
   // So the default fallback should be balancer-proxy.
-  
+
   if (proxyTags.length > 0) {
     routingRules.push({
-        type: 'field',
-        network: 'tcp,udp',
-        balancerTag: 'balancer-proxy'
+      type: 'field',
+      network: 'tcp,udp',
+      balancerTag: 'balancer-proxy',
     })
   }
 
   const routing = {
     domainStrategy: 'AsIs',
-    balancers: balancers,
+    balancers,
     rules: routingRules,
   }
 
-  // Observatory
-  const observatory = {
-    subjectSelector: proxyTags, // Monitor all proxy nodes
-    probeUrl: probeUrl || 'https://www.google.com/generate_204',
-    probeInterval: `${probeInterval || 300}s`,
+  // Observatory / Burst Observatory
+  const observatoryBase = {
+    subjectSelector: proxyTags,
   }
 
-  return {
+  let observatory = null
+  let burstObservatory = null
+  if (probeMode === 'burst') {
+    burstObservatory = {
+      ...observatoryBase,
+      pingConfig: {
+        destination: probeUrl || 'https://www.google.com/generate_204',
+        connectivity: '',
+        interval: `${probeInterval || 300}s`,
+        sampling: Math.max(1, Math.floor(probeSamples)),
+        timeout: `${Math.max(1, Math.floor(probeTimeoutSeconds))}s`,
+        httpMethod: 'HEAD',
+      },
+    }
+  } else if (probeMode === 'observatory') {
+    observatory = {
+      ...observatoryBase,
+      probeUrl: probeUrl || 'https://www.google.com/generate_204',
+      probeInterval: `${probeInterval || 300}s`,
+      enableConcurrency: observatoryEnableConcurrency,
+    }
+  }
+
+  const metrics = metricsPort == null
+    ? null
+    : {
+        tag: 'metrics',
+        listen: `127.0.0.1:${metricsPort}`,
+      }
+
+  const config = {
     log: {
       loglevel: 'warning',
     },
     inbounds: [
       {
-        tag: 'http-in', // Xray supports mixed inbound? Or separate? 
+        tag: 'http-in', // Xray supports mixed inbound? Or separate?
         // Xray's "socks" inbound doesn't support HTTP proxy.
         // We usually need "http" inbound or "dokodemo-door".
         // DevSideCar creates a tunnel. Tunnel connects to a TCP port.
@@ -122,26 +168,39 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
         // Wait, can Xray listen on the SAME port for both? No.
         // Unless I spawn two inbounds? But `port-finder` finds ONE port.
         // If I use `http` inbound, it works for CONNECT.
-        
+
         // Wait, standard SOCKS5 is better for generic TCP tunneling.
         // But `tunnel-agent` creates HTTP tunnels (CONNECT).
         // So I should use `protocol: 'http'`.
-        
-        port: port, // Reuse port? Xray can't listen twice on same port.
+
+        port, // Reuse port? Xray can't listen twice on same port.
         // I'll stick to 'http' protocol since we are sending HTTP CONNECT.
         listen: '127.0.0.1',
-        protocol: 'http', 
+        protocol: 'http',
         settings: {
-           timeout: 0
+          timeout: 0,
         },
         sniffing: {
           enabled: true,
           destOverride: ['http', 'tls'],
         },
-      }
+      },
     ],
-    outbounds: outbounds,
-    routing: routing,
-    observatory: observatory,
+    outbounds,
+    routing,
   }
+
+  if (observatory) {
+    config.observatory = observatory
+  }
+
+  if (burstObservatory) {
+    config.burstObservatory = burstObservatory
+  }
+
+  if (metrics) {
+    config.metrics = metrics
+  }
+
+  return config
 }
