@@ -37,3 +37,10 @@ pnpm-debug.log*
 /.feedback
 _script/__pycache__/
 _script/xray-invalid-nodes-report*.json
+
+# Other files
+out
+gen
+*.log
+*.lnk
+.venv

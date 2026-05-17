@@ -4,6 +4,7 @@ import Node from '../pages/plugin/node'
 import Overwall from '../pages/plugin/overwall'
 import Xray from '../pages/plugin/xray'
 import Pip from '../pages/plugin/pip'
+import FreeEye from '../pages/plugin/free-eye.vue'
 import Proxy from '../pages/proxy'
 import Server from '../pages/server'
 import Setting from '../pages/setting'
@@ -20,6 +21,7 @@ const routes = [
   { path: '/plugin/git', component: Git },
   { path: '/plugin/xray', component: Xray },
   { path: '/plugin/pip', component: Pip },
+  { path: '/plugin/free-eye', component: FreeEye },
   { path: '/plugin/overwall', component: Overwall },
 ]
 

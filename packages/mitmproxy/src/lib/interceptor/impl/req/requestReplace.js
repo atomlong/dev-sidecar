@@ -2,7 +2,7 @@ const REMOVE = '[remove]'
 
 function replaceVar (str, rOptions) {
   if (typeof str !== 'string') return str
-  const orig = rOptions.origional || {}
+  const orig = rOptions.original || rOptions.origional || {}
   const hostname = orig.hostname || rOptions.hostname
   const host = (orig.headers && orig.headers.host) || rOptions.headers.host || hostname
   const protocol = orig.protocol || rOptions.protocol
@@ -19,6 +19,9 @@ function replaceVar (str, rOptions) {
     .replace(/\$\{port\}/g, port)
     .replace(/\$\{url\}/g, url)
 }
+
+const DS_DOWNLOAD_CHECK_RE = /DS_DOWNLOAD/i
+const DS_DOWNLOAD_STRIP_RE = /[?&/]?DS_DOWNLOAD(=[^?&/]+)?$/i
 
 function replaceRequestHeaders (rOptions, headers, log) {
   for (const key in headers) {
@@ -58,9 +61,9 @@ module.exports = {
 
     // 替换下载文件请求的请求地址（此功能主要是为了方便拦截配置）
     // 注：要转换为下载请求，需要 responseReplace 拦截器的配合使用。
-    if (requestReplaceConfig.doDownload && rOptions.path.match(/DS_DOWNLOAD/i)) {
+    if (requestReplaceConfig.doDownload && DS_DOWNLOAD_CHECK_RE.test(rOptions.path)) {
       rOptions.doDownload = true
-      rOptions.path = rOptions.path.replace(/[?&/]?DS_DOWNLOAD(=[^?&/]+)?$/gi, '')
+      rOptions.path = rOptions.path.replace(DS_DOWNLOAD_STRIP_RE, '')
       actions += `${actions ? ',' : ''}path:remove-DS_DOWNLOAD`
     }
 

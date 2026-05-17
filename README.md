@@ -3,20 +3,20 @@
 开发者边车，命名取自service-mesh的service-sidecar，意为为开发者打辅助的边车工具（以下简称ds）
 通过本地代理的方式将https请求代理到一些国内的加速通道上
 
-<a href='https://github.com/docmirror/dev-sidecar'><img alt="GitHub stars" src="https://img.shields.io/github/stars/docmirror/dev-sidecar?logo=github"></a>
+<a href='https://github.com/docmirror/dev-sidecar'><img alt="GitHub stars" src="https://img.shields.io/github/stars/docmirror/dev-sidecar?logo=github&cacheSeconds=86400"></a>
 
 [![Star History Chart](https://api.star-history.com/svg?repos=docmirror/dev-sidecar&type=date&legend=top-left)](https://www.star-history.com/#docmirror/dev-sidecar&type=date&legend=top-left)
 
 > Gitee上的同步项目已被封禁，请认准本项目唯一官方仓库地址[https://github.com/docmirror/dev-sidecar](https://github.com/docmirror/dev-sidecar) 【狗头保命】
 >
 > 我将继续奋战在开源一线，为社区贡献更多更好的开源项目。
-> 
+>
 > 感兴趣的可以关注我的主页 [【github】](https://github.com/greper) [【gitee】](https://gitee.com/greper)
 
 ## 打个广告
 
 > [https://github.com/certd/certd](https://github.com/certd/certd)
-> 
+>
 > 我的开源证书管理工具项目，全自动申请和部署证书，有需求的可以去试试，帮忙点个star
 
 ## 重要提醒
@@ -32,11 +32,11 @@
 > ------------------------------重要提醒2---------------------------------
 >
 > 注意：本应用启动会自动修改系统代理，所以会与其他代理软件有冲突，一起使用时请谨慎使用。
-> 
+>
 > 与 `Watt Toolkit（原Steam++）` 共用时，请以hosts模式启动Watt Toolkit
-> 
+>
 > 与 `TUN网卡模式运行的游戏加速器` 可以共用
-> 
+>
 > 本应用主要目的在于直连访问github，如果你已经有飞机了，那建议还是不要用这个自行车（ds）了
 
 ## 一、 特性
@@ -98,12 +98,12 @@
 - release下载
   [Github Release](https://github.com/docmirror/dev-sidecar/releases)
 
-> Windows: 请选择DevSidecar-x.x.x-windows-universal.exe 
-> 
-> Mac: 请选择DevSidecar-x.x.x-macos-universal.dmg 
-> 
-> Debian系及其他支持deb安装包的Linux: 请选择DevSidecar-x.x.x-linux-[架构].deb 
-> 
+> Windows: 请选择DevSidecar-x.x.x-windows-universal.exe
+>
+> Mac: 请选择DevSidecar-x.x.x-macos-universal.dmg
+>
+> Debian系及其他支持deb安装包的Linux: 请选择DevSidecar-x.x.x-linux-[架构].deb
+>
 > 其他Linux: 请选择DevSidecar-x.x.x-linux-[架构].AppImage (未做测试，不保证能用)
 
 > linux安装说明请参考 [linux安装文档](./doc/linux.md)
@@ -113,6 +113,7 @@
 #### 2）安装后打开
 
 界面应大致如下图所示：
+
 > 注意：mac版安装需要在“系统偏好设置->安全性与隐私->通用”中解锁并允许应用安装
 
 ![](./doc/index.png)
@@ -124,7 +125,7 @@
 更多有关根证书的说明，请参考 [为什么要安装根证书?](./doc/caroot.md)
 
 > 根证书是本地随机生成的，所以不用担心根证书的安全问题（本应用不收集任何用户信息）
-> 
+>
 > 你也可以在加速服务设置中自定义根证书（PEM格式的证书与私钥）
 
 > 火狐浏览器需要[手动安装证书](#3火狐浏览器火狐浏览器不走系统的根证书需要在选项中添加根证书)
@@ -135,10 +136,10 @@
 
 ### 2.2、开启前 vs 开启后
 
-|          | 开启前                         | 开启后                                           |
-| -------- | ------------------------------ | ----------------------------------------------- |
-| 头像     | ![](./doc/avatar2.png)         | ![](./doc/avatar1.png)                          |
-| clone    | ![](./doc/clone-before.png)    | ![](./doc/clone.png)                            |
+|          | 开启前                         | 开启后                                            |
+| -------- | ------------------------------ | ------------------------------------------------- |
+| 头像     | ![](./doc/avatar2.png)         | ![](./doc/avatar1.png)                            |
+| clone    | ![](./doc/clone-before.png)    | ![](./doc/clone.png)                              |
 | zip 下载 | ![](./doc/download-before.png) | ![](./doc/download.png)秒下的，实在截不到速度的图 |
 
 ## 三、模式说明
@@ -181,6 +182,7 @@
 > 1. ~~[hub.fastgit.org](https://hub.fastgit.org/) （2024/11/18：这个好像失效了？）~~
 > 2. ~~[github.com.cnpmjs.org](https://github.com.cnpmjs.org/) 这个很容易超限（2024/11/18：这个好像失效了？）~~
 > 3. [bgithub.xyz](https://bgithub.xyz/)（edge浏览器可能报毒）
+> 4. [kkgithub.com](https://kkgithub.com/)（目前正在维护中）
 
 ## 五、api
 
@@ -272,13 +274,13 @@ networksetup -setwebproxy 'WiFi' 127.0.0.1 31181
 如果有上面的错误提示，请尝试如下方法：
 
 > 取消访问偏好设置需要管理员密码
-> 
+>
 > 系统偏好设置—>安全性与隐私—> 通用—> 高级—> 访问系统范围的偏好设置需要输入管理员密码（取消勾选）
 
 ### 6.2、没有加速效果
 
 1. 本应用默认仅开启https加速，一般足够覆盖需求。
-    如果你访问的是仅支持http协议的网站，请手动在【系统代理】中打开【代理HTTP请求】
+   如果你访问的是仅支持http协议的网站，请手动在【系统代理】中打开【代理HTTP请求】
 2. 检查浏览器是否装了什么插件，与ds有冲突
 3. 检查是否安装了其他代理软件，与ds有冲突
 4. 请确认浏览器的代理设置为使用IE代理/或者使用系统代理状态
@@ -299,12 +301,12 @@ networksetup -setwebproxy 'WiFi' 127.0.0.1 31181
 #### 3）火狐浏览器：火狐浏览器不走系统的根证书，需要在选项中添加根证书
 
 1. 火狐浏览器->选项->隐私与安全->证书->查看证书
-![](./doc/figures/Firefox/1.png)
+   ![](./doc/Firefox/1.png)
 2. 证书颁发机构->导入
 3. 选择证书文件 `C:\Users(用户)\Administrator(你的账号)\.dev-sidecar\dev-sidecar.ca.crt`（Mac或linux为 `~/.dev-sidecar` 目录）
-![](./doc/figures/Firefox/2.png)
+   ![](./doc/Firefox/2.png)
 4. 勾选信任由此证书颁发机构来标识网站，确定即可
-![](./doc/figures/Firefox/3.png)
+   ![](./doc/Firefox/3.png)
 
 ### 6.4、打开github显示连接超时
 
@@ -374,9 +376,23 @@ npm config delete https-proxy
 
 ### 8.1、准备环境
 
-#### 1）安装 `nodejs`
+#### 1）安装 `nodejs` 及其他环境
 
 推荐安装 nodejs `22.x.x` 的版本，其他版本未做测试
+
+Windows上需要msvc，推荐使用VS 2022（node-gyp对VS 2026支持可能存在问题），安装时选择C++桌面开发工作负载即可。
+
+另外还需要带distutils的python，推荐安装自带setuptools的python 3.11版本。如果本地有uv，则可以简单的运行以下命令
+
+```shell
+uv init .
+uv sync
+.venv/Scripts/activate.ps1 # for windows pwsh
+.venv/Scripts/activate.bat # for windows cmd
+source .venv/bin/activate # for linux/mac
+```
+
+这会根据.python-version文件自动安装python 3.11版本。如不想使用python 3.11，也可删除.python-version文件，pyproject.toml已经指定了所需依赖。
 
 #### 2）安装 `pnpm`
 
@@ -440,7 +456,7 @@ npm run electron:build
 
 ## 十一、感谢
 
-本项目使用lerna包管理工具
+本项目曾使用lerna包管理工具
 
 [![lerna](https://img.shields.io/badge/maintained%20with-lerna-cc00ff.svg)](https://lerna.js.org/)
 

@@ -3,6 +3,10 @@ const net = require('node:net')
 const _ = require('lodash')
 const log = require('../../utils/util.log.server')
 const config = require('./config.js')
+const matchUtil = require('../../utils/util.match.js')
+const { configFromFiles } = require('@docmirror/dev-sidecar/src/config/index.js')
+
+const familyMapping = matchUtil.domainMapRegexply(configFromFiles.server.dns.familyMapping)
 
 // const isWindows = process.platform === 'win32'
 
@@ -24,6 +28,8 @@ class SpeedTester {
     this.keepCheckIntervalId = false
 
     this.tryTestCount = 0
+    this.isTesting = false
+    this.isTestingBackups = false
 
     this.test() // 异步：初始化完成后先测速一次
   }
@@ -94,10 +100,16 @@ class SpeedTester {
   }
 
   async getFromOneDns (dns) {
-    return await dns._lookupWithPreSetIpList(this.hostname)
+    const family = Number.parseInt(matchUtil.matchHostname(familyMapping, this.hostname, 'get family')) === 6 ? 6 : 4
+    return await dns._lookupWithPreSetIpList(this.hostname, { family })
   }
 
   async test () {
+    if (this.isTesting) {
+      log.debug(`[speed] test skipped (already running): ${this.hostname}`)
+      return
+    }
+    this.isTesting = true
     this.testCount++
     log.debug(`[speed] test start: ${this.hostname}, testCount: ${this.testCount}`)
 
@@ -112,44 +124,59 @@ class SpeedTester {
       }
     } catch (e) {
       log.error(`[speed] test failed: ${this.hostname}, testCount: ${this.testCount}, error:`, e)
+    } finally {
+      this.isTesting = false
     }
   }
 
   async testBackups () {
-    if (this.backupList.length > 0) {
-      const aliveList = []
-
-      const testAll = []
-      for (const item of this.backupList) {
-        testAll.push(this.doTest(item, aliveList))
-      }
-      await Promise.all(testAll)
-      this.alive = aliveList
+    if (this.isTestingBackups) {
+      log.debug(`[speed] testBackups skipped (already running): ${this.hostname}`)
+      return
     }
+    this.isTestingBackups = true
 
-    this.ready = true
+    try {
+      if (this.backupList.length > 0) {
+        const aliveList = []
+
+        const testAll = []
+        for (const item of this.backupList) {
+          testAll.push(this._doTest(item, aliveList))
+        }
+        await Promise.all(testAll)
+
+        // 全部测速完成后，根据耗时进行排序
+        aliveList.sort((a, b) => a.time - b.time)
+        this.backupList.sort((a, b) => {
+          if (a.time === b.time) {
+            return 0
+          }
+          if (a.time == null) {
+            return 1
+          }
+          if (b.time == null) {
+            return -1
+          }
+          return a.time - b.time
+        })
+
+        this.alive = aliveList
+      }
+
+      this.ready = true
+    } finally {
+      this.isTestingBackups = false
+    }
   }
 
-  async doTest (item, aliveList) {
+  async _doTest (item, aliveList) {
     try {
       const ret = await this.testOne(item)
       item.title = `${ret.by}测速成功：${ret.target}`
       log.info(`[speed] test success: ${this.hostname} ➜ ${item.host}:${this.port} from DNS '${item.dns}'`)
       _.merge(item, ret)
       aliveList.push({ ...ret, ...item })
-      aliveList.sort((a, b) => a.time - b.time)
-      this.backupList.sort((a, b) => {
-        if (a.time === b.time) {
-          return 0
-        }
-        if (a.time == null) {
-          return 1
-        }
-        if (b.time == null) {
-          return -1
-        }
-        return a.time - b.time
-      })
     } catch (e) {
       if (item.time == null) {
         item.title = e.message
@@ -188,7 +215,7 @@ class SpeedTester {
         reject(error)
       }
 
-      const client = net.createConnection({ host, port: this.port }, () => {
+      const client = net.createConnection({ host, port: this.port, family: host.includes(':') ? 6 : 4 }, () => {
         const connectionTime = Date.now()
         finishResolve({ status: 'success', by: 'TCP', target: `${host}:${this.port}`, time: connectionTime - startTime })
         client.end()
@@ -200,7 +227,7 @@ class SpeedTester {
 
         log.warn('[speed] test by TCP error:  ', this.hostname, `➜ ${host}:${this.port} from DNS '${dns}', cost: ${Date.now() - startTime} ms, errorMsg:`, e.message)
         finishReject(e)
-        client.end()
+        client.destroy()
       })
 
       timeoutId = setTimeout(() => {
