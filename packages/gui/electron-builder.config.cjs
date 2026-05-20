@@ -131,6 +131,40 @@ if (enableFlatpak && hasExecutable('flatpak') && hasExecutable('flatpak-builder'
   })
 }
 
+function hasExecutable (command, args = ['--version']) {
+  const result = spawnSync(command, args, { stdio: 'ignore' })
+  return !result.error && result.status === 0
+}
+
+const linuxTargets = [
+  {
+    target: 'deb',
+    arch: ['x64', 'arm64', 'armv7l'],
+  },
+  {
+    target: 'AppImage',
+    arch: ['x64', 'arm64', 'armv7l'],
+  },
+  {
+    target: 'tar.gz',
+    arch: ['x64', 'arm64', 'armv7l'],
+  },
+]
+
+if (hasExecutable('rpmbuild')) {
+  linuxTargets.push({
+    target: 'rpm',
+    arch: ['x64', 'arm64', 'armv7l'],
+  })
+}
+
+if (hasExecutable('flatpak') && hasExecutable('flatpak-builder')) {
+  linuxTargets.push({
+    target: 'flatpak',
+    arch: ['x64'],
+  })
+}
+
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
   appId: 'dev-sidecar',
