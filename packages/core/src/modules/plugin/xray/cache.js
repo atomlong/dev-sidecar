@@ -479,6 +479,7 @@ function createStage2ScratchSchema (db) {
       node_key TEXT PRIMARY KEY
     );
   `)
+  createSubscriptionSchema(db)
 }
 
 function openStage2SeenDb (cacheFilePath, options = {}) {
