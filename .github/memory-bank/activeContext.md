@@ -2,7 +2,7 @@
 
 ## Current Work
 - Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除、“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化，以及 v2.1.4 的订阅 provenance / stage 3 订阅可用节点汇总 / egress probe 清理修复；当前重点是运行态观察与预发布整理。
-- 版本发布：`v2.1.3` 已于 2026-05-16 完成公开发布推送（`origin/master`、`origin/release-v2.1.x`、tag `v2.1.3`）；当前工作区正在准备发布 `v2.1.4`，四个工作区包版本已提升到 `2.1.4`，`CHANGELOG.md` 已落日期 `2026-05-20`。
+- 版本发布：`v2.1.4` 已于 2026-05-20 完成公开发布推送（`origin/master`、`origin/release-v2.1.x`、tag `v2.1.4` 均指向 `ba2bd3cb`）；私有远端 `gitlab` 仍因 HTTP Basic / token 鉴权失败未同步。
 - CI 修复：正在处理 GitHub Actions 的跨平台构建稳定性，重点是 Windows 的 `node-gyp` Python 绑定，以及 macOS 下 Xray 资源参与 universal 合并导致的打包失败。
 - 工作流增强：正在继续演进 `submit.sh`，本轮聚焦于移除自动代理检测、补齐上游公共仓库同步能力，并保证现有 submit/release 流程职责清晰。
 
@@ -11,6 +11,11 @@
     - 四个工作区包版本（core / cli / gui / mitmproxy）已提升到 `2.1.4`。
     - `CHANGELOG.md` 的 `v2.1.4` 条目已补充 Linux SQLite/Electron 打包修复、Xray 订阅 provenance、stage 3 per-subscription 可用节点汇总、stale subscription cleanup 语义，以及 egress probe 日志/清理修复；发布前已将标题日期落到 `2026-05-20`。
     - 已重新构建并安装 `DevSidecar-2.1.4-amd64.deb` 到 `/opt/dev-sidecar`，并重启 `dev-sidecar.service`；当前验证显示只剩主 Xray 进程，旧的卡住 PID 41600 已消失。
+- [Release] **v2.1.4 已发布**：
+    - `CHANGELOG.md` 顶部版本日期已落到 `2026-05-20`。
+    - 已提交私有记忆银行提交 `0eb8df8b` 和公共发布提交 `94761771`。
+    - `./submit.sh --push-public` 已将公共提交同步到本地 `master` 为 `ba2bd3cb`；推送 `gitlab` 时因鉴权失败中断，随后手动推送 `origin/master` 并执行 `./submit.sh --release`。
+    - 已验证 GitHub `origin/master`、`origin/release-v2.1.x` 和 tag `v2.1.4` 均指向 `ba2bd3cb39a6f8abe98a5dcabf56bafb085590d4`。
 - [Plugin] **Xray 订阅 provenance 与阶段 3 汇总**：
     - SQLite cache 增加 `nodes.node_key`、`subscriptions` 与 `subscription_node_refs`，用于记录每个配置项订阅与节点的来源关系。
     - 订阅 source key 现在包含配置项 occurrence，重复 URL 会按出现顺序当作不同配置项统计，不再被合并成一个订阅。
@@ -94,7 +99,7 @@
 ## Next Steps
 - 继续观察 v2.1.4 安装后的 stage 3 长轮次，确认 `stage3-last-round.json`、订阅可用节点计数和 stale cleanup 语义符合预期。
 - 继续观察是否还会出现残留 `egress-*.json` 临时 Xray 进程；若复现，优先抓取 PID、父进程、cmdline、socket、日志上下文，并核对是否有对应 `正在停止 Xray 出口元数据探测进程` 日志。
-- 发布 v2.1.4 前再次构建并核对 `CHANGELOG.md`、四个工作区 package 版本、Linux 安装包和核心 Xray 回归测试结果。
+- 观察 GitHub Actions / GitHub Release 是否基于 `release-v2.1.x` 与 tag `v2.1.4` 正常产出发布页和附件。
 - 观察 GitHub Actions / GitHub Release 是否基于 `release-v2.1.x` 与 tag `v2.1.3` 正常产出发布页和附件。
 - 继续观察 `nodes_cache.state.json` 方案在真实运行中的稳定性，确认仅基于 `cfg.nodes` 的签名范围足够，或决定是否把更多本地输入纳入签名。
 - 单独处理 `gitlab` 远端鉴权，决定是否要补推本地 `develop` 的 2 个 release 相关提交到私有仓库。

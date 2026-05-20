@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.1.4 (Release in progress; v2.1.3 released on 2026-05-16)
+- **Current Version**: 2.1.4 (Released on 2026-05-20)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
@@ -56,6 +56,12 @@
     - 已更新 `CHANGELOG.md` 的 v2.1.4 条目，并在发布前落日期 `2026-05-20`。
     - 已重新构建并安装 `DevSidecar-2.1.4-amd64.deb`。
     - 已运行 `packages/core` 的 Xray 阶段门控回归测试，当前为 `7 passing`。
+- [x] **Release v2.1.4 Publish**:
+    - 已推送 GitHub `origin/master`。
+    - 已推送 GitHub `origin/release-v2.1.x`。
+    - 已创建并推送 tag `v2.1.4`。
+    - 三个远端引用均指向公共发布提交 `ba2bd3cb39a6f8abe98a5dcabf56bafb085590d4`。
+    - `gitlab` 远端仍因 HTTP Basic / token 鉴权失败未同步。
 - [x] **Release v2.1.3 Prep**:
     - 已同步升级四个工作区 package 版本至 2.1.3。
     - 已更新并收缩 `CHANGELOG.md` 的 v2.1.3 条目。
@@ -89,7 +95,7 @@
 - [ ] 与其他代理软件（如 Watt Toolkit、Clash）共存时可能存在端口冲突。
 - [ ] 当前 Xray staged workflow 已有定向测试与真实日志验证，但距离完整发布回归仍有差距，发布前仍应至少复查核心构建与关键运行态日志。
 - [ ] `nodes_cache.state.json` 当前只覆盖手工节点签名；若后续需要把更多本地来源纳入“本地输入未变化”的判定，需扩展签名范围并同步升级语义版本。
-- [ ] `gitlab` 远端当前因 HTTP Basic / token 鉴权失败，私有分支 `develop` 尚未补推本地最新 2 个 release 提交；若私有仓库仍是正式工作流的一部分，需要后续单独修复凭据并补同步。
+- [ ] `gitlab` 远端当前因 HTTP Basic / token 鉴权失败，私有分支 `develop` 和公共同步推送均未补推；若私有仓库仍是正式工作流的一部分，需要后续单独修复凭据并补同步。
 - [ ] 部分节点会因域名本身解析失败而长期缺少 country / owner，例如 `sg1n.asasone.cyou` 当前解析结果为 `NXDOMAIN`；这类节点的清理策略仍需进一步确认。
 - [ ] v2.1.4 的阶段 3 全量轮次在百万级缓存上耗时很长，仍需继续观察完整轮次后的 `stage3-last-round.json`、订阅可用节点计数与 stale subscription cleanup 行为。
 - [ ] egress probe 残留问题已修复并通过 PID 41600 / 70068 个案验证，但仍应在长时间运行中观察是否还有新的 `egress-*.json` 临时 Xray 进程残留。
