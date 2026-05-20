@@ -470,6 +470,7 @@ function createSubscriptionSchema (db) {
     CREATE INDEX IF NOT EXISTS idx_subscription_node_refs_node_key ON subscription_node_refs(node_key);
     CREATE INDEX IF NOT EXISTS idx_subscriptions_configured_sort ON subscriptions(configured DESC, sort_order ASC);
   `)
+  createSubscriptionSchema(db)
 }
 
 function createStage2ScratchSchema (db) {
