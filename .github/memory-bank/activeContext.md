@@ -2,7 +2,7 @@
 
 ## Current Work
 - Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除、“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化，以及 v2.1.4 的订阅 provenance / stage 3 订阅可用节点汇总 / egress probe 清理修复；当前重点是发布后 CI 与运行态观察。
-- 版本发布：`v2.1.4` 已于 2026-05-20 完成公开发布推送，随后因 macOS DMG CI 失败补推修复；当前 GitHub `origin/master`、`origin/release-v2.1.x`、tag `v2.1.4` 均指向 `7bd3cc29`，私有远端 `gitlab` 仍因 HTTP Basic / token 鉴权失败未同步。
+- 版本发布：`v2.1.4` 已于 2026-05-20 完成公开发布推送，随后因 macOS DMG CI 失败补推修复；当前 GitHub `origin/master`、`origin/release-v2.1.x`、tag `v2.1.4` 均指向 `7bd3cc29`，GitLab 已改用 SSH 远端并完成同步。
 - CI 修复：已处理 GitHub Actions 跨平台构建稳定性，重点包括 Windows 的 `node-gyp` Python 绑定、macOS Xray universal 合并，以及 pnpm 下 `app-builder-lib@22.14.13` 误解析 `dmg-builder@26.8.1` 的 DMG 打包失败。
 - 工作流增强：正在继续演进 `submit.sh`，本轮聚焦于移除自动代理检测、补齐上游公共仓库同步能力，并保证现有 submit/release 流程职责清晰。
 
@@ -19,6 +19,7 @@
     - 已通过公共提交 `12868853` 增加 `pnpm.packageExtensions`，将 `app-builder-lib@22.14.13` 的运行期 `dmg-builder` 固定为 `22.14.13`；本地已验证冻结安装与解析路径，`packages/core` 阶段门控测试仍为 `7 passing`。
     - `./submit.sh --push-public` 已将该修复同步到本地 `master` 为 `7bd3cc29`；因 `gitlab` 鉴权失败未能由脚本完成远端推送，随后手动推送 GitHub `origin/master`、`origin/release-v2.1.x`，并强制移动 tag `v2.1.4` 到 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
     - 已验证 GitHub `origin/master`、`origin/release-v2.1.x` 和 tag `v2.1.4` 均指向 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`；新的 Build And Release run `26169088856` 已触发，当前状态 `in_progress`。
+    - 已将本地 `gitlab` remote 从 HTTPS 改为 `git@gitlab.com:atom.long/dev-sidecar.git`；SSH 鉴权验证通过后，已推送 GitLab `develop`、`master`、`release-v2.1.x` 和 tag `v2.1.4`。GitLab `develop` 指向 `5a4f77a5`，其余公开发布引用均指向 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
 - [Plugin] **Xray 订阅 provenance 与阶段 3 汇总**：
     - SQLite cache 增加 `nodes.node_key`、`subscriptions` 与 `subscription_node_refs`，用于记录每个配置项订阅与节点的来源关系。
     - 订阅 source key 现在包含配置项 occurrence，重复 URL 会按出现顺序当作不同配置项统计，不再被合并成一个订阅。
@@ -105,7 +106,7 @@
 - 继续观察是否还会出现残留 `egress-*.json` 临时 Xray 进程；若复现，优先抓取 PID、父进程、cmdline、socket、日志上下文，并核对是否有对应 `正在停止 Xray 出口元数据探测进程` 日志。
 - 观察新的 GitHub Actions Build And Release run `26169088856` 是否基于 tag `v2.1.4` 正常完成，并确认 GitHub Release 附件已重新产出。
 - 继续观察 `nodes_cache.state.json` 方案在真实运行中的稳定性，确认仅基于 `cfg.nodes` 的签名范围足够，或决定是否把更多本地输入纳入签名。
-- 单独处理 `gitlab` 远端鉴权，决定是否要补推本地 `develop` 的 2 个 release 相关提交到私有仓库。
+- 后续 GitLab 推送应继续使用 SSH remote，避免 HTTPS 因无凭据助手或 token 失效反复要求输入密码。
 - 决定是否在正式发布前保留当前个人配置中的“缓存优先 + 第三阶段关闭”模式，或仅将其作为高级可选能力而非默认推荐路径。
 - 针对 `NXDOMAIN`、无 country、无 owner 的节点进一步评估处理策略，决定是更激进地在第三阶段淘汰，还是引入额外轻量标记字段辅助排查。
 - 当前代码已经进入预发布整理阶段；后续优先级是发布核查，不是继续扩展新功能。
@@ -129,6 +130,6 @@
 - **发布流程**: 在打包 Xray Core 后可能会导致应用程序整体大小略有增加（约十几MB），需要观察下载体验的影响。后续需保持对 Xray-core release 版本的关注，在必要时再次发起内置核心更新的变更。
 - **拦截器健壮性**: Mitmproxy 的请求拦截链路中，`agent.options` 不能假定存在；后续新增规则需继续采用空值安全访问，避免类似空指针问题再次出现。
 - **分支纪律**: `develop` 属于私有分支，禁止推送到公共仓库；公共发布面应始终通过 `submit.sh --push-public` 同步到 `master` / `feature/*`。
-- **远端现实状态**: 当前公开发布已成功落到 GitHub `origin`，但 `gitlab` 鉴权失败导致私有远端仍未同步；后续若要恢复标准流程，需要先修复 GitLab token / password 配置。
+- **远端现实状态**: GitHub `origin` 与 GitLab 已同步 v2.1.4 发布引用；GitLab HTTPS 鉴权问题通过改用 SSH remote 规避。WSL 中当前没有 Git Credential Manager，若未来改回 HTTPS，需要配置凭据助手并使用 GitLab PAT 而不是账号密码。
 - **同步策略**: 当前 public sync 已具备 patch-id 去重、rerere 复用、默认 `ours` 的自动冲突收敛能力，以及空 cherry-pick 自动 skip；若特定场景更需要保留私有分支冲突块，可临时使用 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs`。
 - **上游约束**: `upstream` 仅用于 fetch 公共更新，不能参与 `--push-private` / `--push-public` 的推送目标集合。

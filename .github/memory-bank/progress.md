@@ -65,7 +65,8 @@
     - 已追加公共修复提交 `12868853`，经 `./submit.sh --push-public` 同步到本地 `master` 后对应公共提交为 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
     - 已重新推送 GitHub `origin/master` 与 `origin/release-v2.1.x`，并强制移动 tag `v2.1.4` 到 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
     - 新的 Build And Release run `26169088856` 已触发，当前状态为 `in_progress`。
-    - `gitlab` 远端仍因 HTTP Basic / token 鉴权失败未同步。
+    - GitLab HTTPS 鉴权失败的原因是 WSL 中未配置 credential helper / Git Credential Manager，且 GitLab HTTPS 推送需要 PAT；已改用可用的 SSH remote `git@gitlab.com:atom.long/dev-sidecar.git`。
+    - 已同步 GitLab：`develop` 指向 `5a4f77a5`，`master`、`release-v2.1.x`、tag `v2.1.4` 均指向 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
 - [x] **Release v2.1.3 Prep**:
     - 已同步升级四个工作区 package 版本至 2.1.3。
     - 已更新并收缩 `CHANGELOG.md` 的 v2.1.3 条目。
@@ -99,7 +100,7 @@
 - [ ] 与其他代理软件（如 Watt Toolkit、Clash）共存时可能存在端口冲突。
 - [ ] 当前 Xray staged workflow 已有定向测试与真实日志验证，但距离完整发布回归仍有差距，发布前仍应至少复查核心构建与关键运行态日志。
 - [ ] `nodes_cache.state.json` 当前只覆盖手工节点签名；若后续需要把更多本地来源纳入“本地输入未变化”的判定，需扩展签名范围并同步升级语义版本。
-- [ ] `gitlab` 远端当前因 HTTP Basic / token 鉴权失败，私有分支 `develop` 和公共同步推送均未补推；若私有仓库仍是正式工作流的一部分，需要后续单独修复凭据并补同步。
+- [ ] WSL 中当前没有 Git Credential Manager；GitLab 已切换为 SSH remote，若未来改回 HTTPS，需要配置 credential helper 并使用 GitLab PAT。
 - [ ] 部分节点会因域名本身解析失败而长期缺少 country / owner，例如 `sg1n.asasone.cyou` 当前解析结果为 `NXDOMAIN`；这类节点的清理策略仍需进一步确认。
 - [ ] v2.1.4 的阶段 3 全量轮次在百万级缓存上耗时很长，仍需继续观察完整轮次后的 `stage3-last-round.json`、订阅可用节点计数与 stale subscription cleanup 行为。
 - [ ] egress probe 残留问题已修复并通过 PID 41600 / 70068 个案验证，但仍应在长时间运行中观察是否还有新的 `egress-*.json` 临时 Xray 进程残留。
