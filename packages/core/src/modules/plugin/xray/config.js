@@ -16,6 +16,7 @@ module.exports = {
   cacheBatchTimeout: 30, // 阶段3：每批 burst 探测等待上限（秒）
   cacheRefreshBatchSize: 31, // 阶段3：固定每批探测节点数；默认 31
   cacheRefreshProbeSamples: 2, // 阶段3：每批 burst 探测样本数
+  subscriptionStaleAfterDays: 30, // 订阅连续无可用节点且无节点引用后的数据库清理阈值（天）
   subscriptions: [], // 订阅地址列表
   nodes: [], // 手动节点列表
   rules: [], // 路由规则 [{domain: 'openai.com', outboundTag: 'proxy'}]

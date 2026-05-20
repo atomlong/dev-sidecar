@@ -12,12 +12,13 @@ import coreDefaultConfig from '@docmirror/dev-sidecar/src/config/index.js'
 import configLoader from '@docmirror/dev-sidecar/src/config/local-config-loader.js'
 import log from '../../utils/util.log.gui.js'
 import dateUtil from '@docmirror/dev-sidecar/src/utils/util.date.js'
+import appPathUtil from '../../utils/util.apppath.js'
 
 const { configFromFiles } = coreDefaultConfig
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const mitmproxyPath = path.join(__dirname, '../mitmproxy.js')
-process.env.DS_EXTRA_PATH = path.join(app.getAppPath(), 'extra')
+process.env.DS_EXTRA_PATH = path.join(appPathUtil.getAppResourcesPath(app), 'extra')
 let currentWin
 
 const getDefaultConfigBasePath = function () {

@@ -30,4 +30,12 @@ export default {
     }
     return path.join(exePath, '../')
   },
+
+  getAppResourcesPath (app) {
+    const appRootPath = this.getAppRootPath(app)
+    if (getSystemPlatform() === 'mac') {
+      return path.join(appRootPath, 'Resources')
+    }
+    return path.join(appRootPath, 'resources')
+  },
 }

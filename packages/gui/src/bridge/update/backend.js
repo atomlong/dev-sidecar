@@ -4,12 +4,12 @@ import { fileURLToPath } from 'node:url'
 import DevSidecar from '@docmirror/dev-sidecar'
 import AdmZip from 'adm-zip'
 import { ipcMain } from 'electron'
-import electronUpdater from 'electron-updater'
-const { autoUpdater } = electronUpdater
 import request from 'request'
 import progress from 'request-progress'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
+const electronUpdater = require('electron-updater')
+const autoUpdater = electronUpdater.autoUpdater || electronUpdater.default?.autoUpdater || electronUpdater.default || null
 const pkg = require('../../../package.json')
 import appPathUtil from '../../utils/util.apppath.js'
 import log from '../../utils/util.log.gui.js'
@@ -63,6 +63,11 @@ function downloadFile (uri, filePath, onProgress, onSuccess, onError) {
  * 检测更新，在你想要检查更新的时候执行，renderer事件触发后的操作自行编写
  */
 function updateHandle (app, api, win, beforeQuit, quit, log) {
+  if (!autoUpdater || typeof autoUpdater.on !== 'function') {
+    log.warn('electron-updater 不可用，跳过自动更新初始化')
+    return null
+  }
+
   // // 更新前，删除本地安装包 ↓
   // const updaterCacheDirName = 'dev-sidecar-updater'
   // const updatePendingPath = path.join(autoUpdater.app.baseCachePath, updaterCacheDirName, 'pending')

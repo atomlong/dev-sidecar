@@ -7,6 +7,7 @@ const xrayCache = require('../src/modules/plugin/xray/cache')
 
 const {
   buildLocalInputState,
+  cleanupProbeArtifacts,
   createCacheSyncPlan,
   getLocalInputStatePath,
   getSubscriptionSyncDecision,
@@ -184,9 +185,34 @@ describe('xray stage gating', () => {
     assert.strictEqual(changedPlan.selectedCount, 2)
     assert.strictEqual(changedPlan.addedEntries.length, 1)
     assert.deepStrictEqual(changedPlan.addedEntries[0].node, node3)
+    assert.strictEqual(changedPlan.addedEntries[0].country, '')
+    assert.strictEqual(changedPlan.addedEntries[0].owner, '')
     assert.strictEqual(changedPlan.removedNodes.length, 1)
     assert.deepStrictEqual(changedPlan.removedNodes[0], node2)
     assert.strictEqual(changedStats.countryReadyCount, 1)
+  })
+
+  it('cleans stale probe temp files while keeping unrelated files', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-probe-cleanup-'))
+    const probeDir = path.join(tmpDir, 'probe')
+    fs.mkdirSync(probeDir, { recursive: true })
+    const staleConfig = path.join(probeDir, 'config-123.json')
+    const staleEgress = path.join(probeDir, 'egress-456.json')
+    const keepFile = path.join(probeDir, 'keep.txt')
+
+    try {
+      fs.writeFileSync(staleConfig, '{}')
+      fs.writeFileSync(staleEgress, '{}')
+      fs.writeFileSync(keepFile, 'keep')
+
+      const removedCount = cleanupProbeArtifacts(tmpDir)
+      assert.strictEqual(removedCount, 2)
+      assert.strictEqual(fs.existsSync(staleConfig), false)
+      assert.strictEqual(fs.existsSync(staleEgress), false)
+      assert.strictEqual(fs.existsSync(keepFile), true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
   })
 
   it('persists and matches local-input state by normalized manual node set', () => {
@@ -200,6 +226,7 @@ describe('xray stage gating', () => {
 
       const state = buildLocalInputState({ manualNodes: [node2, node1, node1] })
       assert.strictEqual(state.manualNodeCount, 2)
+      assert.strictEqual(state.subscriptionCount, 0)
       assert.strictEqual(writeLocalInputState(statePath, state), true)
 
       const savedState = readLocalInputState(statePath)
@@ -208,6 +235,7 @@ describe('xray stage gating', () => {
       assert.strictEqual(savedState.signatureVersion, state.signatureVersion)
       assert.strictEqual(savedState.semanticsVersion, state.semanticsVersion)
       assert.strictEqual(savedState.manualNodeCount, state.manualNodeCount)
+      assert.strictEqual(savedState.subscriptionCount, state.subscriptionCount)
       assert.strictEqual(typeof savedState.updatedAt, 'string')
 
       const reorderedState = buildLocalInputState({ manualNodes: [node1, node2] })
@@ -215,6 +243,144 @@ describe('xray stage gating', () => {
 
       const changedState = buildLocalInputState({ manualNodes: [node1] })
       assert.strictEqual(isLocalInputStateMatch(savedState, changedState), false)
+
+      const changedSubscriptionState = buildLocalInputState({
+        manualNodes: [node2, node1],
+        subscriptions: ['https://example.com/a', 'https://example.com/a'],
+      })
+      assert.strictEqual(changedSubscriptionState.subscriptionCount, 2)
+      assert.strictEqual(isLocalInputStateMatch(savedState, changedSubscriptionState), false)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('tracks subscription availability and only deletes stale unreferenced subscriptions', () => {
+    if (!sqliteAvailable) {
+      return
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-subscription-summary-'))
+    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
+
+    try {
+      const stableNode = createNode('1.1.1.1', 80)
+      const unstableNode = createNode('2.2.2.2', 80)
+      const stableKey = xrayCache.getNodeKey(stableNode)
+      const unstableKey = xrayCache.getNodeKey(unstableNode)
+
+      xrayCache.writeCache(cachePath, [
+        {
+          node: stableNode,
+          stable: true,
+          delay: 100,
+          source: 'background-probe',
+          updatedAt: '2026-05-16T00:00:00.000+08:00',
+        },
+        {
+          node: unstableNode,
+          stable: false,
+          delay: null,
+          source: 'source-sync',
+          updatedAt: '2026-05-16T00:00:00.000+08:00',
+        },
+      ])
+
+      const syncStats = xrayCache.syncSubscriptions(cachePath, [
+        {
+          url: 'https://example.com/stable',
+          displayLabel: 'stable-sub',
+          sortOrder: 1,
+          nodeKeys: [stableKey, unstableKey],
+        },
+        {
+          url: 'https://example.com/retained',
+          displayLabel: 'retained-sub',
+          sortOrder: 2,
+          nodeKeys: [unstableKey],
+        },
+        {
+          url: 'https://example.com/empty',
+          displayLabel: 'empty-sub',
+          sortOrder: 3,
+          nodeKeys: [],
+        },
+      ], { staleAfterDays: 30, now: '2026-04-01T00:00:00.000+08:00' })
+      assert.deepStrictEqual(syncStats, { configured: 3, unconfigured: 0, refs: 3 })
+
+      const firstResult = xrayCache.updateSubscriptionAvailability(cachePath, {
+        staleAfterDays: 30,
+        availableNodeKeys: [stableKey],
+        now: '2026-04-01T00:00:00.000+08:00',
+      })
+      assert.deepStrictEqual(firstResult.deleted, [])
+
+      const staleResult = xrayCache.updateSubscriptionAvailability(cachePath, {
+        staleAfterDays: 30,
+        availableNodeKeys: [stableKey],
+        now: '2026-05-10T00:00:00.000+08:00',
+      })
+
+      assert.strictEqual(staleResult.deleted.length, 1)
+      const remainingLabels = staleResult.summary.map(row => row.displayLabel).sort()
+      assert.deepStrictEqual(remainingLabels, ['retained-sub', 'stable-sub'])
+
+      const stableSummary = staleResult.summary.find(row => row.displayLabel === 'stable-sub')
+      assert.strictEqual(stableSummary.availableNodeCount, 1)
+      assert.strictEqual(stableSummary.retainedNodeCount, 2)
+
+      const retainedSummary = staleResult.summary.find(row => row.displayLabel === 'retained-sub')
+      assert.strictEqual(retainedSummary.availableNodeCount, 0)
+      assert.strictEqual(retainedSummary.retainedNodeCount, 1)
+      assert.strictEqual(typeof retainedSummary.zeroAvailableSince, 'string')
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps duplicate subscription URLs as separate configured entries by occurrence', () => {
+    if (!sqliteAvailable) {
+      return
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-duplicate-subscriptions-'))
+    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
+
+    try {
+      const node = createNode('9.9.9.9', 80)
+      const nodeKey = xrayCache.getNodeKey(node)
+      xrayCache.writeCache(cachePath, [{
+        node,
+        stable: true,
+        delay: 20,
+        source: 'background-probe',
+        updatedAt: '2026-05-16T00:00:00.000+08:00',
+      }])
+
+      const url = 'https://example.com/duplicated'
+      xrayCache.syncSubscriptions(cachePath, [
+        {
+          sourceKey: xrayCache.getSubscriptionSourceKey(url, 1),
+          url,
+          displayLabel: '[1/2] duplicated',
+          sortOrder: 1,
+          nodeKeys: [nodeKey],
+        },
+        {
+          sourceKey: xrayCache.getSubscriptionSourceKey(url, 2),
+          url,
+          displayLabel: '[2/2] duplicated',
+          sortOrder: 2,
+          nodeKeys: [nodeKey],
+        },
+      ])
+
+      const summary = xrayCache.readSubscriptionAvailabilitySummary(cachePath, {
+        availableNodeKeys: [nodeKey],
+      })
+      assert.strictEqual(summary.length, 2)
+      assert.deepStrictEqual(summary.map(row => row.availableNodeCount), [1, 1])
+      assert.deepStrictEqual(summary.map(row => row.sortOrder), [1, 2])
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }

@@ -2,6 +2,25 @@ const defaultDns = require('node:dns')
 const log = require('../../../utils/util.log.server')
 const speedTest = require('../../speed')
 
+function setDnsLookupHeader (res, value) {
+  if (!res) {
+    return
+  }
+  try {
+    res.setHeader('DS-DNS-Lookup', value)
+  } catch (error) {
+    log.error('setHeader error: DS-DNS-Lookup =', value, ', error:', error)
+  }
+}
+
+function replyLookupResult (callback, options, ip, family) {
+  if (options && options.all === true) {
+    callback(null, [{ address: ip, family }])
+    return
+  }
+  callback(null, ip, family)
+}
+
 function createIpChecker (tester) {
   if (!tester || tester.backupList == null || tester.backupList.length === 0) {
     return null
@@ -38,10 +57,8 @@ module.exports = {
         const aliveIpObj = tester.pickFastAliveIpObj()
         if (aliveIpObj) {
           log.info(`----- ${action}: ${hostname}, use alive ip from dns '${aliveIpObj.dns}': ${aliveIpObj.host}${target} -----`)
-          if (res) {
-            res.setHeader('DS-DNS-Lookup', `IpTester: ${aliveIpObj.host} ${aliveIpObj.dns === '预设IP' ? 'PreSet' : aliveIpObj.dns}`)
-          }
-          callback(null, aliveIpObj.host, family)
+          setDnsLookupHeader(res, `IpTester: ${aliveIpObj.host} ${aliveIpObj.dns === '预设IP' ? 'PreSet' : aliveIpObj.dns}`)
+          replyLookupResult(callback, options, aliveIpObj.host, family)
           return
         } else {
           log.info(`----- ${action}: ${hostname}, no alive ip${target}, tester: { "ready": ${tester.ready}, "backupList": ${JSON.stringify(tester.backupList)} }`)
@@ -59,10 +76,8 @@ module.exports = {
 
         if (ip !== hostname) {
           log.info(`----- ${action}: ${hostname}, use ip from dns '${dns.dnsName}': ${ip}(family: ${family})${target} -----`)
-          if (res) {
-            res.setHeader('DS-DNS-Lookup', `DNS: ${ip}（IPv${family}） ${dns.dnsName === '预设IP' ? 'PreSet' : dns.dnsName}`)
-          }
-          callback(null, ip, family)
+          setDnsLookupHeader(res, `DNS: ${ip} (IPv${family}) ${dns.dnsName === '预设IP' ? 'PreSet' : dns.dnsName}`)
+          replyLookupResult(callback, options, ip, family)
         } else {
           // 使用默认dns
           log.info(`----- ${action}: ${hostname}, use default DNS: ${hostname}${target}, options:`, options, ', dns:', dns)

@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.1.4] - 2026-05-20
+
+### Added
+- Added Xray subscription provenance tracking in the SQLite cache, including per-configured-subscription metadata and subscription-to-node references.
+- Added stage 3 per-subscription usable-node summaries written to `stage3-last-round.json` after complete cache refresh rounds.
+- Added `subscriptionStaleAfterDays` to control when stale subscription metadata can be cleaned up after stage 3 confirms no usable nodes remain.
+
+### Changed
+- Upgraded `better-sqlite3` to `12.10.0` in both `@docmirror/dev-sidecar` and `@docmirror/dev-sidecar-gui` to match the packaged Electron 41 runtime.
+- Changed the GUI packaging pipeline to rebuild Electron native dependencies before `electron:build` and to bundle `better-sqlite3`, `bindings`, and `file-uri-to-path` into `app.asar.unpacked`.
+- Changed Xray subscription synchronization so duplicate subscription URLs are tracked as separate configured entries by occurrence order.
+- Changed subscription availability accounting to count only nodes that were actually usable in the current complete stage 3 round, rather than treating retained cache entries as current availability.
+- Changed Xray probe logs to distinguish batch cache probes from egress metadata probes.
+
+### Fixed
+- Fixed packaged Linux builds failing to read the existing Xray SQLite cache, which previously surfaced as `Xray SQLite cache is unavailable` during startup and background refresh.
+- Fixed packaged Linux startup path resolution so renderer assets load from the packaged app root and Xray resources resolve from `resources/extra`.
+- Fixed packaged Linux startup crashes caused by `electron-updater` export-shape differences.
+- Fixed stale subscription cleanup semantics so subscription metadata is removed only when it is older than the configured threshold and no cache nodes still reference it; `nodes` rows remain governed by stage 3 unusable-node probing.
+- Fixed egress metadata probes being started for nodes that already have both `country` and `owner` metadata.
+- Fixed lingering egress metadata Xray child processes by stopping them via the real child PID instead of relying on `child.killed` state.
+
 ## [v2.1.3] - 2026-05-16
 
 ### Added

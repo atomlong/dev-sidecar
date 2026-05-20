@@ -3,6 +3,30 @@ const path = require('node:path')
 const archiver = require('archiver')
 const pkg = require('../package.json')
 
+function resolvePackageDir (packageName) {
+  const packageJsonPath = require.resolve(`${packageName}/package.json`, {
+    paths: [path.join(__dirname, '..')],
+  })
+  return path.dirname(packageJsonPath)
+}
+
+function copyRuntimePackage (packageName, nodeModulesDir) {
+  const sourceDir = resolvePackageDir(packageName)
+  const targetDir = path.join(nodeModulesDir, ...packageName.split('/'))
+  fs.rmSync(targetDir, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(targetDir), { recursive: true })
+  fs.cpSync(sourceDir, targetDir, { recursive: true, dereference: true })
+  console.log(`copied runtime package: ${packageName}`)
+}
+
+function ensureNativeRuntimeDependencies (resourcesDir) {
+  const unpackedNodeModulesDir = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules')
+  fs.mkdirSync(unpackedNodeModulesDir, { recursive: true })
+  copyRuntimePackage('better-sqlite3', unpackedNodeModulesDir)
+  copyRuntimePackage('bindings', unpackedNodeModulesDir)
+  copyRuntimePackage('file-uri-to-path', unpackedNodeModulesDir)
+}
+
 function writeAppUpdateYmlForLinux (appOutDir) {
   const publishUrl = process.env.VUE_APP_PUBLISH_URL
   const publishProvider = process.env.VUE_APP_PUBLISH_PROVIDER
@@ -31,6 +55,7 @@ exports.default = async function (context) {
     targetPath = path.join(context.appOutDir, './resources')
     systemType = 'win'
   }
+  ensureNativeRuntimeDependencies(targetPath)
   const partUpdateFile = `update-${systemType}-${pkg.version}.zip`
   const outputPath = path.join(context.outDir, partUpdateFile)
 
