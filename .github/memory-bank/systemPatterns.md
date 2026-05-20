@@ -42,9 +42,11 @@ flowchart TD
         - 动态注入 `tunnel://` 拦截规则到 Mitmproxy。
         - 当前采用明确的三阶段流水线：
             - 第一阶段：从旧缓存中按 `allowedCountries`、`allowedOwners`、延迟条件筛出少量候选，做启动前快速复检，仅用于尽快拉起 Xray。
-            - 第二阶段：默认会汇总本地源（运行配置备份、旧缓存、手动节点），并仅在有效缓存数低于 `subscriptionSyncLowWatermark` 时抓取远端订阅；若订阅已跳过且 `nodes_cache.state.json` 记录的本地输入签名与当前一致，则整段第二阶段直接跳过。
-            - 第三阶段：仅在 `cacheRefreshEnabled !== false` 时运行；按批次探测缓存节点，并在探测成功后补充 `country` / `owner` 等 metadata，同时逐步淘汰不可用节点。
+            - 第二阶段：默认会汇总本地源（运行配置备份、旧缓存、手动节点），并仅在有效缓存数低于 `subscriptionSyncLowWatermark` 时抓取远端订阅；若订阅已跳过且 `nodes_cache.state.json` 记录的本地输入签名与当前一致，则整段第二阶段直接跳过。第二阶段还负责同步订阅 provenance 和订阅到节点引用，但不把保留缓存计为当前可用。
+            - 第三阶段：仅在 `cacheRefreshEnabled !== false` 时运行；按批次探测缓存节点，并在探测成功后补充 `country` / `owner` 等 metadata，同时逐步淘汰不可用节点。完整轮次结束后按本轮实际可用节点生成 per-subscription usable-node summary。
         - 第一阶段的 `bootstrapCandidateLimit` 表示“启动前最多进入快速复检的候选节点上限”，不是第三阶段那种批处理 batch size。
+        - Xray cache SQLite 现在包含订阅 provenance：`nodes.node_key` 作为稳定节点 key，`subscriptions` 保存每个配置项订阅，`subscription_node_refs` 保存订阅到节点引用；重复订阅 URL 通过 occurrence 区分。
+        - `subscriptionStaleAfterDays` 属于阶段 3 语义；只有阶段 3 完整轮次确认订阅长期无可用节点且无节点引用时，才能清理订阅 metadata，不能用它删除 `nodes` 行。
 
 ### 3. Mitmproxy (`@docmirror/mitmproxy`)
 - **Server**: 启动 HTTP/HTTPS 代理服务器。
@@ -73,5 +75,7 @@ flowchart TD
 - 第一阶段为了避免拖慢冷启动，只消费缓存里已有的 `country` / `owner`；启动前快速复检不再启动 egress metadata probe。
 - 第二阶段会保留上一次缓存中已有的 metadata，不会把已存在的 `country` / `owner` 清掉；当候选集未变化时，会跳过缓存重写。
 - 第二阶段的本地输入状态 sidecar 文件固定命名为 `nodes_cache.state.json`，与 `nodes_cache.sqlite` 同目录；当前签名只覆盖 `cfg.nodes` 解析后的手工节点集合，不覆盖 `liveConfigBak`。
-- 第三阶段的 `annotateProbeEntries` 仍是主动 metadata 补全的主入口；如果用户关闭 `cacheRefreshEnabled`，则自动 metadata 校正也会一起停掉。
+- 第三阶段的 `annotateProbeEntries` 仍是主动 metadata 补全的主入口；如果用户关闭 `cacheRefreshEnabled`，则自动 metadata 校正也会一起停掉。若节点已有 `country` 和 `owner`，则不应再启动 egress metadata probe。
 - `subscriptionSyncLowWatermark` 的判断依赖 SQLite `countCacheEntries()` 与 stable/maxDelay/country/owner 过滤，目标是统计“对第一阶段真正有意义的有效缓存数”。
+- Probe 进程日志需要区分批次探测与出口元数据探测；残留 egress probe 排查时先看父进程清理链路、cmdline、socket 和 PID 状态，避免只靠延长超时掩盖问题。
+- egress metadata 查询必须有两层退出保障：单次 HTTP proxy 请求使用 `AbortController` + hard timeout，整个 `detectEgressAddressThroughProxy()` 调用再由外层绝对超时保护，确保 `finally { controller.stop() }` 有机会执行。

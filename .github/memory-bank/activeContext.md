@@ -1,12 +1,29 @@
 # Active Context
 
 ## Current Work
-- Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除，以及“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化；当前重点已转为发布后观察而非继续扩展功能。
-- 版本发布：`v2.1.3` 已于 2026-05-16 完成公开发布推送（`origin/master`、`origin/release-v2.1.x`、tag `v2.1.3`）；后续重点是观察 GitHub release / Actions 结果并补齐私有远端同步。
+- Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除、“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化，以及 v2.1.4 的订阅 provenance / stage 3 订阅可用节点汇总 / egress probe 清理修复；当前重点是运行态观察与预发布整理。
+- 版本发布：`v2.1.3` 已于 2026-05-16 完成公开发布推送（`origin/master`、`origin/release-v2.1.x`、tag `v2.1.3`）；当前工作区正在准备发布 `v2.1.4`，四个工作区包版本已提升到 `2.1.4`，`CHANGELOG.md` 已落日期 `2026-05-20`。
 - CI 修复：正在处理 GitHub Actions 的跨平台构建稳定性，重点是 Windows 的 `node-gyp` Python 绑定，以及 macOS 下 Xray 资源参与 universal 合并导致的打包失败。
 - 工作流增强：正在继续演进 `submit.sh`，本轮聚焦于移除自动代理检测、补齐上游公共仓库同步能力，并保证现有 submit/release 流程职责清晰。
 
 ## Recent Changes
+- [Release] **v2.1.4 预发布准备**：
+    - 四个工作区包版本（core / cli / gui / mitmproxy）已提升到 `2.1.4`。
+    - `CHANGELOG.md` 的 `v2.1.4` 条目已补充 Linux SQLite/Electron 打包修复、Xray 订阅 provenance、stage 3 per-subscription 可用节点汇总、stale subscription cleanup 语义，以及 egress probe 日志/清理修复；发布前已将标题日期落到 `2026-05-20`。
+    - 已重新构建并安装 `DevSidecar-2.1.4-amd64.deb` 到 `/opt/dev-sidecar`，并重启 `dev-sidecar.service`；当前验证显示只剩主 Xray 进程，旧的卡住 PID 41600 已消失。
+- [Plugin] **Xray 订阅 provenance 与阶段 3 汇总**：
+    - SQLite cache 增加 `nodes.node_key`、`subscriptions` 与 `subscription_node_refs`，用于记录每个配置项订阅与节点的来源关系。
+    - 订阅 source key 现在包含配置项 occurrence，重复 URL 会按出现顺序当作不同配置项统计，不再被合并成一个订阅。
+    - 第二阶段负责同步订阅元数据和订阅到节点引用，但不把阶段 2 保留缓存当作“当前可用”。
+    - 第三阶段完整轮次会收集本轮实际可用节点 key，写出 `stage3-last-round.json`，并据此更新 per-subscription usable-node summary。
+    - `subscriptionStaleAfterDays` 属于阶段 3 配置；只有第三阶段确认订阅超过阈值仍无可用节点且没有节点引用时，才清理订阅 metadata，`nodes` 行删除仍只由第三阶段不可用探测决定。
+- [Plugin] **Xray egress probe 清理与日志区分**：
+    - `annotateProbeEntries` 已改为当节点已有 `country` 和 `owner` 时跳过 egress metadata probe，避免重复启动临时 Xray。
+    - probe 启动日志已区分 `Xray 批次探测进程` 与 `Xray 出口元数据探测进程`，避免与 config batch probe 混淆。
+    - `stopChild` 已改为按真实 PID 检查并发送 `SIGTERM` / `SIGKILL`，不再依赖 `child.killed` 状态，修复 egress 子进程可能残留的问题。
+    - PID 70068 复现后确认：临时 egress Xray 只监听本地端口且手动通过该代理请求可返回，说明子进程本身不是死锁；更准确根因是父进程的出口 IP HTTP 查询 Promise 缺少绝对超时，导致 `finally { controller.stop() }` 没机会执行。
+    - 已为 egress HTTP proxy 请求增加 `AbortController` + hard timeout，并在 `resolveEntryEgressMetadata()` 外层用 `withTimeout()` 包住整个出口 IP 查询；同时临时加入 PID 化启停日志便于观察。
+    - 经过一段观察后确认：正常情况下 egress 子进程不会再残留，因此已去掉 egress 正常启动/停止 info 日志，仅保留异常未退出告警；批次探测仍保留启动日志但不打印 pid。
 - [Release] **v2.1.3 预发布准备**：
     - 四个工作区包版本（core / cli / gui / mitmproxy）已提升到 `2.1.3`；根 `package.json` 无版本号，不需要改。
     - `CHANGELOG.md` 的 `v2.1.3` 条目已收敛到 staged workflow、阶段门控、egress probe 清理、Linux 打包依赖修复、Stage 3 observatory 覆盖修复与 SQLite 缩容修复。
@@ -75,6 +92,9 @@
     - 同步更新了 `doc/wiki/Xray插件使用说明.md`。
 
 ## Next Steps
+- 继续观察 v2.1.4 安装后的 stage 3 长轮次，确认 `stage3-last-round.json`、订阅可用节点计数和 stale cleanup 语义符合预期。
+- 继续观察是否还会出现残留 `egress-*.json` 临时 Xray 进程；若复现，优先抓取 PID、父进程、cmdline、socket、日志上下文，并核对是否有对应 `正在停止 Xray 出口元数据探测进程` 日志。
+- 发布 v2.1.4 前再次构建并核对 `CHANGELOG.md`、四个工作区 package 版本、Linux 安装包和核心 Xray 回归测试结果。
 - 观察 GitHub Actions / GitHub Release 是否基于 `release-v2.1.x` 与 tag `v2.1.3` 正常产出发布页和附件。
 - 继续观察 `nodes_cache.state.json` 方案在真实运行中的稳定性，确认仅基于 `cfg.nodes` 的签名范围足够，或决定是否把更多本地输入纳入签名。
 - 单独处理 `gitlab` 远端鉴权，决定是否要补推本地 `develop` 的 2 个 release 相关提交到私有仓库。
@@ -88,6 +108,10 @@
 - 如需要对外发布补丁版本，更新 `CHANGELOG.md` 并走 `submit.sh` 发布流程。
 
 ## Active Considerations
+- **v2.1.4 发布边界**：当前对外能力应聚焦 Linux packaged SQLite/Electron 兼容、Xray 订阅 provenance、stage 3 订阅可用节点汇总、stale subscription cleanup 语义和 egress probe 根因修复，不再继续扩展新功能。
+- **订阅可用性口径**：第二阶段只能建立订阅来源关系，不能证明可用；per-subscription usable-node count 必须来自第三阶段完整轮次的实际可用节点 key。
+- **egress probe 根因定位**：残留 egress 进程若只剩本地监听且无外部连接，优先判断父进程清理链路；清理逻辑必须按 PID 确认，而不能只看 Node `child.killed`。
+- **egress probe 观察日志**：`正在停止 Xray 出口元数据探测进程: pid=...` 是临时诊断日志，用于证明 `finally -> stop()` 是否执行；若用户连续观察几天不再复现，应删除或降到 debug，避免长期刷 info 日志。
 - **v2.1.3 发布边界**：当前对外能力应聚焦 staged workflow、阶段门控、SQLite 缓存稳定性与 Linux 打包修复，不再继续往该版本塞入新的 Xray 特性。
 - **Xray 分阶段职责**：第一阶段只做冷启动所需的少量缓存候选筛选与快速复检；第二阶段必须足够轻，不应再因为全量 metadata 回填阻塞第三阶段；第三阶段才是批量探测与补全 metadata 的主路径。
 - **缓存优先模式**：`subscriptionSyncLowWatermark` 统计的是“有效缓存数”而不是原始总行数；`cacheRefreshEnabled=false` 会停止第三阶段自动修正 `country` / `owner`，因此更适合已经有足够稳定缓存、且接受 metadata 渐旧的场景。

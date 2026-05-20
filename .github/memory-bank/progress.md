@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.1.3 (Released on 2026-05-16)
+- **Current Version**: 2.1.4 (Release in progress; v2.1.3 released on 2026-05-16)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
@@ -39,6 +39,23 @@
     - 第一阶段 bootstrap 候选选择已改为边筛边取，达到 `bootstrapCandidateLimit` 即停止，减少大缓存场景下的冷启动拖延。
     - 第二阶段已恢复为轻量缓存同步：保留旧缓存已存在的 `country` / `owner` 等 metadata，但不再对全量候选主动回填，避免阻塞第三阶段。
     - 当前同时支持“第二阶段快速完成后进入第三阶段”和“缓存优先 + 第三阶段关闭”的两种运行模式。
+- [x] **Xray Subscription Provenance and Stage 3 Summary**:
+    - SQLite cache 已增加 `nodes.node_key`、`subscriptions`、`subscription_node_refs`，用于记录订阅来源与订阅到节点引用。
+    - 重复订阅 URL 已按配置 occurrence 生成不同 source key，避免 160 个配置项被折叠成 159 个订阅。
+    - 阶段 3 完整轮次会使用本轮实际可用节点 key 生成 per-subscription usable-node summary，并写出 `stage3-last-round.json`。
+    - `subscriptionStaleAfterDays` 已加入配置语义；订阅 metadata 只在超过阈值、无可用节点且无节点引用时清理，`nodes` 行仍只由阶段 3 不可用探测删除。
+    - `readSubscriptionAvailabilitySummary` 已改为只把当前完整阶段 3 轮次的 `availableNodeKeys` 计入 `availableNodeCount`。
+- [x] **Xray Egress Probe Lifecycle Fixes**:
+    - 已修复已有 `country` 与 `owner` 的节点仍启动 egress metadata probe 的问题。
+    - 已区分 probe 日志：批次缓存探测使用 `Xray 批次探测进程`，出口元数据探测使用 `Xray 出口元数据探测进程`。
+    - `stopChild` 已改为按真实 PID 检查并发送 `SIGTERM` / `SIGKILL`，不再因 `child.killed` 状态误判跳过仍存活的进程。
+    - egress 出口 IP 查询已增加单次 HTTP 请求 hard timeout 与外层绝对超时，避免查询 Promise 不返回导致 `finally` 无法停止临时 Xray。
+    - 已实机验证：重新构建安装 `2.1.4` 后，旧 egress PID 41600 / 70068 均已消失；后续已清理临时诊断日志，正常 egress 启停不再刷 info，批次探测启动日志保留但不打印 pid。
+- [x] **Release v2.1.4 Prep**:
+    - 已同步升级四个工作区 package 版本至 2.1.4。
+    - 已更新 `CHANGELOG.md` 的 v2.1.4 条目，并在发布前落日期 `2026-05-20`。
+    - 已重新构建并安装 `DevSidecar-2.1.4-amd64.deb`。
+    - 已运行 `packages/core` 的 Xray 阶段门控回归测试，当前为 `7 passing`。
 - [x] **Release v2.1.3 Prep**:
     - 已同步升级四个工作区 package 版本至 2.1.3。
     - 已更新并收缩 `CHANGELOG.md` 的 v2.1.3 条目。
@@ -74,6 +91,8 @@
 - [ ] `nodes_cache.state.json` 当前只覆盖手工节点签名；若后续需要把更多本地来源纳入“本地输入未变化”的判定，需扩展签名范围并同步升级语义版本。
 - [ ] `gitlab` 远端当前因 HTTP Basic / token 鉴权失败，私有分支 `develop` 尚未补推本地最新 2 个 release 提交；若私有仓库仍是正式工作流的一部分，需要后续单独修复凭据并补同步。
 - [ ] 部分节点会因域名本身解析失败而长期缺少 country / owner，例如 `sg1n.asasone.cyou` 当前解析结果为 `NXDOMAIN`；这类节点的清理策略仍需进一步确认。
+- [ ] v2.1.4 的阶段 3 全量轮次在百万级缓存上耗时很长，仍需继续观察完整轮次后的 `stage3-last-round.json`、订阅可用节点计数与 stale subscription cleanup 行为。
+- [ ] egress probe 残留问题已修复并通过 PID 41600 / 70068 个案验证，但仍应在长时间运行中观察是否还有新的 `egress-*.json` 临时 Xray 进程残留。
 
 ## Roadmap
 - [ ] **v2.2.0**: 增强插件系统，支持更多自定义脚本。
