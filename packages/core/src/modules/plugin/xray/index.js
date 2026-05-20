@@ -35,8 +35,8 @@ const EGRESS_IP_LOOKUP_URLS = [
   'http://ident.me',
 ]
 const LOCAL_INPUT_STATE_FILE_NAME = 'nodes_cache.state.json'
-const LOCAL_INPUT_STATE_SIGNATURE_VERSION = 1
-const LOCAL_INPUT_STATE_SEMANTICS_VERSION = 'xray-stage2-local-input-v1'
+const LOCAL_INPUT_STATE_SIGNATURE_VERSION = 2
+const LOCAL_INPUT_STATE_SEMANTICS_VERSION = 'xray-stage2-local-input-v2'
 
 const SUBSCRIPTION_SUMMARY_PROTOCOLS = new Set([
   'http',
@@ -202,13 +202,46 @@ function sleep (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function timeoutError (message) {
+  const error = new Error(message)
+  error.code = 'ETIMEDOUT'
+  return error
+}
+
+function withTimeout (promise, timeoutMs, message) {
+  let timer = null
+  const timeoutPromise = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(timeoutError(message)), timeoutMs)
+  })
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  })
+}
+
 function fetchTextThroughHttpProxy ({ proxyPort, url, timeoutMs = 5000 }) {
   return new Promise((resolve, reject) => {
+    const controller = new AbortController()
+    let finished = false
+    let hardTimer = null
+    const finish = (callback, value) => {
+      if (finished) {
+        return
+      }
+      finished = true
+      if (hardTimer) {
+        clearTimeout(hardTimer)
+      }
+      callback(value)
+    }
+
     const request = http.request({
       host: '127.0.0.1',
       port: proxyPort,
       method: 'GET',
       path: url,
+      signal: controller.signal,
       headers: {
         Host: new URL(url).host,
         Accept: 'text/plain, application/json;q=0.9, */*;q=0.1',
@@ -218,7 +251,7 @@ function fetchTextThroughHttpProxy ({ proxyPort, url, timeoutMs = 5000 }) {
     }, (response) => {
       if (response.statusCode !== 200) {
         response.resume()
-        reject(new Error(`Unexpected proxy status: ${response.statusCode}`))
+        finish(reject, new Error(`Unexpected proxy status: ${response.statusCode}`))
         return
       }
 
@@ -227,15 +260,22 @@ function fetchTextThroughHttpProxy ({ proxyPort, url, timeoutMs = 5000 }) {
         data += chunk
       })
       response.on('end', () => {
-        resolve(data)
+        finish(resolve, data)
       })
+      response.on('error', (error) => finish(reject, error))
     })
+
+    hardTimer = setTimeout(() => {
+      controller.abort()
+      request.destroy(timeoutError(`Proxy request timeout after ${timeoutMs}ms`))
+    }, timeoutMs)
 
     request.setTimeout(timeoutMs, () => {
-      request.destroy(new Error('Proxy request timeout'))
+      controller.abort()
+      request.destroy(timeoutError(`Proxy request idle timeout after ${timeoutMs}ms`))
     })
 
-    request.on('error', reject)
+    request.on('error', (error) => finish(reject, error))
     request.end()
   })
 }
@@ -305,6 +345,10 @@ function getSubscriptionSyncLowWatermark (cfg) {
   return normalizeNonNegativeInt(cfg && cfg.subscriptionSyncLowWatermark, 0)
 }
 
+function getSubscriptionStaleAfterDays (cfg) {
+  return normalizePositiveInt(cfg && cfg.subscriptionStaleAfterDays, 30)
+}
+
 function isCacheRefreshEnabled (cfg) {
   return cfg ? cfg.cacheRefreshEnabled !== false : true
 }
@@ -338,7 +382,7 @@ function getLocalInputStatePath (cachePath) {
   return path.join(path.dirname(cachePath), LOCAL_INPUT_STATE_FILE_NAME)
 }
 
-function buildLocalInputState ({ manualNodes }) {
+function buildLocalInputState ({ manualNodes, subscriptions }) {
   const fingerprints = []
   for (const node of xrayCache.deduplicateNodes(manualNodes || [])) {
     const fingerprint = xrayCache.fingerprintNode(node)
@@ -348,11 +392,16 @@ function buildLocalInputState ({ manualNodes }) {
   }
 
   fingerprints.sort()
+  const subscriptionSourceKeys = (Array.isArray(subscriptions) ? subscriptions : [])
+    .map((subscription, index) => xrayCache.getSubscriptionSourceKey(subscription, index + 1))
+    .filter(Boolean)
+    .sort()
 
   const signaturePayload = {
     signatureVersion: LOCAL_INPUT_STATE_SIGNATURE_VERSION,
     semanticsVersion: LOCAL_INPUT_STATE_SEMANTICS_VERSION,
     manualNodeFingerprints: fingerprints,
+    subscriptionSourceKeys,
   }
 
   const signature = `sha256:${crypto.createHash('sha256').update(JSON.stringify(signaturePayload)).digest('hex')}`
@@ -361,6 +410,7 @@ function buildLocalInputState ({ manualNodes }) {
     signatureVersion: LOCAL_INPUT_STATE_SIGNATURE_VERSION,
     semanticsVersion: LOCAL_INPUT_STATE_SEMANTICS_VERSION,
     manualNodeCount: fingerprints.length,
+    subscriptionCount: subscriptionSourceKeys.length,
   }
 }
 
@@ -404,6 +454,7 @@ function writeLocalInputState (statePath, state) {
     signatureVersion: state.signatureVersion,
     semanticsVersion: state.semanticsVersion,
     manualNodeCount: state.manualNodeCount,
+    subscriptionCount: state.subscriptionCount,
     updatedAt: new Date().toISOString(),
   }
 
@@ -620,6 +671,55 @@ function ensureDir (dirPath) {
   }
 }
 
+function getProbeDir (xrayDir) {
+  return path.join(xrayDir, 'probe')
+}
+
+function isProbeTempFileName (fileName) {
+  return /^(config|egress)-.*\.json$/i.test(String(fileName || ''))
+}
+
+function cleanupProbeArtifacts (xrayDir) {
+  if (!xrayDir) {
+    return 0
+  }
+
+  const probeDir = getProbeDir(xrayDir)
+  if (!fs.existsSync(probeDir)) {
+    return 0
+  }
+
+  let removedCount = 0
+  for (const fileName of fs.readdirSync(probeDir)) {
+    const filePath = path.join(probeDir, fileName)
+    let stat = null
+    try {
+      stat = fs.lstatSync(filePath)
+    } catch {
+      continue
+    }
+
+    if (!stat.isFile() || !isProbeTempFileName(fileName)) {
+      continue
+    }
+
+    try {
+      fs.rmSync(filePath, { force: true })
+      removedCount += 1
+    } catch {
+      // ignore cleanup errors
+    }
+  }
+
+  try {
+    fs.rmdirSync(probeDir)
+  } catch {
+    // ignore non-empty or missing dir
+  }
+
+  return removedCount
+}
+
 function writeJsonFile (filePath, value) {
   ensureDir(path.dirname(filePath))
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2))
@@ -660,12 +760,13 @@ function collectNodesFromLinks (links) {
 
 async function loadSubscriptionNodes (subscriptionUrls, log) {
   if (!Array.isArray(subscriptionUrls) || subscriptionUrls.length === 0) {
-    return []
+    return { nodes: [], subscriptions: [] }
   }
 
   const SUBSCRIPTION_BATCH_SIZE = 5
   const uniqueNodes = []
   const seen = new Set()
+  const subscriptions = []
   let rawNodeCount = 0
   const total = subscriptionUrls.length
 
@@ -695,27 +796,57 @@ async function loadSubscriptionNodes (subscriptionUrls, log) {
           } else {
             log.info(`订阅解析成功: ${subscriptionLabel}, nodes=${nodes.length}, bytes=${summary.bytes}, protocols=${protocolSummary}`)
           }
-          return nodes
+          return {
+            url: subUrl,
+            displayLabel: subscriptionLabel,
+            sortOrder: subscriptionIndex,
+            nodes,
+          }
         } finally {
           console.error = origError
           console.warn = origWarn
         }
       } catch (e) {
         log.warn(`订阅更新失败: ${subscriptionLabel}`, e.message || e)
-        return []
+        return {
+          url: subUrl,
+          displayLabel: subscriptionLabel,
+          sortOrder: subscriptionIndex,
+          nodes: [],
+        }
       }
     }))
 
     for (const result of results) {
-      if (result.status === 'fulfilled' && Array.isArray(result.value)) {
-        rawNodeCount += result.value.length
-        appendUniqueNodes(uniqueNodes, seen, result.value)
+      if (result.status === 'fulfilled' && result.value && Array.isArray(result.value.nodes)) {
+        const parsedNodes = result.value.nodes
+        rawNodeCount += parsedNodes.length
+        appendUniqueNodes(uniqueNodes, seen, parsedNodes)
+        subscriptions.push({
+          sourceKey: xrayCache.getSubscriptionSourceKey(result.value.url, result.value.sortOrder),
+          url: result.value.url,
+          displayLabel: result.value.displayLabel,
+          sortOrder: result.value.sortOrder,
+          nodeKeys: xrayCache.deduplicateNodes(parsedNodes)
+            .map(node => xrayCache.getNodeKey(node))
+            .filter(Boolean),
+        })
       }
     }
   }
 
   log.info(`订阅汇总: 原始 ${rawNodeCount} 个节点, 去重后 ${uniqueNodes.length} 个`)
-  return uniqueNodes
+  return { nodes: uniqueNodes, subscriptions }
+}
+
+function getStage3RoundSummaryPath (xrayDir) {
+  return path.join(xrayDir, 'stage3-last-round.json')
+}
+
+function writeStage3RoundSummary ({ xrayDir, summary }) {
+  const summaryPath = getStage3RoundSummaryPath(xrayDir)
+  writeJsonFile(summaryPath, summary)
+  return summaryPath
 }
 
 function createNodeMap (nodes) {
@@ -760,12 +891,12 @@ function sortEntriesForRefresh (entries) {
   })
 }
 
-async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT }) {
+async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeLifecycle = null }) {
   if (!node || typeof node !== 'object') {
     return { country: '', owner: '' }
   }
 
-  const probeDir = path.join(xrayDir, 'probe')
+  const probeDir = getProbeDir(xrayDir)
   ensureDir(probeDir)
   const configPath = path.join(probeDir, `egress-${Date.now()}-${Math.random().toString(16).slice(2)}.json`)
   const proxyPort = await portFinder.findFreePort()
@@ -790,16 +921,27 @@ async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeou
     binPath,
     configPath,
     log,
+    purpose: 'egress',
   })
+  if (probeLifecycle && typeof probeLifecycle.registerController === 'function') {
+    probeLifecycle.registerController(controller)
+  }
 
   let exitAddress = ''
   try {
-    exitAddress = await detectEgressAddressThroughProxy({
-      proxyPort,
-      timeoutMs,
-    })
+    exitAddress = await withTimeout(
+      detectEgressAddressThroughProxy({
+        proxyPort,
+        timeoutMs,
+      }),
+      timeoutMs + 1000,
+      `Egress metadata lookup timeout after ${timeoutMs}ms`
+    )
   } finally {
     await controller.stop().catch(() => {})
+    if (probeLifecycle && typeof probeLifecycle.unregisterController === 'function') {
+      probeLifecycle.unregisterController(controller)
+    }
     try {
       fs.rmSync(configPath, { force: true })
     } catch {
@@ -832,13 +974,14 @@ async function annotateProbeEntries (entries, options = {}) {
     const fallbackCountry = normalizeCountryCode(entry && (entry.country || entry.countryCode) || (existingEntry && existingEntry.country))
 
     let metadata = null
-    if (useEgressMetadata) {
+    if (useEgressMetadata && (!fallbackCountry || !fallbackOwner)) {
       try {
         metadata = await resolveEntryEgressMetadata({
           binPath: options.binPath,
           xrayDir: options.xrayDir,
           node: entry && entry.node,
           log: options.log,
+          probeLifecycle: options.probeLifecycle,
         })
       } catch {
         metadata = null
@@ -920,10 +1063,35 @@ function createCacheSyncPlan (candidateNodes, existingEntries, stats = {}) {
 const Plugin = function (context) {
   const { config: globalConfig, event, log, server } = context
   let currentProbe = null
+  let currentXrayDir = ''
   let cacheRefreshTimer = null
   let refreshGeneration = 0
   const injectedRules = []
   let api = null
+  const transientProbeControllers = new Set()
+
+  function registerTransientProbeController (controller) {
+    if (controller && typeof controller.stop === 'function') {
+      transientProbeControllers.add(controller)
+    }
+  }
+
+  function unregisterTransientProbeController (controller) {
+    transientProbeControllers.delete(controller)
+  }
+
+  async function stopTransientProbeControllers () {
+    const controllers = [...transientProbeControllers]
+    transientProbeControllers.clear()
+    await Promise.all(controllers.map(controller => controller.stop().catch(() => {})))
+  }
+
+  function cleanupStaleProbeArtifacts () {
+    const removedCount = cleanupProbeArtifacts(currentXrayDir)
+    if (removedCount > 0) {
+      log.info(`Xray 探测临时文件已清理: ${removedCount} 个 -> ${getProbeDir(currentXrayDir)}`)
+    }
+  }
 
   function clearCacheRefreshTimer () {
     if (cacheRefreshTimer) {
@@ -1058,6 +1226,8 @@ const Plugin = function (context) {
 
       const userBasePath = globalConfig.get().server.setting.userBasePath
       const xrayDir = path.join(userBasePath, 'xray')
+      currentXrayDir = xrayDir
+      cleanupStaleProbeArtifacts()
       const liveConfigPath = path.join(xrayDir, 'config.json')
       const liveConfigBakPath = path.join(xrayDir, 'config.json.bak')
       const cachePath = path.join(xrayDir, 'nodes_cache.sqlite')
@@ -1189,6 +1359,8 @@ const Plugin = function (context) {
       refreshGeneration += 1
       clearCacheRefreshTimer()
       await api.stopBackgroundProbe()
+      await stopTransientProbeControllers()
+      cleanupStaleProbeArtifacts()
       await api.removeRules()
       if (server) {
         await server.reload()
@@ -1223,7 +1395,8 @@ const Plugin = function (context) {
       const manualNodes = collectNodesFromLinks(cfg.nodes)
       const subscriptionSyncDecision = getSubscriptionSyncDecision({ cachePath, cfg })
       const localInputStatePath = getLocalInputStatePath(cachePath)
-      const currentLocalInputState = buildLocalInputState({ manualNodes })
+      const currentLocalInputState = buildLocalInputState({ manualNodes, subscriptions: cfg.subscriptions })
+      let shouldSkipSubscriptionFetch = subscriptionSyncDecision.shouldSkip
 
       if (subscriptionSyncDecision.shouldSkip) {
         const savedLocalInputState = readLocalInputState(localInputStatePath)
@@ -1238,6 +1411,7 @@ const Plugin = function (context) {
           }
           return
         }
+        shouldSkipSubscriptionFetch = false
       }
 
       const configSourcePath = fs.existsSync(liveConfigBakPath) ? liveConfigBakPath : liveConfigPath
@@ -1245,14 +1419,17 @@ const Plugin = function (context) {
       const cacheEntries = xrayCache.readCacheEntries(cachePath)
       const cacheNodes = cacheEntries.map(entry => entry.node)
       let subscriptionNodes = []
+      let subscriptionSnapshots = []
 
-      if (subscriptionSyncDecision.shouldSkip) {
+      if (shouldSkipSubscriptionFetch) {
         log.info(`Xray 订阅抓取已跳过: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
       } else {
         if (subscriptionSyncDecision.lowWatermark > 0) {
           log.info(`Xray 订阅抓取已触发: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
         }
-        subscriptionNodes = await loadSubscriptionNodes(cfg.subscriptions, log)
+        const subscriptionResult = await loadSubscriptionNodes(cfg.subscriptions, log)
+        subscriptionNodes = subscriptionResult.nodes
+        subscriptionSnapshots = subscriptionResult.subscriptions
       }
 
       if (generation !== refreshGeneration) {
@@ -1266,7 +1443,7 @@ const Plugin = function (context) {
       appendItems(candidateNodeSources, subscriptionNodes)
       const deduplicatedCandidateNodes = xrayCache.deduplicateNodes(candidateNodeSources)
       const candidateNodes = deduplicatedCandidateNodes.filter(node => parser.isNodeSupportedByCurrentXray(node))
-      const subscriptionFetchMode = subscriptionSyncDecision.shouldSkip ? 'skipped' : 'loaded'
+      const subscriptionFetchMode = shouldSkipSubscriptionFetch ? 'skipped' : 'loaded'
       const effectiveCacheLabel = subscriptionSyncDecision.effectiveCacheCount == null ? 'n/a' : subscriptionSyncDecision.effectiveCacheCount
 
       log.info(`Xray 节点汇总候选: configBak=${configNodes.length}, cache=${cacheNodes.length}, manual=${manualNodes.length}, subscriptions=${subscriptionNodes.length}, subscriptionFetch=${subscriptionFetchMode}, effectiveCache=${effectiveCacheLabel}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, deduplicated=${deduplicatedCandidateNodes.length}, unsupportedDropped=${deduplicatedCandidateNodes.length - candidateNodes.length}, selected=${candidateNodes.length}`)
@@ -1282,6 +1459,11 @@ const Plugin = function (context) {
 
       const syncStats = { countryReadyCount: 0 }
       const cacheSyncPlan = createCacheSyncPlan(candidateNodes, cacheEntries, syncStats)
+      const candidateNodeKeys = new Set(candidateNodes.map(node => xrayCache.getNodeKey(node)).filter(Boolean))
+      const acceptedSubscriptionSnapshots = subscriptionSnapshots.map(subscription => ({
+        ...subscription,
+        nodeKeys: (subscription.nodeKeys || []).filter(nodeKey => candidateNodeKeys.has(nodeKey)),
+      }))
 
       if (!cacheSyncPlan.hasChanges) {
         log.info(`Xray 节点缓存同步已跳过: 候选集未变化, selected=${cacheSyncPlan.selectedCount}, countryReady=${syncStats.countryReadyCount}`)
@@ -1295,6 +1477,17 @@ const Plugin = function (context) {
           throw new Error('Xray SQLite cache is unavailable')
         }
         log.info(`Xray 节点缓存已同步: 新增 ${cacheSyncPlan.addedEntries.length} 个节点, 删除 ${cacheSyncPlan.removedNodes.length} 个节点, selected=${cacheSyncPlan.selectedCount}, countryReady=${syncStats.countryReadyCount} -> ${cachePath}`)
+      }
+
+      if (!shouldSkipSubscriptionFetch) {
+        const subscriptionSyncStats = xrayCache.syncSubscriptions(cachePath, acceptedSubscriptionSnapshots, {
+          staleAfterDays: getSubscriptionStaleAfterDays(cfg),
+        })
+        if (subscriptionSyncStats) {
+          log.info(`Xray 订阅来源已同步: configured=${subscriptionSyncStats.configured}, unconfigured=${subscriptionSyncStats.unconfigured}, refs=${subscriptionSyncStats.refs}`)
+        } else {
+          log.warn('Xray 订阅来源同步失败')
+        }
       }
 
       if (!writeLocalInputState(localInputStatePath, currentLocalInputState)) {
@@ -1324,6 +1517,7 @@ const Plugin = function (context) {
       const cachedEntryRowIds = xrayCache.readCacheRowIds(cachePath, { orderBy: 'refresh' })
       const configuredBatchSize = normalizePositiveInt(cfg.cacheRefreshBatchSize, CACHE_REFRESH_BATCH_SIZE)
       const batchSize = getCacheRefreshBatchSize(cfg)
+      const plannedBatchCount = cachedEntryRowIds.length === 0 ? 0 : Math.ceil(cachedEntryRowIds.length / batchSize)
 
       if (configuredBatchSize !== batchSize) {
         log.warn(`Xray 缓存周期探测批次大小过大，已自动收敛: requested=${configuredBatchSize}, effective=${batchSize}`)
@@ -1331,7 +1525,27 @@ const Plugin = function (context) {
 
       if (cachedEntryRowIds.length === 0) {
         log.warn('Xray 缓存周期探测: 缓存文件中没有可探测的节点')
-        scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval))
+        const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
+        writeStage3RoundSummary({
+          xrayDir,
+          summary: {
+            status: 'empty',
+            startedAt: new Date(roundStartedAt).toISOString(),
+            endedAt: new Date().toISOString(),
+            durationMs: Date.now() - roundStartedAt,
+            candidateCount: 0,
+            batchSize,
+            plannedBatchCount,
+            processedBatchCount: 0,
+            successBatchCount: 0,
+            failedBatchCount: 0,
+            availableNodeCount: 0,
+            removedNodeCount: 0,
+            nextRefreshAt: new Date(Date.now() + nextDelay).toISOString(),
+            subscriptions: xrayCache.readSubscriptionAvailabilitySummary(cachePath).filter(subscription => subscription.configured),
+          },
+        })
+        scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
         return
       }
 
@@ -1339,8 +1553,10 @@ const Plugin = function (context) {
 
       let successBatchCount = 0
       let availableCount = 0
+      let removedCount = 0
       let batchIndex = 0
       let processedCount = 0
+      const roundAvailableNodeKeys = new Set()
 
       while (processedCount < cachedEntryRowIds.length) {
         if (generation !== refreshGeneration) {
@@ -1389,6 +1605,10 @@ const Plugin = function (context) {
             xrayDir,
             existingEntries: targetBatch,
             log,
+            probeLifecycle: {
+              registerController: registerTransientProbeController,
+              unregisterController: unregisterTransientProbeController,
+            },
           })
           if (annotatedEntries.length === 0) {
             const networkStatusAfterEmptyResult = await ensureLocalNetworkAvailabilityForRefresh({
@@ -1413,6 +1633,13 @@ const Plugin = function (context) {
           processedCount += targetBatchRowIds.length
           successBatchCount += 1
           availableCount += annotatedEntries.length
+          removedCount += Math.max(0, candidateNodes.length - annotatedEntries.length)
+          for (const entry of annotatedEntries) {
+            const nodeKey = xrayCache.getNodeKey(entry && entry.node)
+            if (nodeKey) {
+              roundAvailableNodeKeys.add(nodeKey)
+            }
+          }
 
           log.info(`Xray 缓存周期探测批次已写回: ${batchIndex}, available=${annotatedEntries.length}, cache=${cachedEntryRowIds.length} -> ${cachePath}`)
 
@@ -1449,14 +1676,74 @@ const Plugin = function (context) {
 
       if (successBatchCount === 0) {
         log.warn('Xray 缓存周期探测: 所有批次都失败，保留原缓存')
-        scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval))
+        const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
+        const nextRefreshAt = new Date(Date.now() + nextDelay).toISOString()
+        writeStage3RoundSummary({
+          xrayDir,
+          summary: {
+            status: 'all_failed',
+            startedAt: new Date(roundStartedAt).toISOString(),
+            endedAt: new Date().toISOString(),
+            durationMs: Date.now() - roundStartedAt,
+            candidateCount: cachedEntryRowIds.length,
+            batchSize,
+            plannedBatchCount,
+            processedBatchCount: batchIndex,
+            successBatchCount,
+            failedBatchCount: batchIndex - successBatchCount,
+            availableNodeCount: availableCount,
+            removedNodeCount: 0,
+            nextRefreshAt,
+            subscriptions: xrayCache.readSubscriptionAvailabilitySummary(cachePath).filter(subscription => subscription.configured),
+          },
+        })
+        scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
         return
       }
 
       log.info(`Xray 缓存文件已刷新: 全量检测 ${cachedEntryRowIds.length} 个节点，成功批次 ${successBatchCount}/${batchIndex}，保留 ${availableCount} 个可用节点 -> ${cachePath}`)
 
       if (generation === refreshGeneration) {
-        scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval))
+        const roundStatus = successBatchCount === plannedBatchCount ? 'completed' : 'partial'
+        const availabilityResult = roundStatus === 'completed'
+          ? xrayCache.updateSubscriptionAvailability(cachePath, {
+              staleAfterDays: getSubscriptionStaleAfterDays(cfg),
+              availableNodeKeys: [...roundAvailableNodeKeys],
+            })
+          : null
+        if (availabilityResult && availabilityResult.deleted.length > 0) {
+          log.info(`Xray stale 订阅元数据已删除: ${availabilityResult.deleted.length} 个`)
+        }
+        const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
+        const nextRefreshAt = new Date(Date.now() + nextDelay).toISOString()
+        const summaryPath = writeStage3RoundSummary({
+          xrayDir,
+          summary: {
+            status: roundStatus,
+            startedAt: new Date(roundStartedAt).toISOString(),
+            endedAt: new Date().toISOString(),
+            durationMs: Date.now() - roundStartedAt,
+            candidateCount: cachedEntryRowIds.length,
+            batchSize,
+            plannedBatchCount,
+            processedBatchCount: batchIndex,
+            successBatchCount,
+            failedBatchCount: batchIndex - successBatchCount,
+            availableNodeCount: availableCount,
+            removedNodeCount: removedCount,
+            nextRefreshAt,
+            subscriptions: (availabilityResult ? availabilityResult.summary : xrayCache.readSubscriptionAvailabilitySummary(cachePath, { availableNodeKeys: [...roundAvailableNodeKeys] }))
+              .filter(subscription => subscription.configured)
+              .sort((left, right) => {
+                if (left.availableNodeCount !== right.availableNodeCount) {
+                  return right.availableNodeCount - left.availableNodeCount
+                }
+                return left.sortOrder - right.sortOrder
+              }),
+          },
+        })
+        log.info(`Xray 阶段三轮次汇总已写入: ${summaryPath}`)
+        scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
       }
     },
 
@@ -1518,7 +1805,10 @@ module.exports = {
     createCacheSyncPlan,
     buildCacheEntryQueryOptions,
     buildLocalInputState,
+    cleanupProbeArtifacts,
     getSubscriptionSyncDecision,
+    getSubscriptionStaleAfterDays,
+    getStage3RoundSummaryPath,
     getLocalInputStatePath,
     isLocalInputStateMatch,
     isCacheRefreshEnabled,

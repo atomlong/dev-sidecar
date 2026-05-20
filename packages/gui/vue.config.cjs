@@ -1,5 +1,7 @@
+const path = require('node:path')
 const { defineConfig } = require('@vue/cli-service')
 const webpack = require('webpack')
+const electronBuilderConfig = require('./electron-builder.config.cjs')
 
 const publishUrl = process.env.VUE_APP_PUBLISH_URL
 if (publishUrl) {
@@ -40,6 +42,29 @@ module.exports = defineConfig({
           type: 'javascript/auto',
         },
       ],
+    },
+  },
+  pluginOptions: {
+    electronBuilder: {
+      mainProcessFile: './src/background.js',
+      customFileProtocol: './',
+      externals: [
+        'better-sqlite3',
+        'bindings',
+        'file-uri-to-path',
+        '@starknt/sysproxy',
+        '@starknt/sysproxy-linux-x64-gnu',
+        '@starknt/shutdown-handler-napi',
+        '@starknt/shutdown-handler-napi-linux-x64-gnu',
+      ],
+      nodeIntegration: true,
+      builderOptions: {
+        ...electronBuilderConfig,
+        files: ['**/*'],
+      },
+      chainWebpackMainProcess (config) {
+        config.entry('mitmproxy').add(path.join(__dirname, 'src/bridge/mitmproxy.js'))
+      },
     },
   },
 })

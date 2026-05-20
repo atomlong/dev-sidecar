@@ -70,6 +70,7 @@ function buildNodesTableSchemaSql () {
   return `
     CREATE TABLE IF NOT EXISTS nodes (
       fingerprint TEXT PRIMARY KEY,
+      node_key TEXT UNIQUE,
       node_json TEXT NOT NULL,
       stable INTEGER NOT NULL DEFAULT 0,
       delay REAL,
@@ -82,13 +83,86 @@ function buildNodesTableSchemaSql () {
   `
 }
 
+function createNodeKey (fingerprint) {
+  const value = String(fingerprint || '')
+  if (!value) {
+    return ''
+  }
+  return require('node:crypto').createHash('sha256').update(value).digest('hex').slice(0, 32)
+}
+
+function getNodeKey (node) {
+  const fingerprint = fingerprintNode(node)
+  return fingerprint ? createNodeKey(fingerprint) : ''
+}
+
+function ensureSqliteColumn (db, tableName, columnName, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all()
+  if (columns.some(column => column && column.name === columnName)) {
+    return
+  }
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
+}
+
+function backfillNodeKeys (db) {
+  const rows = db.prepare('SELECT fingerprint FROM nodes WHERE node_key IS NULL OR node_key = \'\'').all()
+  if (rows.length === 0) {
+    return
+  }
+
+  const update = db.prepare('UPDATE nodes SET node_key = ? WHERE fingerprint = ?')
+  const apply = db.transaction((items) => {
+    for (const row of items) {
+      const fingerprint = row && row.fingerprint
+      const nodeKey = createNodeKey(fingerprint)
+      if (fingerprint && nodeKey) {
+        update.run(nodeKey, fingerprint)
+      }
+    }
+  })
+  apply(rows)
+}
+
+function createSubscriptionSchema (db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      source_key TEXT PRIMARY KEY,
+      display_label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      configured INTEGER NOT NULL DEFAULT 1,
+      last_seen_stage2_at TEXT,
+      last_available_at TEXT,
+      zero_available_since TEXT,
+      stale_after_days INTEGER NOT NULL DEFAULT 30,
+      created_at TEXT,
+      updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS subscription_node_refs (
+      subscription_source_key TEXT NOT NULL,
+      node_key TEXT NOT NULL,
+      last_seen_stage2_at TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      PRIMARY KEY (subscription_source_key, node_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_subscription_node_refs_node_key ON subscription_node_refs(node_key);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_configured_sort ON subscriptions(configured DESC, sort_order ASC);
+  `)
+}
+
 function createSqliteSchema (db) {
   db.exec(buildNodesTableSchemaSql())
+  ensureSqliteColumn(db, 'nodes', 'node_key', 'TEXT')
+  backfillNodeKeys(db)
   db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_node_key ON nodes(node_key);
     CREATE INDEX IF NOT EXISTS idx_nodes_sort ON nodes(stable DESC, delay ASC, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_nodes_country_sort ON nodes(country, stable DESC, delay ASC, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_nodes_refresh ON nodes(updated_at ASC, delay ASC);
   `)
+  createSubscriptionSchema(db)
 }
 
 function openSqliteCache (cacheFilePath) {
@@ -281,6 +355,7 @@ function serializeCacheEntryForSqlite (entry) {
 
   return {
     fingerprint,
+    nodeKey: createNodeKey(fingerprint),
     nodeJson: JSON.stringify(normalizedEntry.node),
     stable: normalizedEntry.stable === true || normalizedEntry.stable === 'true' ? 1 : 0,
     delay: Number.isFinite(normalizedEntry.delay) ? normalizedEntry.delay : null,
@@ -564,9 +639,10 @@ function countSqliteCacheEntries (cacheFilePath, filters = {}) {
 
 function upsertSqliteEntryStatement (db) {
   return db.prepare(`
-    INSERT INTO nodes (fingerprint, node_json, stable, delay, country, owner, source, updated_at, tag)
-    VALUES (@fingerprint, @nodeJson, @stable, @delay, @country, @owner, @source, @updatedAt, @tag)
+    INSERT INTO nodes (fingerprint, node_key, node_json, stable, delay, country, owner, source, updated_at, tag)
+    VALUES (@fingerprint, @nodeKey, @nodeJson, @stable, @delay, @country, @owner, @source, @updatedAt, @tag)
     ON CONFLICT(fingerprint) DO UPDATE SET
+      node_key = excluded.node_key,
       node_json = excluded.node_json,
       stable = excluded.stable,
       delay = excluded.delay,
@@ -680,6 +756,237 @@ function deduplicateNodes (nodes) {
     unique.push(cloned)
   }
   return unique
+}
+
+function normalizeSubscriptionUrl (value) {
+  return String(value || '').trim()
+}
+
+function getSubscriptionSourceKey (value, occurrence = null) {
+  const normalized = normalizeSubscriptionUrl(value)
+  if (!normalized) {
+    return ''
+  }
+  const suffix = Number.isInteger(occurrence) && occurrence > 0 ? `#${occurrence}` : ''
+  return require('node:crypto').createHash('sha256').update(`${normalized}${suffix}`).digest('hex')
+}
+
+function normalizeSubscriptionSnapshot (subscription, fallbackOrder = 0) {
+  if (!subscription || typeof subscription !== 'object') {
+    return null
+  }
+
+  const sourceKey = subscription.sourceKey || getSubscriptionSourceKey(subscription.url)
+  if (!sourceKey) {
+    return null
+  }
+
+  const nodeKeys = [...new Set((subscription.nodeKeys || [])
+    .map(nodeKey => String(nodeKey || '').trim())
+    .filter(Boolean))]
+
+  return {
+    sourceKey,
+    displayLabel: String(subscription.displayLabel || subscription.url || sourceKey).slice(0, 500),
+    sortOrder: Number.isInteger(subscription.sortOrder) ? subscription.sortOrder : fallbackOrder,
+    configured: subscription.configured === false ? 0 : 1,
+    nodeKeys,
+  }
+}
+
+function syncSubscriptions (cacheFilePath, subscriptions, options = {}) {
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath)
+    if (!db) {
+      return null
+    }
+
+    const now = options.now || formatLocalTimestamp()
+    const staleAfterDays = Math.max(1, Number(options.staleAfterDays) || 30)
+    const normalizedSubscriptions = (subscriptions || [])
+      .map((subscription, index) => normalizeSubscriptionSnapshot(subscription, index + 1))
+      .filter(Boolean)
+    const currentSourceKeys = new Set(normalizedSubscriptions.map(subscription => subscription.sourceKey))
+    const existingRows = db.prepare('SELECT source_key FROM subscriptions WHERE configured = 1').all()
+    const staleConfiguredKeys = existingRows
+      .map(row => row && row.source_key)
+      .filter(sourceKey => sourceKey && !currentSourceKeys.has(sourceKey))
+
+    const upsertSubscription = db.prepare(`
+      INSERT INTO subscriptions (source_key, display_label, sort_order, configured, last_seen_stage2_at, stale_after_days, created_at, updated_at)
+      VALUES (@sourceKey, @displayLabel, @sortOrder, 1, @now, @staleAfterDays, @now, @now)
+      ON CONFLICT(source_key) DO UPDATE SET
+        display_label = excluded.display_label,
+        sort_order = excluded.sort_order,
+        configured = 1,
+        last_seen_stage2_at = excluded.last_seen_stage2_at,
+        stale_after_days = excluded.stale_after_days,
+        updated_at = excluded.updated_at
+    `)
+    const markUnconfigured = db.prepare('UPDATE subscriptions SET configured = 0, updated_at = ? WHERE source_key = ?')
+    const deleteRefsForSubscription = db.prepare('DELETE FROM subscription_node_refs WHERE subscription_source_key = ?')
+    const upsertRef = db.prepare(`
+      INSERT INTO subscription_node_refs (subscription_source_key, node_key, last_seen_stage2_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(subscription_source_key, node_key) DO UPDATE SET
+        last_seen_stage2_at = excluded.last_seen_stage2_at,
+        updated_at = excluded.updated_at
+    `)
+
+    const apply = db.transaction(() => {
+      for (const sourceKey of staleConfiguredKeys) {
+        markUnconfigured.run(now, sourceKey)
+      }
+      for (const subscription of normalizedSubscriptions) {
+        upsertSubscription.run({
+          sourceKey: subscription.sourceKey,
+          displayLabel: subscription.displayLabel,
+          sortOrder: subscription.sortOrder,
+          staleAfterDays,
+          now,
+        })
+        deleteRefsForSubscription.run(subscription.sourceKey)
+        for (const nodeKey of subscription.nodeKeys) {
+          upsertRef.run(subscription.sourceKey, nodeKey, now, now, now)
+        }
+      }
+    })
+    apply()
+
+    return {
+      configured: normalizedSubscriptions.length,
+      unconfigured: staleConfiguredKeys.length,
+      refs: normalizedSubscriptions.reduce((count, subscription) => count + subscription.nodeKeys.length, 0),
+    }
+  } catch {
+    return null
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
+function readSubscriptionAvailabilitySummary (cacheFilePath, options = {}) {
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath)
+    if (!db) {
+      return []
+    }
+
+    const roundAvailableNodeKeys = new Set((options.availableNodeKeys || [])
+      .map(nodeKey => String(nodeKey || '').trim())
+      .filter(Boolean))
+
+    const rows = db.prepare(`
+      SELECT
+        s.source_key AS sourceKey,
+        s.display_label AS displayLabel,
+        s.sort_order AS sortOrder,
+        s.configured AS configured,
+        s.last_available_at AS lastAvailableAt,
+        s.zero_available_since AS zeroAvailableSince,
+        s.stale_after_days AS staleAfterDays,
+        COUNT(r.node_key) AS stage2NodeCount,
+        SUM(CASE WHEN n.node_key IS NOT NULL THEN 1 ELSE 0 END) AS retainedNodeCount
+      FROM subscriptions s
+      LEFT JOIN subscription_node_refs r ON r.subscription_source_key = s.source_key
+      LEFT JOIN nodes n ON n.node_key = r.node_key
+      GROUP BY s.source_key
+      ORDER BY s.configured DESC, s.sort_order ASC
+    `).all().map(row => ({
+      sourceKey: row.sourceKey,
+      displayLabel: row.displayLabel,
+      sortOrder: Number(row.sortOrder) || 0,
+      configured: row.configured === 1,
+      lastAvailableAt: row.lastAvailableAt || null,
+      zeroAvailableSince: row.zeroAvailableSince || null,
+      staleAfterDays: Number(row.staleAfterDays) || 30,
+      stage2NodeCount: Number(row.stage2NodeCount) || 0,
+      retainedNodeCount: Number(row.retainedNodeCount) || 0,
+      availableNodeCount: 0,
+    }))
+
+    for (const row of rows) {
+      if (roundAvailableNodeKeys.size === 0) {
+        continue
+      }
+      const refs = db.prepare('SELECT node_key FROM subscription_node_refs WHERE subscription_source_key = ?').all(row.sourceKey)
+      row.availableNodeCount = refs.reduce((count, ref) => count + (roundAvailableNodeKeys.has(ref.node_key) ? 1 : 0), 0)
+    }
+
+    rows.sort((left, right) => {
+      if (left.configured !== right.configured) {
+        return left.configured ? -1 : 1
+      }
+      if (left.availableNodeCount !== right.availableNodeCount) {
+        return right.availableNodeCount - left.availableNodeCount
+      }
+      return left.sortOrder - right.sortOrder
+    })
+    return rows
+  } catch {
+    return []
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
+function updateSubscriptionAvailability (cacheFilePath, options = {}) {
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath)
+    if (!db) {
+      return null
+    }
+
+    const now = options.now || formatLocalTimestamp()
+    const staleAfterDays = Math.max(1, Number(options.staleAfterDays) || 30)
+    const rows = readSubscriptionAvailabilitySummary(cacheFilePath, {
+      availableNodeKeys: options.availableNodeKeys,
+    })
+    const updateAvailable = db.prepare('UPDATE subscriptions SET last_available_at = ?, zero_available_since = NULL, stale_after_days = ?, updated_at = ? WHERE source_key = ?')
+    const updateZero = db.prepare('UPDATE subscriptions SET zero_available_since = COALESCE(zero_available_since, ?), stale_after_days = ?, updated_at = ? WHERE source_key = ?')
+    const deleteRefs = db.prepare('DELETE FROM subscription_node_refs WHERE subscription_source_key = ?')
+    const deleteSubscription = db.prepare('DELETE FROM subscriptions WHERE source_key = ?')
+    const deleted = []
+
+    const apply = db.transaction(() => {
+      for (const row of rows) {
+        if (row.availableNodeCount > 0) {
+          updateAvailable.run(now, staleAfterDays, now, row.sourceKey)
+          continue
+        }
+
+        updateZero.run(now, staleAfterDays, now, row.sourceKey)
+        const zeroSince = row.zeroAvailableSince || now
+        const zeroSinceTime = new Date(zeroSince).getTime()
+        const nowTime = new Date(now).getTime()
+        const staleMs = staleAfterDays * 24 * 60 * 60 * 1000
+        if (Number.isFinite(zeroSinceTime) && Number.isFinite(nowTime) && nowTime - zeroSinceTime >= staleMs && row.retainedNodeCount === 0) {
+          deleteRefs.run(row.sourceKey)
+          deleteSubscription.run(row.sourceKey)
+          deleted.push(row.sourceKey)
+        }
+      }
+    })
+    apply()
+
+    const summary = readSubscriptionAvailabilitySummary(cacheFilePath, {
+      availableNodeKeys: options.availableNodeKeys,
+    })
+    return { summary, deleted }
+  } catch {
+    return null
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
 }
 
 function isProxyOutbound (outbound) {
@@ -891,13 +1198,18 @@ module.exports = {
   deduplicateNodes,
   extractNodesFromXrayConfigFile,
   fingerprintNode,
+  getNodeKey,
+  getSubscriptionSourceKey,
   countCacheEntries,
   readCacheEntries,
   readCacheRowIds: readSqliteCacheRowIds,
   readCacheEntriesByRowIds: readSqliteCacheEntriesByRowIds,
+  readSubscriptionAvailabilitySummary,
   readCacheNodes,
   buildCacheEntriesFromObservatory,
   mergeCacheEntries,
+  syncSubscriptions,
+  updateSubscriptionAvailability,
   writeCacheUpdates,
   writeCache,
   sortCacheEntries,

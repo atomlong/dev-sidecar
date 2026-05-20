@@ -84,9 +84,26 @@ function isObservationReady (metrics, expectedSamples = 1, expectedSubjectCount 
   })
 }
 
-function stopChild (child) {
+function stopChild (child, options = {}) {
   return new Promise((resolve) => {
-    if (!child || child.killed || child.exitCode != null || child.signalCode != null) {
+    if (!child || !child.pid || child.exitCode != null || child.signalCode != null) {
+      resolve()
+      return
+    }
+
+    const pid = child.pid
+    const log = options.log
+    const label = options.label || 'Xray 探测进程'
+    const isProcessAlive = () => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    if (!isProcessAlive()) {
       resolve()
       return
     }
@@ -101,20 +118,32 @@ function stopChild (child) {
     }
 
     child.once('close', finish)
-    child.kill('SIGTERM')
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      finish()
+      return
+    }
 
     setTimeout(() => {
       if (finished) {
         return
       }
       try {
-        child.kill('SIGKILL')
+        if (isProcessAlive()) {
+          process.kill(pid, 'SIGKILL')
+        }
       } catch {
         // ignore
       }
     }, 3000)
 
     setTimeout(finish, 3500)
+    setTimeout(() => {
+      if (!finished && isProcessAlive() && log && typeof log.warn === 'function') {
+        log.warn(`${label} 发送 SIGKILL 后仍未退出: pid=${pid}`)
+      }
+    }, 3400)
   })
 }
 
@@ -153,26 +182,31 @@ async function waitForObservatoryMetrics ({ metricsPort, timeoutMs = 45000, poll
 }
 
 function startProbeProcess ({ binPath, configPath, metricsPort, log, timeoutMs, expectedSamples = 1, expectedSubjectCount = 0 }) {
-  const child = startXrayProcess({ binPath, configPath, log }).child
+  const child = startXrayProcess({ binPath, configPath, log, purpose: 'batch' }).child
 
-  const promise = waitForObservatoryMetrics({ metricsPort, timeoutMs, child, expectedSamples, expectedSubjectCount }).finally(() => stopChild(child))
+  const promise = waitForObservatoryMetrics({ metricsPort, timeoutMs, child, expectedSamples, expectedSubjectCount }).finally(() => stopChild(child, { log, label: 'Xray 批次探测进程' }))
 
   return {
     child,
     promise,
-    stop: () => stopChild(child),
+    stop: () => stopChild(child, { log, label: 'Xray 批次探测进程' }),
   }
 }
 
-function startXrayProcess ({ binPath, configPath, log }) {
+function startXrayProcess ({ binPath, configPath, log, purpose = 'probe' }) {
   const child = spawn(binPath, ['-c', configPath])
 
   if (!child || !child.pid) {
     throw new Error('Failed to start Xray probe process')
   }
 
-  if (log && typeof log.info === 'function') {
-    log.info(`正在启动 Xray 探测实例: ${binPath} -c ${configPath}`)
+  if (purpose !== 'egress' && log && typeof log.info === 'function') {
+    const label = purpose === 'egress'
+      ? 'Xray 出口元数据探测进程'
+      : purpose === 'batch'
+        ? 'Xray 批次探测进程'
+        : 'Xray 探测进程'
+    log.info(`正在启动 ${label}: ${binPath} -c ${configPath}`)
   }
 
   child.stdout.on('data', (data) => {
@@ -197,7 +231,7 @@ function startXrayProcess ({ binPath, configPath, log }) {
 
   return {
     child,
-    stop: () => stopChild(child),
+    stop: () => stopChild(child, { log, label: purpose === 'egress' ? 'Xray 出口元数据探测进程' : 'Xray 探测进程' }),
   }
 }
 
