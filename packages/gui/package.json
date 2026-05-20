@@ -32,7 +32,7 @@
     "adm-zip": "^0.5.17",
     "ant-design-vue": "^4.2.6",
     "archiver": "^7.0.1",
-    "better-sqlite3": "11.10.0",
+    "better-sqlite3": "12.10.0",
     "bindings": "^1.5.0",
     "core-js": "^3.49.0",
     "electron-baidu-tongji": "^1.0.5",

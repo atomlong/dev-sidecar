@@ -549,6 +549,10 @@ function getSubscriptionStaleAfterDays (cfg) {
   return normalizePositiveInt(cfg && cfg.subscriptionStaleAfterDays, 30)
 }
 
+function getSubscriptionStaleAfterDays (cfg) {
+  return normalizePositiveInt(cfg && cfg.subscriptionStaleAfterDays, 30)
+}
+
 function isCacheRefreshEnabled (cfg) {
   return cfg ? cfg.cacheRefreshEnabled !== false : true
 }
@@ -2374,6 +2378,7 @@ const Plugin = function (context) {
           }
           shouldSkipSubscriptionFetch = false
         }
+        shouldSkipSubscriptionFetch = false
       }
 
       const configSourcePath = fs.existsSync(liveConfigBakPath) ? liveConfigBakPath : liveConfigPath

@@ -628,6 +628,7 @@ function createLegacyNodesSchema (db) {
     CREATE INDEX IF NOT EXISTS idx_nodes_refresh ON nodes(updated_at ASC, delay ASC);
     CREATE INDEX IF NOT EXISTS idx_nodes_next_check ON nodes(next_check_at ASC, stable DESC, delay ASC, updated_at ASC);
   `)
+  createSubscriptionSchema(db)
 }
 
 function createHotColdSchema (db) {
