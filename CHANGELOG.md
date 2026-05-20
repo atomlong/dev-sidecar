@@ -23,6 +23,7 @@ All notable changes to this project will be documented in this file.
 - Fixed stale subscription cleanup semantics so subscription metadata is removed only when it is older than the configured threshold and no cache nodes still reference it; `nodes` rows remain governed by stage 3 unusable-node probing.
 - Fixed egress metadata probes being started for nodes that already have both `country` and `owner` metadata.
 - Fixed lingering egress metadata Xray child processes by stopping them via the real child PID instead of relying on `child.killed` state.
+- Fixed macOS GitHub Actions DMG packaging by keeping `app-builder-lib@22.14.13` paired with matching `dmg-builder` dependencies under pnpm.
 
 ## [v2.1.3] - 2026-05-16
 
