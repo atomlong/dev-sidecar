@@ -554,6 +554,7 @@ function createCacheMetaSchema (db) {
       value TEXT NOT NULL
     );
   `)
+  createSubscriptionSchema(db)
 }
 
 function getCacheMetaValue (db, key) {
