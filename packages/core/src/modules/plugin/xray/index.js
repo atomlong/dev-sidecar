@@ -660,6 +660,10 @@ function getSubscriptionStaleAfterDays (cfg) {
   return normalizePositiveInt(cfg && cfg.subscriptionStaleAfterDays, 30)
 }
 
+function getSubscriptionStaleAfterDays (cfg) {
+  return normalizePositiveInt(cfg && cfg.subscriptionStaleAfterDays, 30)
+}
+
 function isCacheRefreshEnabled (cfg) {
   return cfg ? cfg.cacheRefreshEnabled !== false : true
 }
