@@ -1,9 +1,9 @@
 # Active Context
 
 ## Current Work
-- Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除、“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化，以及 v2.1.4 的订阅 provenance / stage 3 订阅可用节点汇总 / egress probe 清理修复；当前重点是运行态观察与预发布整理。
-- 版本发布：`v2.1.4` 已于 2026-05-20 完成公开发布推送（`origin/master`、`origin/release-v2.1.x`、tag `v2.1.4` 均指向 `ba2bd3cb`）；私有远端 `gitlab` 仍因 HTTP Basic / token 鉴权失败未同步。
-- CI 修复：正在处理 GitHub Actions 的跨平台构建稳定性，重点是 Windows 的 `node-gyp` Python 绑定，以及 macOS 下 Xray 资源参与 universal 合并导致的打包失败。
+- Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除、“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化，以及 v2.1.4 的订阅 provenance / stage 3 订阅可用节点汇总 / egress probe 清理修复；当前重点是发布后 CI 与运行态观察。
+- 版本发布：`v2.1.4` 已于 2026-05-20 完成公开发布推送，随后因 macOS DMG CI 失败补推修复；当前 GitHub `origin/master`、`origin/release-v2.1.x`、tag `v2.1.4` 均指向 `7bd3cc29`，私有远端 `gitlab` 仍因 HTTP Basic / token 鉴权失败未同步。
+- CI 修复：已处理 GitHub Actions 跨平台构建稳定性，重点包括 Windows 的 `node-gyp` Python 绑定、macOS Xray universal 合并，以及 pnpm 下 `app-builder-lib@22.14.13` 误解析 `dmg-builder@26.8.1` 的 DMG 打包失败。
 - 工作流增强：正在继续演进 `submit.sh`，本轮聚焦于移除自动代理检测、补齐上游公共仓库同步能力，并保证现有 submit/release 流程职责清晰。
 
 ## Recent Changes
@@ -15,7 +15,10 @@
     - `CHANGELOG.md` 顶部版本日期已落到 `2026-05-20`。
     - 已提交私有记忆银行提交 `0eb8df8b` 和公共发布提交 `94761771`。
     - `./submit.sh --push-public` 已将公共提交同步到本地 `master` 为 `ba2bd3cb`；推送 `gitlab` 时因鉴权失败中断，随后手动推送 `origin/master` 并执行 `./submit.sh --release`。
-    - 已验证 GitHub `origin/master`、`origin/release-v2.1.x` 和 tag `v2.1.4` 均指向 `ba2bd3cb39a6f8abe98a5dcabf56bafb085590d4`。
+    - 首次 GitHub Actions release run `26164715980` 在 macOS DMG 打包失败，根因是 `vue-cli-plugin-electron-builder` 调用 `electron-builder@22.14.13` 时，pnpm 让 `app-builder-lib@22.14.13` 运行期解析到了顶层 `dmg-builder@26.8.1`，触发 `packager.info.emitArtifactBuildStarted is not a function`。
+    - 已通过公共提交 `12868853` 增加 `pnpm.packageExtensions`，将 `app-builder-lib@22.14.13` 的运行期 `dmg-builder` 固定为 `22.14.13`；本地已验证冻结安装与解析路径，`packages/core` 阶段门控测试仍为 `7 passing`。
+    - `./submit.sh --push-public` 已将该修复同步到本地 `master` 为 `7bd3cc29`；因 `gitlab` 鉴权失败未能由脚本完成远端推送，随后手动推送 GitHub `origin/master`、`origin/release-v2.1.x`，并强制移动 tag `v2.1.4` 到 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
+    - 已验证 GitHub `origin/master`、`origin/release-v2.1.x` 和 tag `v2.1.4` 均指向 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`；新的 Build And Release run `26169088856` 已触发，当前状态 `in_progress`。
 - [Plugin] **Xray 订阅 provenance 与阶段 3 汇总**：
     - SQLite cache 增加 `nodes.node_key`、`subscriptions` 与 `subscription_node_refs`，用于记录每个配置项订阅与节点的来源关系。
     - 订阅 source key 现在包含配置项 occurrence，重复 URL 会按出现顺序当作不同配置项统计，不再被合并成一个订阅。
@@ -79,6 +82,7 @@
     - 根因已进一步细化：上游 Xray 的 macOS 二进制既可能是 fat/universal Mach-O，也可能已经是目标架构的 thin Mach-O；此前无条件执行 `lipo -thin` 会在 GitHub Actions 的 macOS arm64 runner 上因为输入文件本身就是单架构而失败。
     - 现改为在 `packages/gui/scripts/download-xray.js` 中先通过 `lipo -archs` 检测实际架构：若已是目标单架构则直接跳过，若为 fat/universal 且包含目标架构才执行 `lipo -thin`，再由 `electron-builder` 继续生成 `universal` DMG。
     - `.github/workflows/test-and-upload.yml` 也同步固定 `node-gyp` Python 解释器，避免测试工作流与发布工作流行为不一致。
+    - v2.1.4 发布后新增 macOS DMG 根因：`app-builder-lib@22.14.13` 在 pnpm 下没有运行期可见的 `dmg-builder` 声明，可能解析到顶层 `dmg-builder@26.8.1`；已通过根 `package.json` 的 `pnpm.packageExtensions` 固定 `dmg-builder@22.14.13`。
 - [Release] **v2.1.2**：
     - 同步升级 package 版本到 2.1.2。
     - 更新 `CHANGELOG.md`，记录 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复。
@@ -99,8 +103,7 @@
 ## Next Steps
 - 继续观察 v2.1.4 安装后的 stage 3 长轮次，确认 `stage3-last-round.json`、订阅可用节点计数和 stale cleanup 语义符合预期。
 - 继续观察是否还会出现残留 `egress-*.json` 临时 Xray 进程；若复现，优先抓取 PID、父进程、cmdline、socket、日志上下文，并核对是否有对应 `正在停止 Xray 出口元数据探测进程` 日志。
-- 观察 GitHub Actions / GitHub Release 是否基于 `release-v2.1.x` 与 tag `v2.1.4` 正常产出发布页和附件。
-- 观察 GitHub Actions / GitHub Release 是否基于 `release-v2.1.x` 与 tag `v2.1.3` 正常产出发布页和附件。
+- 观察新的 GitHub Actions Build And Release run `26169088856` 是否基于 tag `v2.1.4` 正常完成，并确认 GitHub Release 附件已重新产出。
 - 继续观察 `nodes_cache.state.json` 方案在真实运行中的稳定性，确认仅基于 `cfg.nodes` 的签名范围足够，或决定是否把更多本地输入纳入签名。
 - 单独处理 `gitlab` 远端鉴权，决定是否要补推本地 `develop` 的 2 个 release 相关提交到私有仓库。
 - 决定是否在正式发布前保留当前个人配置中的“缓存优先 + 第三阶段关闭”模式，或仅将其作为高级可选能力而非默认推荐路径。

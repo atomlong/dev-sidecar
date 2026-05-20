@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.1.4 (Released on 2026-05-20)
+- **Current Version**: 2.1.4 (Released on 2026-05-20; tag moved to CI-fix commit `7bd3cc29`)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
@@ -11,6 +11,7 @@
     - 已定位 macOS `universal` 打包失败根因为：Xray 的 macOS 二进制在进入 electron-builder 的 universal 合并流程前需要按实际架构状态处理；若是 fat/universal 需要先裁剪，若本身已是目标单架构则不能再无条件执行 `lipo -thin`。
     - 已在 `packages/gui/scripts/download-xray.js` 中加入 `lipo -archs` 架构检测，仅对 fat/universal 的 macOS Xray 二进制执行 `lipo -thin`，并在已为目标单架构时直接复用，恢复 `universal` DMG 构建链路。
     - `build-and-release.yml` 与 `test-and-upload.yml` 已同步固定 Python 解释器，避免两个工作流在 Windows 原生模块重建行为上出现漂移。
+    - v2.1.4 GitHub Actions macOS DMG 失败已定位为 pnpm 依赖解析混装：`app-builder-lib@22.14.13` 解析到 `dmg-builder@26.8.1`；已通过 `pnpm.packageExtensions` 固定 `dmg-builder@22.14.13`，本地验证解析路径一致。
 - [x] **Submit Workflow Hardening**:
     - `submit.sh --push-public` 已改为基于 `git cherry` 做 patch-id aware 去重，避免公共分支重复同步等价补丁。
     - 公共同步会自动启用 `git rerere` / `rerere.autoupdate`，复用历史冲突解决结果。
@@ -60,7 +61,10 @@
     - 已推送 GitHub `origin/master`。
     - 已推送 GitHub `origin/release-v2.1.x`。
     - 已创建并推送 tag `v2.1.4`。
-    - 三个远端引用均指向公共发布提交 `ba2bd3cb39a6f8abe98a5dcabf56bafb085590d4`。
+    - 首次发布提交 `ba2bd3cb39a6f8abe98a5dcabf56bafb085590d4` 触发的 GitHub Actions run `26164715980` 因 macOS DMG 打包失败而失败。
+    - 已追加公共修复提交 `12868853`，经 `./submit.sh --push-public` 同步到本地 `master` 后对应公共提交为 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
+    - 已重新推送 GitHub `origin/master` 与 `origin/release-v2.1.x`，并强制移动 tag `v2.1.4` 到 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
+    - 新的 Build And Release run `26169088856` 已触发，当前状态为 `in_progress`。
     - `gitlab` 远端仍因 HTTP Basic / token 鉴权失败未同步。
 - [x] **Release v2.1.3 Prep**:
     - 已同步升级四个工作区 package 版本至 2.1.3。
