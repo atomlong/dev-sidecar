@@ -642,6 +642,7 @@ function createHotColdSchema (db) {
     CREATE INDEX IF NOT EXISTS idx_node_runtime_refresh ON node_runtime(updated_at ASC, delay ASC);
     CREATE INDEX IF NOT EXISTS idx_node_runtime_next_check ON node_runtime(next_check_at ASC, stable DESC, delay ASC, updated_at ASC);
   `)
+  createSubscriptionSchema(db)
 }
 
 const CACHE_META_COMPACT_V2_DELAY_INDEX_BUILT = 'compact_v2_delay_index_built'
