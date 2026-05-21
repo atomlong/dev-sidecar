@@ -13,6 +13,7 @@ jobs:
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      BETTER_SQLITE3_PREBUILDS_CACHE: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
     strategy:
       fail-fast: false
       matrix:
@@ -129,6 +130,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-builder-cache-
 
+      - name: "Setup better-sqlite3 prebuild cache"
+        if: ${{ matrix.os == 'ubuntu' || matrix.os == 'ubuntu-24.04-arm' }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
+          key: ${{ runner.os }}-${{ runner.arch }}-better-sqlite3-prebuilds-${{ hashFiles('pnpm-lock.yaml', 'packages/gui/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-better-sqlite3-prebuilds-
+
       - name: "Set C++17 compiler flags (non-Windows)"
         if: ${{ matrix.os != 'windows' }}
         run: |
@@ -159,6 +169,45 @@ jobs:
         run: |
           cd packages/mitmproxy;
           pnpm run test;
+
+      - name: "Prefetch better-sqlite3 Electron prebuild (Linux)"
+        if: ${{ matrix.os == 'ubuntu' || matrix.os == 'ubuntu-24.04-arm' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PREBUILD_DIR="$BETTER_SQLITE3_PREBUILDS_CACHE"
+          mkdir -p "$PREBUILD_DIR"
+
+          BETTER_SQLITE3_VERSION="$(node -p "require('./packages/gui/package.json').dependencies['better-sqlite3']")"
+          ELECTRON_VERSION="$(node -p "require('./packages/gui/node_modules/electron/package.json').version")"
+          ELECTRON_ABI="$(node -p "require('./node_modules/node-abi').getAbi(process.argv[1], 'electron')" "$ELECTRON_VERSION")"
+          ARCH="$(node -p "process.arch")"
+          FILE_NAME="better-sqlite3-v${BETTER_SQLITE3_VERSION}-electron-v${ELECTRON_ABI}-linux-${ARCH}.tar.gz"
+          DOWNLOAD_URL="https://github.com/WiseLibs/better-sqlite3/releases/download/v${BETTER_SQLITE3_VERSION}/${FILE_NAME}"
+
+          echo "================================================================"
+          echo "Prefetch better-sqlite3 Electron prebuild"
+          echo "----------------"
+          echo "BETTER_SQLITE3_VERSION=$BETTER_SQLITE3_VERSION"
+          echo "ELECTRON_VERSION=$ELECTRON_VERSION"
+          echo "ELECTRON_ABI=$ELECTRON_ABI"
+          echo "ARCH=$ARCH"
+          echo "FILE_NAME=$FILE_NAME"
+          echo "DOWNLOAD_URL=$DOWNLOAD_URL"
+
+          if [ ! -s "$PREBUILD_DIR/$FILE_NAME" ]; then
+            curl -fL \
+              --retry 6 \
+              --retry-delay 5 \
+              --retry-all-errors \
+              --connect-timeout 20 \
+              --max-time 300 \
+              -o "$PREBUILD_DIR/$FILE_NAME" \
+              "$DOWNLOAD_URL"
+          fi
+
+          ls -lah "$PREBUILD_DIR"
 
       - name: "Cache Flatpak runtime (Linux)"
         if: ${{ matrix.os == 'ubuntu' }}
