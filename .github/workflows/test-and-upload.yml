@@ -31,6 +31,7 @@ jobs:
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      BETTER_SQLITE3_PREBUILDS_CACHE: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
       VUE_APP_PUBLISH_CHANNEL: beta
     strategy:
       fail-fast: false
