@@ -340,6 +340,8 @@ const linuxTargets = [
   },
 ]
 
+const enableFlatpak = process.env.DEV_SIDECAR_ENABLE_FLATPAK === '1'
+
 if (hasExecutable('rpmbuild')) {
   linuxTargets.push({
     target: 'rpm',
@@ -347,7 +349,7 @@ if (hasExecutable('rpmbuild')) {
   })
 }
 
-if (hasExecutable('flatpak') && hasExecutable('flatpak-builder')) {
+if (enableFlatpak && hasExecutable('flatpak') && hasExecutable('flatpak-builder')) {
   linuxTargets.push({
     target: 'flatpak',
     arch: ['x64'],
@@ -451,7 +453,7 @@ module.exports = {
     icon: './build/mac/icon.icns',
     target: {
       target: 'dmg',
-      arch: ['x64', 'arm64', 'universal'],
+      arch: ['x64', 'arm64'],
     },
     category: 'public.app-category.developer-tools',
   },
