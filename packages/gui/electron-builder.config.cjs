@@ -88,6 +88,8 @@ const linuxTargets = [
   },
 ]
 
+const enableFlatpak = process.env.DEV_SIDECAR_ENABLE_FLATPAK === '1'
+
 if (hasExecutable('rpmbuild')) {
   linuxTargets.push({
     target: 'rpm',
@@ -95,7 +97,7 @@ if (hasExecutable('rpmbuild')) {
   })
 }
 
-if (hasExecutable('flatpak') && hasExecutable('flatpak-builder')) {
+if (enableFlatpak && hasExecutable('flatpak') && hasExecutable('flatpak-builder')) {
   linuxTargets.push({
     target: 'flatpak',
     arch: ['x64'],
