@@ -45,6 +45,11 @@ function createNode (address, port) {
 }
 
 describe('xray stage gating', () => {
+  // This suite performs repeated better-sqlite3 file I/O and can exceed
+  // Mocha's 2s default timeout on slower CI runners, especially Windows.
+  // Keep the tests enabled, but allow enough time for deterministic completion.
+  this.timeout(10000)
+
   it('skips remote subscription sync only when effective cache reaches the low watermark', () => {
     if (!sqliteAvailable) {
       return
