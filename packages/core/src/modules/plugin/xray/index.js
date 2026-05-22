@@ -10,6 +10,7 @@ const portFinder = require('./port-finder')
 const parser = require('./parser')
 const genConfig = require('./gen_config')
 const xrayCache = require('./cache')
+const testHelpers = require('./test-helpers')
 const networkGuard = require('./network_guard')
 const probe = require('./probe')
 const geoip = require('./geoip')
@@ -1802,17 +1803,6 @@ module.exports = {
   },
   plugin: Plugin,
   __test: {
-    createCacheSyncPlan,
-    buildCacheEntryQueryOptions,
-    buildLocalInputState,
-    cleanupProbeArtifacts,
-    getSubscriptionSyncDecision,
-    getSubscriptionStaleAfterDays,
-    getStage3RoundSummaryPath,
-    getLocalInputStatePath,
-    isLocalInputStateMatch,
-    isCacheRefreshEnabled,
-    readLocalInputState,
-    writeLocalInputState,
+    ...testHelpers,
   },
 }

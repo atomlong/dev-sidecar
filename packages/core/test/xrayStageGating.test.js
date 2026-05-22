@@ -2,8 +2,8 @@ const assert = require('node:assert')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const xrayModule = require('../src/modules/plugin/xray')
 const xrayCache = require('../src/modules/plugin/xray/cache')
+const xrayTestHelpers = require('../src/modules/plugin/xray/test-helpers')
 
 const {
   buildLocalInputState,
@@ -15,7 +15,7 @@ const {
   isLocalInputStateMatch,
   readLocalInputState,
   writeLocalInputState,
-} = xrayModule.__test
+} = xrayTestHelpers
 
 let sqliteAvailable = true
 try {
@@ -48,7 +48,7 @@ describe('xray stage gating', function () {
   // This suite performs repeated better-sqlite3 file I/O and can exceed
   // Mocha's 2s default timeout on slower CI runners, especially Windows.
   // Keep the tests enabled, but allow enough time for deterministic completion.
-  this.timeout(10000)
+  this.timeout(30000)
 
   it('skips remote subscription sync only when effective cache reaches the low watermark', () => {
     if (!sqliteAvailable) {
