@@ -16,4 +16,10 @@ function removeBetterSqliteNodeGypBins () {
   }
 }
 
-removeBetterSqliteNodeGypBins()
+module.exports = {
+  removeBetterSqliteNodeGypBins,
+}
+
+if (require.main === module) {
+  removeBetterSqliteNodeGypBins()
+}

@@ -153,7 +153,7 @@ jobs:
       - name: "'pnpm install' Because we need to install optional dependencies"
         run: |
           echo "================================================================";
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
 
           echo "================================================================";
           echo "pnpm install";
@@ -251,7 +251,7 @@ jobs:
           echo "cd packages/gui";
           echo "--------------------";
           cd packages/gui;
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
 
           echo "======================================================================";
           echo "npm run electron:build";
@@ -269,7 +269,7 @@ jobs:
           echo "cd packages/gui";
           echo "--------------------";
           cd packages/gui;
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
 
           echo "======================================================================";
           echo "npm run electron:build";
@@ -282,7 +282,7 @@ jobs:
           echo "cd packages/gui/dist_electron";
           echo "--------------------";
           cd packages/gui/dist_electron;
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
 
       # Rename artifacts
       - name: "Rename artifacts - Windows"
