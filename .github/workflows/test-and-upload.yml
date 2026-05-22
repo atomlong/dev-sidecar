@@ -461,7 +461,7 @@ jobs:
           echo "cd packages/gui";
           echo "----------------";
           cd packages/gui;
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
           echo "================================================================";
           echo "npm run electron:build";
           echo "----------------";
@@ -477,7 +477,7 @@ jobs:
           echo "cd packages/gui";
           echo "----------------";
           cd packages/gui;
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
           echo "================================================================";
           echo "npm run electron:build";
           echo "----------------";
@@ -488,7 +488,7 @@ jobs:
           echo "cd packages/gui/dist_electron";
           echo "----------------";
           cd packages/gui/dist_electron;
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
       - name: "Rename artifacts - Windows"
         if: ${{ matrix.os == 'windows' }}
         run: |

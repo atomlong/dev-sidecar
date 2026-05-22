@@ -129,6 +129,7 @@ module.exports = {
       to: 'extra/xray',
     },
   ],
+  beforePack: './pkg/before-pack.cjs',
   afterPack: './pkg/after-pack.cjs',
   afterAllArtifactBuild: './pkg/after-all-artifact-build.cjs',
   nsis: {

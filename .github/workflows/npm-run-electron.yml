@@ -105,7 +105,7 @@ jobs:
       - name: "pnpm install"
         run: |
           echo "======================================================================";
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
 
           echo "======================================================================";
           echo "pnpm install";
@@ -116,7 +116,7 @@ jobs:
         working-directory: packages/gui
         run: |
           echo "======================================================================";
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
 
           echo "======================================================================";
           echo "npm run electron";
