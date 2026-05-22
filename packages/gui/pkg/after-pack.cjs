@@ -61,6 +61,12 @@ function copyRuntimePackage (packageName, nodeModulesDir) {
   fs.rmSync(targetDir, { recursive: true, force: true })
   fs.mkdirSync(path.dirname(targetDir), { recursive: true })
   fs.cpSync(sourceDir, targetDir, { recursive: true, dereference: true })
+
+  // Native modules can retain node-gyp helper shims such as build/node_gyp_bins/python3.
+  // These point outside the app bundle and can differ between per-arch macOS builds,
+  // causing electron-builder universal merge to fail on mismatched Mach-O sets.
+  fs.rmSync(path.join(targetDir, 'build', 'node_gyp_bins'), { recursive: true, force: true })
+
   console.log(`copied runtime package: ${packageName}`)
 }
 
