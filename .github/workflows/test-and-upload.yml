@@ -226,7 +226,7 @@ jobs:
       - name: Print pinned node-gyp python
         shell: bash
         env:
-          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64
+          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
         run: |
           echo "======================================================================"
           echo "Pinned Python for node-gyp"
@@ -465,6 +465,13 @@ jobs:
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
+          if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'windows' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
           if-no-files-found: error
       # endregion Upload artifacts - Windows
       # region Upload artifacts - Linux
