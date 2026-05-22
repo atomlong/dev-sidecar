@@ -44,7 +44,7 @@ function createNode (address, port) {
   }
 }
 
-describe('xray stage gating', () => {
+describe('xray stage gating', function () {
   // This suite performs repeated better-sqlite3 file I/O and can exceed
   // Mocha's 2s default timeout on slower CI runners, especially Windows.
   // Keep the tests enabled, but allow enough time for deterministic completion.
