@@ -127,12 +127,10 @@ jobs:
           echo "----------------";
           pnpm install;
       - name: "test packages/core"
-        if: ${{ matrix.os != 'ubuntu-24.04-arm' }}
         run: |
           cd packages/core;
           pnpm run test;
       - name: "test packages/mitmproxy"
-        if: ${{ matrix.os != 'ubuntu-24.04-arm' }}
         run: |
           cd packages/mitmproxy;
           pnpm run test;
@@ -207,6 +205,7 @@ jobs:
           mv DevSidecar-${{ env.BUILD_VERSION }}-x64.tar.gz      DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz;
           mv DevSidecar-${{ env.BUILD_VERSION }}-x86_64.rpm      DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm;
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.deb      DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb;
+          mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.AppImage DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage;
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.tar.gz   DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz;
           mv DevSidecar-${{ env.BUILD_VERSION }}-aarch64.rpm    DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm;
           mv DevSidecar-${{ env.BUILD_VERSION }}-armv7l.deb     DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.deb;
@@ -214,6 +213,7 @@ jobs:
           mv DevSidecar-${{ env.BUILD_VERSION }}-armv7l.tar.gz  DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.tar.gz;
           mv DevSidecar-${{ env.BUILD_VERSION }}-armv7l.rpm     DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.rpm;
           ls -lah;
+      - name: "Rename artifacts - macOS"
         if: ${{ matrix.os == 'macos' }}
         run: |
           cd packages/gui/dist_electron;
@@ -304,21 +304,21 @@ jobs:
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
