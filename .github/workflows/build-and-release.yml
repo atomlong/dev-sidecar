@@ -119,7 +119,7 @@ jobs:
             ${{ runner.os }}-electron-builder-cache-
 
       - name: "Setup better-sqlite3 prebuild cache"
-        if: ${{ matrix.os == 'ubuntu' || matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
@@ -149,20 +149,20 @@ jobs:
           pnpm install;
 
       - name: "test packages/core"
-        if: ${{ matrix.os != 'ubuntu-24.04-arm' }}
         run: |
           cd packages/core;
           pnpm run test;
 
       - name: "test packages/mitmproxy"
-        if: ${{ matrix.os != 'ubuntu-24.04-arm' }}
         run: |
           cd packages/mitmproxy;
           pnpm run test;
 
       - name: "Prefetch better-sqlite3 Electron prebuild (Linux)"
-        if: ${{ matrix.os == 'ubuntu' || matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         shell: bash
+        env:
+          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64
         run: |
           set -euo pipefail
 
@@ -172,9 +172,7 @@ jobs:
           BETTER_SQLITE3_VERSION="$(node -p "require('./packages/gui/package.json').dependencies['better-sqlite3']")"
           ELECTRON_VERSION="$(node -p "require('./packages/gui/node_modules/electron/package.json').version")"
           ELECTRON_ABI="$(node -p "require('./node_modules/node-abi').getAbi(process.argv[1], 'electron')" "$ELECTRON_VERSION")"
-          ARCH="$(node -p "process.arch")"
-          FILE_NAME="better-sqlite3-v${BETTER_SQLITE3_VERSION}-electron-v${ELECTRON_ABI}-linux-${ARCH}.tar.gz"
-          DOWNLOAD_URL="https://github.com/WiseLibs/better-sqlite3/releases/download/v${BETTER_SQLITE3_VERSION}/${FILE_NAME}"
+          TARGET_ARCHES="${DEV_SIDECAR_LINUX_TARGET_ARCHES:-$(node -p "process.arch")}"
 
           echo "================================================================"
           echo "Prefetch better-sqlite3 Electron prebuild"
@@ -182,20 +180,27 @@ jobs:
           echo "BETTER_SQLITE3_VERSION=$BETTER_SQLITE3_VERSION"
           echo "ELECTRON_VERSION=$ELECTRON_VERSION"
           echo "ELECTRON_ABI=$ELECTRON_ABI"
-          echo "ARCH=$ARCH"
-          echo "FILE_NAME=$FILE_NAME"
-          echo "DOWNLOAD_URL=$DOWNLOAD_URL"
+          echo "TARGET_ARCHES=$TARGET_ARCHES"
 
-          if [ ! -s "$PREBUILD_DIR/$FILE_NAME" ]; then
-            curl -fL \
-              --retry 6 \
-              --retry-delay 5 \
-              --retry-all-errors \
-              --connect-timeout 20 \
-              --max-time 300 \
-              -o "$PREBUILD_DIR/$FILE_NAME" \
-              "$DOWNLOAD_URL"
-          fi
+          for ARCH in $(echo "$TARGET_ARCHES" | tr ',' '); do
+            FILE_NAME="better-sqlite3-v${BETTER_SQLITE3_VERSION}-electron-v${ELECTRON_ABI}-linux-${ARCH}.tar.gz"
+            DOWNLOAD_URL="https://github.com/WiseLibs/better-sqlite3/releases/download/v${BETTER_SQLITE3_VERSION}/${FILE_NAME}"
+
+            echo "ARCH=$ARCH"
+            echo "FILE_NAME=$FILE_NAME"
+            echo "DOWNLOAD_URL=$DOWNLOAD_URL"
+
+            if [ ! -s "$PREBUILD_DIR/$FILE_NAME" ]; then
+              curl -fL \
+                --retry 6 \
+                --retry-delay 5 \
+                --retry-all-errors \
+                --connect-timeout 20 \
+                --max-time 300 \
+                -o "$PREBUILD_DIR/$FILE_NAME" \
+                "$DOWNLOAD_URL"
+            fi
+          done
 
           ls -lah "$PREBUILD_DIR"
 
@@ -224,7 +229,7 @@ jobs:
           flatpak-builder --version
 
       - name: "npm run electron:build (Windows/macOS)"
-        if: ${{ matrix.os != 'ubuntu' && matrix.os != 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os != 'ubuntu' }}
         run: |
           echo "======================================================================";
           echo "cd packages/gui";
