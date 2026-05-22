@@ -242,7 +242,7 @@ jobs:
       - name: Pin node-gyp to setup-python interpreter
         shell: bash
         env:
-          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64
+          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
         run: |
           PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
           echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
@@ -466,12 +466,12 @@ jobs:
           echo "npm run electron:build";
           echo "----------------";
           npm run electron:build;
-      - name: "npm run electron:build (Linux x64 + ARM64)"
+      - name: "npm run electron:build (Linux x64 + ARM64 + ARMv7l)"
         if: ${{ matrix.os == 'ubuntu' }}
         env:
           DEBUG: "@malept/flatpak-bundler"
           npm_config_better_sqlite3_local_prebuilds: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
-          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64
+          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
         run: |
           echo "================================================================";
           echo "cd packages/gui";
@@ -496,6 +496,7 @@ jobs:
           ren DevSidecar-${{ env.BUILD_VERSION }}-x64.exe   DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe;
           ren DevSidecar-${{ env.BUILD_VERSION }}-ia32.exe  DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe;
           ren DevSidecar-${{ env.BUILD_VERSION }}-arm64.exe DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe;
+          ren DevSidecar-${{ env.BUILD_VERSION }}.exe       DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe;
           dir;
       - name: "Rename artifacts - Linux"
         if: ${{ matrix.os == 'ubuntu' }}
@@ -509,6 +510,10 @@ jobs:
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.AppImage DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage;
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.tar.gz   DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz;
           mv DevSidecar-${{ env.BUILD_VERSION }}-aarch64.rpm    DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm;
+          mv DevSidecar-${{ env.BUILD_VERSION }}-armv7l.deb     DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.deb;
+          mv DevSidecar-${{ env.BUILD_VERSION }}-armv7l.AppImage DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.AppImage;
+          mv DevSidecar-${{ env.BUILD_VERSION }}-armv7l.tar.gz  DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.tar.gz;
+          mv DevSidecar-${{ env.BUILD_VERSION }}-armv7l.rpm     DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.rpm;
           ls -lah;
       - name: "Rename artifacts - macOS"
         if: ${{ matrix.os == 'macos' }}
@@ -516,6 +521,7 @@ jobs:
           cd packages/gui/dist_electron;
           mv DevSidecar-${{ env.BUILD_VERSION }}-x64.dmg       DevSidecar-${{ env.BUILD_VERSION }}-macos-x86_64.dmg;
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.dmg     DevSidecar-${{ env.BUILD_VERSION }}-macos-arm64.dmg;
+          mv DevSidecar-${{ env.BUILD_VERSION }}-universal.dmg DevSidecar-${{ env.BUILD_VERSION }}-macos-universal.dmg;
           ls -lah;
       # region Upload artifacts - Windows
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe"
@@ -538,6 +544,13 @@ jobs:
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
+          if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'windows' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
           if-no-files-found: error
       # endregion Upload artifacts - Windows
       # region Upload artifacts - Linux
@@ -597,6 +610,34 @@ jobs:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
           if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.deb"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'ubuntu' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.deb
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.deb"
+          if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.AppImage"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'ubuntu' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.AppImage
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.AppImage"
+          if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.tar.gz"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'ubuntu' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.tar.gz
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.tar.gz"
+          if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.rpm"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'ubuntu' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.rpm
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-armv7l.rpm"
+          if-no-files-found: error
       # endregion Upload artifacts - Linux
       # Upload artifacts - macOS
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-macos-x86_64.dmg"
@@ -612,5 +653,12 @@ jobs:
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-macos-arm64.dmg
           name: "DevSidecar-${{ env.BUILD_VERSION }}-macos-arm64.dmg"
+          if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-macos-universal.dmg"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'macos' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-macos-universal.dmg
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-macos-universal.dmg"
           if-no-files-found: error
       # endregion Upload artifacts - macOS
