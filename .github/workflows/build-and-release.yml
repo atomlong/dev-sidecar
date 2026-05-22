@@ -210,14 +210,21 @@ jobs:
             echo "DOWNLOAD_URL=$DOWNLOAD_URL"
 
             if [ ! -s "$PREBUILD_DIR/$FILE_NAME" ]; then
-              curl -fL \
+              if ! curl -fL \
                 --retry 6 \
                 --retry-delay 5 \
                 --retry-all-errors \
                 --connect-timeout 20 \
                 --max-time 300 \
                 -o "$PREBUILD_DIR/$FILE_NAME" \
-                "$DOWNLOAD_URL"
+                "$DOWNLOAD_URL"; then
+                if [ "$ARCH" = "armv7l" ]; then
+                  echo "No published better-sqlite3 Electron prebuild for linux-$ARCH; falling back to source build during packaging."
+                  rm -f "$PREBUILD_DIR/$FILE_NAME"
+                  continue
+                fi
+                exit 1
+              fi
             fi
           done
 
