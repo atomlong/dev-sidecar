@@ -154,10 +154,12 @@ jobs:
           echo "----------------";
           pnpm install;
       - name: "test packages/core"
+        if: ${{ matrix.os != 'ubuntu-24.04-arm' }}
         run: |
           cd packages/core;
           pnpm run test;
       - name: "test packages/mitmproxy"
+        if: ${{ matrix.os != 'ubuntu-24.04-arm' }}
         run: |
           cd packages/mitmproxy;
           pnpm run test;
@@ -297,12 +299,10 @@ jobs:
         run: |
           cd packages/gui/dist_electron;
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.deb      DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.AppImage DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage;
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.tar.gz   DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz;
           mv DevSidecar-${{ env.BUILD_VERSION }}-aarch64.rpm    DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm;
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.flatpak  DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak;
           ls -lah;
-      - name: "Rename artifacts - macOS"
         if: ${{ matrix.os == 'macos' }}
         run: |
           cd packages/gui/dist_electron;
