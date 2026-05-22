@@ -218,12 +218,9 @@ jobs:
                 --max-time 300 \
                 -o "$PREBUILD_DIR/$FILE_NAME" \
                 "$DOWNLOAD_URL"; then
-                if [ "$ARCH" = "armv7l" ]; then
-                  echo "No published better-sqlite3 Electron prebuild for linux-$ARCH; falling back to source build during packaging."
-                  rm -f "$PREBUILD_DIR/$FILE_NAME"
-                  continue
-                fi
-                exit 1
+                echo "No published better-sqlite3 Electron prebuild for linux-$ARCH; falling back to source build during packaging."
+                rm -f "$PREBUILD_DIR/$FILE_NAME"
+                continue
               fi
             fi
           done
