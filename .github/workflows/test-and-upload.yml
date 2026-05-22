@@ -1,20 +1,20 @@
 name: "Test And Upload"
 on:
-  push:
+        if: ${{ matrix.os == 'windows' }}
     branches:
       - master
       - 1.x
       - develop
       - test*
       - fix*
-    paths-ignore:
+        if: ${{ matrix.os == 'windows' }}
       - "_script/**"
       - "doc/**"
       - "**/*.md"
       - "**/.gitignore"
       - "**/LICENSE"
   pull_request:
-    branches:
+        if: ${{ matrix.os == 'windows' }}
       - master
       - develop
       - 1.x
@@ -447,21 +447,21 @@ jobs:
       # region Upload artifacts - Windows
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'windows' }}
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'windows' }}
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'windows' }}
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
