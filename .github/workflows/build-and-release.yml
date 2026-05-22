@@ -194,7 +194,7 @@ jobs:
           echo "ELECTRON_ABI=$ELECTRON_ABI"
           echo "TARGET_ARCHES=$TARGET_ARCHES"
 
-          for ARCH in $(echo "$TARGET_ARCHES" | tr ',' '); do
+          for ARCH in ${TARGET_ARCHES//,/ }; do
             FILE_NAME="better-sqlite3-v${BETTER_SQLITE3_VERSION}-electron-v${ELECTRON_ABI}-linux-${ARCH}.tar.gz"
             DOWNLOAD_URL="https://github.com/WiseLibs/better-sqlite3/releases/download/v${BETTER_SQLITE3_VERSION}/${FILE_NAME}"
 
