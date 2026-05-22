@@ -168,9 +168,9 @@ jobs:
           set -euo pipefail
           PREBUILD_DIR="$BETTER_SQLITE3_PREBUILDS_CACHE"
           mkdir -p "$PREBUILD_DIR"
-          BETTER_SQLITE3_VERSION="$(node -p \"require('./packages/gui/package.json').dependencies['better-sqlite3']\")"
-          ELECTRON_VERSION="$(node -p \"require('./packages/gui/node_modules/electron/package.json').version\")"
-          ELECTRON_ABI="$(node -p \"require('./node_modules/node-abi').getAbi(process.argv[1], 'electron')\" "$ELECTRON_VERSION")"
+          BETTER_SQLITE3_VERSION="$(node -p "require('./packages/gui/package.json').dependencies['better-sqlite3']")"
+          ELECTRON_VERSION="$(node -p "require('./packages/gui/node_modules/electron/package.json').version")"
+          ELECTRON_ABI="$(node -p "require('./node_modules/node-abi').getAbi(process.argv[1], 'electron')" "$ELECTRON_VERSION")"
           ARCH="$(node -p "process.arch")"
           FILE_NAME="better-sqlite3-v${BETTER_SQLITE3_VERSION}-electron-v${ELECTRON_ABI}-linux-${ARCH}.tar.gz"
           DOWNLOAD_URL="https://github.com/WiseLibs/better-sqlite3/releases/download/v${BETTER_SQLITE3_VERSION}/${FILE_NAME}"
