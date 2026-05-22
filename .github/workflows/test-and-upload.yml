@@ -79,6 +79,8 @@ on:
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
           if-no-files-found: error
           if: ${{ matrix.os == 'ubuntu' }}
           with:
@@ -284,83 +286,27 @@ on:
       - name: "Setup electron cache"
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/.cache/electron
-          key: ${{ runner.os }}-electron-cache-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-electron-cache-
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
+          if-no-files-found: error
+      # endregion Upload artifacts - Linux
 
-      - name: "Setup electron-builder cache"
-        uses: actions/cache@v4
+      # region Upload artifacts - Linux ARM64
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
-          path: ${{ github.workspace }}/.cache/electron-builder
-          key: ${{ runner.os }}-electron-builder-cache-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-electron-builder-cache-
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak"
+          if-no-files-found: error
+      # endregion Upload artifacts - Linux ARM64
 
-      - name: "Setup better-sqlite3 prebuild cache"
-        if: ${{ matrix.os == 'ubuntu' || matrix.os == 'ubuntu-24.04-arm' }}
-        uses: actions/cache@v4
+      # Upload artifacts - macOS
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-macos-x86_64.dmg"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'macos' }}
         with:
-          path: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
-          key: ${{ runner.os }}-${{ runner.arch }}-better-sqlite3-prebuilds-${{ hashFiles('pnpm-lock.yaml', 'packages/gui/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-better-sqlite3-prebuilds-
-
-      - name: "Set C++17 compiler flags (non-Windows)"
-        if: ${{ matrix.os != 'windows' }}
-        run: |
-          echo "CXXFLAGS=-std=c++17" >> $GITHUB_ENV
-          echo "CFLAGS=-std=c11" >> $GITHUB_ENV
-
-      - name: "Set C++17 compiler flags (Windows)"
-        if: ${{ matrix.os == 'windows' }}
-        run: |
-          echo "CL=/std:c++17" >> $env:GITHUB_ENV
-
-      - name: "'pnpm install' Because we need to install optional dependencies"
-        run: |
-          echo "======================================================================";
-          dir || ls -lah;
-
-          echo "======================================================================";
-          echo "pnpm install";
-          echo "--------------------";
-          pnpm install;
-
-      - name: "test packages/core"
-        run: |
-          cd packages/core;
-          pnpm run test;
-
-      - name: "test packages/mitmproxy"
-        run: |
-          cd packages/mitmproxy;
-          pnpm run test;
-
-      - name: "Prefetch better-sqlite3 Electron prebuild (Linux)"
-        if: ${{ matrix.os == 'ubuntu' || matrix.os == 'ubuntu-24.04-arm' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PREBUILD_DIR="$BETTER_SQLITE3_PREBUILDS_CACHE"
-          mkdir -p "$PREBUILD_DIR"
-
-          BETTER_SQLITE3_VERSION="$(node -p "require('./packages/gui/package.json').dependencies['better-sqlite3']")"
-          ELECTRON_VERSION="$(node -p "require('./packages/gui/node_modules/electron/package.json').version")"
-          ELECTRON_ABI="$(node -p "require('./node_modules/node-abi').getAbi(process.argv[1], 'electron')" "$ELECTRON_VERSION")"
-          ARCH="$(node -p "process.arch")"
-          FILE_NAME="better-sqlite3-v${BETTER_SQLITE3_VERSION}-electron-v${ELECTRON_ABI}-linux-${ARCH}.tar.gz"
-          DOWNLOAD_URL="https://github.com/WiseLibs/better-sqlite3/releases/download/v${BETTER_SQLITE3_VERSION}/${FILE_NAME}"
-
-          echo "================================================================"
-          echo "Prefetch better-sqlite3 Electron prebuild"
-          echo "----------------"
-          echo "BETTER_SQLITE3_VERSION=$BETTER_SQLITE3_VERSION"
-          echo "ELECTRON_VERSION=$ELECTRON_VERSION"
-          echo "ELECTRON_ABI=$ELECTRON_ABI"
-          echo "ARCH=$ARCH"
-          echo "FILE_NAME=$FILE_NAME"
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-macos-x86_64.dmg
           echo "DOWNLOAD_URL=$DOWNLOAD_URL"
 
           if [ ! -s "$PREBUILD_DIR/$FILE_NAME" ]; then
@@ -472,33 +418,6 @@ on:
           dir || ls -lah;
 
       # Rename artifacts
-      - name: "Rename artifacts - Windows"
-        if: ${{ matrix.os == 'windows' }}
-        run: |
-          cd packages/gui/dist_electron;
-          ren DevSidecar-${{ env.BUILD_VERSION }}-x64.exe   DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe;
-          ren DevSidecar-${{ env.BUILD_VERSION }}-ia32.exe  DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe;
-          ren DevSidecar-${{ env.BUILD_VERSION }}-arm64.exe DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe;
-          dir;
-      - name: "Rename artifacts - Linux"
-        if: ${{ matrix.os == 'ubuntu' }}
-        run: |
-          cd packages/gui/dist_electron;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-amd64.deb       DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.deb;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-x86_64.AppImage DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-x64.tar.gz      DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-x86_64.rpm      DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm;
-          ls -lah;
-      - name: "Rename artifacts - Linux ARM64"
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        run: |
-          cd packages/gui/dist_electron;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.deb       DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.AppImage  DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.tar.gz    DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-aarch64.rpm     DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.flatpak      DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak;
-          ls -lah;
       - name: "Rename artifacts - macOS"
         if: ${{ matrix.os == 'macos' }}
         run: |
@@ -511,59 +430,81 @@ on:
       # region Upload artifacts - Windows
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'windows' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'windows' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'windows' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
           if-no-files-found: error
       # endregion Upload artifacts - Windows
 
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+      # region Upload artifacts - Linux
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.deb"
         uses: actions/upload-artifact@v4.4.0
         if: ${{ matrix.os == 'ubuntu' }}
         with:
-      #     name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.flatpak"
-      #     if-no-files-found: error
-      # -------------------------------------------------------------------------------------------------------------------------
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.deb
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.deb"
+          if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage"
         uses: actions/upload-artifact@v4.4.0
         if: ${{ matrix.os == 'ubuntu' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage"
+          if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'ubuntu' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz"
+          if-no-files-found: error
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'ubuntu' }}
+        with:
+          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm
+          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm"
+          if-no-files-found: error
+
+      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
+        uses: actions/upload-artifact@v4.4.0
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
@@ -578,7 +519,6 @@ on:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak"
           if-no-files-found: error
-      # -------------------------------------------------------------------------------------------------------------------------
       # endregion Upload artifacts - Linux ARM64
 
       # Upload artifacts - macOS
