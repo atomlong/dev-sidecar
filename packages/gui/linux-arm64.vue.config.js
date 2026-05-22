@@ -9,6 +9,28 @@ const publishUrl = process.env.VUE_APP_PUBLISH_URL
 const publishProvider = process.env.VUE_APP_PUBLISH_PROVIDER
 console.log('Publish url:', publishUrl)
 
+function normalizeArch (arch) {
+  if (arch === 'x64' || arch === 'arm64' || arch === 'armv7l') {
+    return arch
+  }
+  return null
+}
+
+function resolveLinuxTargetArchs () {
+  const explicitArchs = (process.env.DEV_SIDECAR_LINUX_TARGET_ARCHES || '')
+    .split(',')
+    .map(item => normalizeArch(item.trim()))
+    .filter(Boolean)
+
+  if (explicitArchs.length > 0) {
+    return explicitArchs
+  }
+
+  return ['arm64']
+}
+
+const linuxTargetArchs = resolveLinuxTargetArchs()
+
 function hasExecutable (command, args = ['--version']) {
   const result = spawnSync(command, args, { stdio: 'ignore' })
   return !result.error && result.status === 0
@@ -17,22 +39,22 @@ function hasExecutable (command, args = ['--version']) {
 const linuxTargets = [
   {
     target: 'deb',
-    arch: ['x64', 'arm64', 'armv7l'],
+    arch: linuxTargetArchs,
   },
   {
     target: 'AppImage',
-    arch: ['x64', 'arm64', 'armv7l'],
+    arch: linuxTargetArchs,
   },
   {
     target: 'tar.gz',
-    arch: ['x64', 'arm64', 'armv7l'],
+    arch: linuxTargetArchs,
   },
 ]
 
 if (hasExecutable('rpmbuild')) {
   linuxTargets.push({
     target: 'rpm',
-    arch: ['x64', 'arm64', 'armv7l'],
+    arch: linuxTargetArchs,
   })
 } else {
   console.log('Skip linux rpm target: rpmbuild not found')
