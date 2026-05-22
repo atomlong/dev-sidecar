@@ -155,7 +155,7 @@ jobs:
         if: ${{ matrix.os == 'ubuntu' }}
         shell: bash
         env:
-          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64
+          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
         run: |
           set -euo pipefail
 
