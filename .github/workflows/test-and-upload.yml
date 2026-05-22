@@ -447,21 +447,21 @@ jobs:
       # region Upload artifacts - Windows
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'windows' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'windows' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'windows' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
@@ -527,21 +527,21 @@ jobs:
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
+        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
