@@ -100,7 +100,6 @@ module.exports = {
     },
     'src/**/*',
     'package.json',
-    'extra/**/*',
   ],
   extraResources: [
     {
