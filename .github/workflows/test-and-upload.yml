@@ -497,7 +497,7 @@ jobs:
           ren DevSidecar-${{ env.BUILD_VERSION }}-ia32.exe  DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe;
           ren DevSidecar-${{ env.BUILD_VERSION }}-arm64.exe DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe;
           ren DevSidecar-${{ env.BUILD_VERSION }}.exe       DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe;
-          ls -lah;
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
       - name: "Rename artifacts - Linux"
         if: ${{ matrix.os == 'ubuntu' }}
         run: |
