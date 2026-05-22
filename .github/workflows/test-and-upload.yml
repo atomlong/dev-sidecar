@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
 jobs:
   test-and-upload:
-    runs-on: ${{ contains(matrix.os, '-arm') && matrix.os || format('{0}-latest', matrix.os) }}
+    runs-on: ${{ format('{0}-latest', matrix.os) }}
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
@@ -39,7 +39,6 @@ jobs:
         os:
           - windows
           - ubuntu
-          # - ubuntu-24.04-arm
           - macos
         node:
           - 22
@@ -129,7 +128,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-builder-cache-
       - name: "Setup better-sqlite3 prebuild cache"
-        if: ${{ matrix.os == 'ubuntu' || matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
@@ -242,6 +241,8 @@ jobs:
 
       - name: Pin node-gyp to setup-python interpreter
         shell: bash
+        env:
+          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64
         run: |
           PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
           echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
@@ -453,35 +454,8 @@ jobs:
           fi
           flatpak --version
           flatpak-builder --version
-      - name: "Cache Flatpak runtime (Linux ARM64)"
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        id: cache-flatpak-runtime-linux-arm64
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/share/flatpak
-          key: flatpak-runtime-freedesktop-21.08
-      - name: "Install Flatpak tooling (Linux ARM64)"
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y flatpak flatpak-builder xdg-desktop-portal appstream fuse3
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          sudo apparmor_parser -R /etc/apparmor.d/bwrap 2>/dev/null || true
-          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          if [ "${{ steps.cache-flatpak-runtime-linux-arm64.outputs.cache-hit }}" != "true" ]; then
-            flatpak install --user -y flathub org.freedesktop.Platform//21.08 org.freedesktop.Sdk//21.08
-          fi
-          flatpak --version
-          flatpak-builder --version
-      - name: "Special preparation for Linux ARM64 build"
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        run: |
-          echo "================================================================";
-          echo "Run _script/linux-arm64-prepare.sh";
-          echo "----------------";
-          bash _script/linux-arm64-prepare.sh;
       - name: "npm run electron:build (Windows/macOS)"
-        if: ${{ matrix.os != 'ubuntu' && matrix.os != 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os != 'ubuntu' }}
         run: |
           echo "================================================================";
           echo "cd packages/gui";
@@ -492,11 +466,12 @@ jobs:
           echo "npm run electron:build";
           echo "----------------";
           npm run electron:build;
-      - name: "npm run electron:build (Linux & Linux ARM64)"
-        if: ${{ matrix.os == 'ubuntu' || matrix.os == 'ubuntu-24.04-arm' }}
+      - name: "npm run electron:build (Linux x64 + ARM64)"
+        if: ${{ matrix.os == 'ubuntu' }}
         env:
           DEBUG: "@malept/flatpak-bundler"
           npm_config_better_sqlite3_local_prebuilds: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
+          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64
         run: |
           echo "================================================================";
           echo "cd packages/gui";
@@ -530,16 +505,12 @@ jobs:
           mv DevSidecar-${{ env.BUILD_VERSION }}-x86_64.AppImage DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage;
           mv DevSidecar-${{ env.BUILD_VERSION }}-x64.tar.gz      DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz;
           mv DevSidecar-${{ env.BUILD_VERSION }}-x86_64.rpm      DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm;
-          ls -lah;
-      - name: "Rename artifacts - Linux ARM64"
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        run: |
-          cd packages/gui/dist_electron;
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.deb      DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb;
+          mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.AppImage DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage;
           mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.tar.gz   DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz;
           mv DevSidecar-${{ env.BUILD_VERSION }}-aarch64.rpm    DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm;
-          mv DevSidecar-${{ env.BUILD_VERSION }}-arm64.flatpak  DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak;
           ls -lah;
+      - name: "Rename artifacts - macOS"
         if: ${{ matrix.os == 'macos' }}
         run: |
           cd packages/gui/dist_electron;
@@ -600,42 +571,33 @@ jobs:
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
           if-no-files-found: error
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
         uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+        if: ${{ matrix.os == 'ubuntu' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
           if-no-files-found: error
       # endregion Upload artifacts - Linux
-      # region Upload artifacts - Linux ARM64
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak"
-          if-no-files-found: error
-      # endregion Upload artifacts - Linux ARM64
       # Upload artifacts - macOS
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-macos-x86_64.dmg"
         uses: actions/upload-artifact@v4.4.0
