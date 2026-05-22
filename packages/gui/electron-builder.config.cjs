@@ -302,7 +302,7 @@ module.exports = {
     icon: './build/mac/icon.icns',
     target: {
       target: 'dmg',
-      arch: ['x64', 'arm64'],
+      arch: ['x64', 'arm64', 'universal'],
     },
     category: 'public.app-category.developer-tools',
   },
