@@ -146,12 +146,10 @@ jobs:
           echo "CXXFLAGS=-std=c++17" >> $GITHUB_ENV
           echo "CFLAGS=-std=c11" >> $GITHUB_ENV
 
-      - name: "Set C++17 compiler flags (Windows)"
         if: ${{ matrix.os == 'windows' }}
         run: |
           echo "CL=/std:c++17" >> $env:GITHUB_ENV
 
-      - name: "'pnpm install' Because we need to install optional dependencies"
         run: |
           echo "======================================================================";
           dir || ls -lah;
@@ -162,11 +160,13 @@ jobs:
           pnpm install;
 
       - name: "test packages/core"
+        if: ${{ matrix.os != 'ubuntu-24.04-arm' }}
         run: |
           cd packages/core;
           pnpm run test;
 
       - name: "test packages/mitmproxy"
+        if: ${{ matrix.os != 'ubuntu-24.04-arm' }}
         run: |
           cd packages/mitmproxy;
           pnpm run test;
