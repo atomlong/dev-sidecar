@@ -461,7 +461,7 @@ jobs:
           echo "cd packages/gui";
           echo "----------------";
           cd packages/gui;
-          dir || ls -lah;
+          ls -lah;
           echo "================================================================";
           echo "npm run electron:build";
           echo "----------------";
@@ -488,7 +488,7 @@ jobs:
           echo "cd packages/gui/dist_electron";
           echo "----------------";
           cd packages/gui/dist_electron;
-          dir || ls -lah;
+          ls -lah;
       - name: "Rename artifacts - Windows"
         if: ${{ matrix.os == 'windows' }}
         run: |
@@ -497,7 +497,7 @@ jobs:
           ren DevSidecar-${{ env.BUILD_VERSION }}-ia32.exe  DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe;
           ren DevSidecar-${{ env.BUILD_VERSION }}-arm64.exe DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe;
           ren DevSidecar-${{ env.BUILD_VERSION }}.exe       DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe;
-          dir;
+          ls -lah;
       - name: "Rename artifacts - Linux"
         if: ${{ matrix.os == 'ubuntu' }}
         run: |

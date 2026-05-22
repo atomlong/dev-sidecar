@@ -153,7 +153,7 @@ jobs:
       - name: "'pnpm install' Because we need to install optional dependencies"
         run: |
           echo "================================================================";
-          dir || ls -lah;
+          ls -lah;
 
           echo "================================================================";
           echo "pnpm install";
@@ -251,7 +251,7 @@ jobs:
           echo "cd packages/gui";
           echo "--------------------";
           cd packages/gui;
-          dir || ls -lah;
+          ls -lah;
 
           echo "======================================================================";
           echo "npm run electron:build";
@@ -282,7 +282,7 @@ jobs:
           echo "cd packages/gui/dist_electron";
           echo "--------------------";
           cd packages/gui/dist_electron;
-          dir || ls -lah;
+          ls -lah;
 
       # Rename artifacts
       - name: "Rename artifacts - Windows"
@@ -293,7 +293,7 @@ jobs:
           ren DevSidecar-${{ steps.package-info.outputs.version }}-ia32.exe  DevSidecar-${{ steps.package-info.outputs.version }}-windows-ia32.exe;
           ren DevSidecar-${{ steps.package-info.outputs.version }}-arm64.exe DevSidecar-${{ steps.package-info.outputs.version }}-windows-arm64.exe;
           ren DevSidecar-${{ steps.package-info.outputs.version }}.exe       DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe;
-          dir;
+          ls -lah;
       - name: "Rename artifacts - Linux"
         if: ${{ matrix.os == 'ubuntu' }}
         run: |

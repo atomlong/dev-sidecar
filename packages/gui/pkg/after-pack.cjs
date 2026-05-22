@@ -15,7 +15,20 @@ function copyRuntimePackage (packageName, nodeModulesDir) {
   const targetDir = path.join(nodeModulesDir, ...packageName.split('/'))
   fs.rmSync(targetDir, { recursive: true, force: true })
   fs.mkdirSync(path.dirname(targetDir), { recursive: true })
-  fs.cpSync(sourceDir, targetDir, { recursive: true, dereference: true })
+
+  const skipPatterns = [
+    `${path.sep}build${path.sep}node_gyp_bins`,
+  ]
+
+  fs.cpSync(sourceDir, targetDir, {
+    recursive: true,
+    dereference: true,
+    filter: (src) => {
+      return !skipPatterns.some(pattern => src.includes(pattern))
+    },
+  })
+
+  fs.rmSync(path.join(targetDir, 'build', 'node_gyp_bins'), { recursive: true, force: true })
   console.log(`copied runtime package: ${packageName}`)
 }
 
