@@ -16,10 +16,10 @@
   },
   "pnpm": {
     "overrides": {
-      "electron-builder": "26.8.1",
-      "app-builder-lib": "26.8.1",
-      "dmg-builder": "26.8.1",
-      "electron-builder-squirrel-windows": "26.8.1"
+      "electron-builder": "25.1.8",
+      "app-builder-lib": "25.1.8",
+      "dmg-builder": "25.1.8",
+      "electron-builder-squirrel-windows": "25.1.8"
     },
     "supportedArchitectures": {
       "os": [

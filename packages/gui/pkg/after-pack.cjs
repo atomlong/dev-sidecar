@@ -15,8 +15,34 @@ function copyRuntimePackage (packageName, nodeModulesDir) {
   const targetDir = path.join(nodeModulesDir, ...packageName.split('/'))
   fs.rmSync(targetDir, { recursive: true, force: true })
   fs.mkdirSync(path.dirname(targetDir), { recursive: true })
-  fs.cpSync(sourceDir, targetDir, { recursive: true, dereference: true })
+
+  fs.cpSync(sourceDir, targetDir, {
+    recursive: true,
+    dereference: true,
+  })
+
+  sanitizeNativeHelperArtifacts(targetDir)
   console.log(`copied runtime package: ${packageName}`)
+}
+
+function sanitizeNativeHelperArtifacts (packageDir) {
+  const nodeGypBinsDir = path.join(packageDir, 'build', 'node_gyp_bins')
+  fs.mkdirSync(nodeGypBinsDir, { recursive: true })
+
+  for (const entry of fs.readdirSync(nodeGypBinsDir)) {
+    const helperPath = path.join(nodeGypBinsDir, entry)
+    writeNativeHelperStub(helperPath)
+  }
+
+  writeNativeHelperStub(path.join(nodeGypBinsDir, 'python3'))
+  writeNativeHelperStub(path.join(nodeGypBinsDir, 'python3.10'))
+  console.log(`sanitized native helper artifacts: ${nodeGypBinsDir}`)
+}
+
+function writeNativeHelperStub (helperPath) {
+  fs.rmSync(helperPath, { recursive: true, force: true })
+  fs.writeFileSync(helperPath, '#!/usr/bin/env sh\necho "node-gyp helper is not available in packaged runtime" >&2\nexit 1\n')
+  fs.chmodSync(helperPath, 0o755)
 }
 
 function ensureNativeRuntimeDependencies (resourcesDir) {
