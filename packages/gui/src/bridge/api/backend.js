@@ -1,6 +1,5 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import DevSidecar from '@docmirror/dev-sidecar'
 import { app, ipcMain } from 'electron'
 import lodash from 'lodash'
@@ -16,10 +15,23 @@ import appPathUtil from '../../utils/util.apppath.js'
 
 const { configFromFiles } = coreDefaultConfig
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const mitmproxyPath = path.join(__dirname, '../mitmproxy.js')
+const mitmproxyPath = resolveMitmproxyPath()
 process.env.DS_EXTRA_PATH = path.join(appPathUtil.getAppResourcesPath(app), 'extra')
 let currentWin
+
+function resolveMitmproxyPath () {
+  const candidates = [
+    path.join(app.getAppPath(), 'mitmproxy.js'),
+    path.join(app.getAppPath(), 'dist_electron/bundled/mitmproxy.js'),
+    path.join(app.getAppPath(), 'packages/gui/dist_electron/bundled/mitmproxy.js'),
+    path.join(process.cwd(), 'dist_electron/bundled/mitmproxy.js'),
+    path.join(process.cwd(), 'packages/gui/dist_electron/bundled/mitmproxy.js'),
+  ]
+
+  const resolvedPath = candidates.find(candidate => fs.existsSync(candidate)) || candidates[0]
+  log.info('resolved mitmproxy bridge path:', resolvedPath)
+  return resolvedPath
+}
 
 const getDefaultConfigBasePath = function () {
   return DevSidecar.api.config.get().server.setting.userBasePath
