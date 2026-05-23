@@ -116,250 +116,24 @@ jobs:
           echo "CFLAGS=-std=c11" >> $GITHUB_ENV
       - name: "Set C++17 compiler flags (Windows)"
         if: ${{ matrix.os == 'windows' }}
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage
-        if: ${{ matrix.os == 'windows' }}
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz
-        if: ${{ matrix.os == 'windows' }}
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm"
-          if-no-files-found: error
-
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
-          if-no-files-found: error
-          if: ${{ matrix.os == 'ubuntu' }}
-          with:
-            path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz
-            name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz"
-            if-no-files-found: error
-        - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm"
-          uses: actions/upload-artifact@v4.4.0
-          if: ${{ matrix.os == 'ubuntu' }}
-          with:
-            path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.deb
-            name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm"
-            if-no-files-found: error
-
-        - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
-          uses: actions/upload-artifact@v4.4.0
-          if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-            path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage
-            path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb
-            name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
-            if-no-files-found: error
-        - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
-          uses: actions/upload-artifact@v4.4.0
-          if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-            path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz
-            path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage
-            name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
-            if-no-files-found: error
-        - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
-          uses: actions/upload-artifact@v4.4.0
-          if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-            path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm
-            path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz
-            name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
-            if-no-files-found: error
-        - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
-          uses: actions/upload-artifact@v4.4.0
-          if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-          with:
-          echo "PYTHON=$PYTHON"
-            path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
-            name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
-
-      - name: Pin node-gyp to setup-python interpreter
-        shell: bash
-        env:
-          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
         run: |
-          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-
-      - name: Print pinned node-gyp python
-        shell: bash
-        env:
-          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
+          echo "CL=/std:c++17" >> $env:GITHUB_ENV
+      - name: "'pnpm install' Because we need to install optional dependencies"
         run: |
-          echo "======================================================================"
-          echo "Pinned Python for node-gyp"
-          echo "--------------------"
-          echo "PYTHON=$PYTHON"
-          echo "npm_config_python=$npm_config_python"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
-
-      - name: Pin node-gyp to setup-python interpreter
-        shell: bash
-        env:
-          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
+          echo "================================================================";
+          node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
+          echo "================================================================";
+          echo "pnpm install";
+          echo "----------------";
+          pnpm install;
+      - name: "test packages/core"
         run: |
-          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-
-      - name: Print pinned node-gyp python
-        shell: bash
+          cd packages/core;
+          pnpm run test;
+      - name: "test packages/mitmproxy"
         run: |
-          echo "======================================================================"
-          echo "Pinned Python for node-gyp"
-          echo "--------------------"
-          echo "PYTHON=$PYTHON"
-          echo "npm_config_python=$npm_config_python"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
-
-      - name: Pin node-gyp to setup-python interpreter
-        shell: bash
-        run: |
-          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-
-      - name: Print pinned node-gyp python
-        shell: bash
-        run: |
-          echo "======================================================================"
-          echo "Pinned Python for node-gyp"
-          echo "--------------------"
-          echo "PYTHON=$PYTHON"
-          echo "npm_config_python=$npm_config_python"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
-
-      - name: Pin node-gyp to setup-python interpreter
-        shell: bash
-        run: |
-          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-
-      - name: Print pinned node-gyp python
-        shell: bash
-        run: |
-          echo "======================================================================"
-          echo "Pinned Python for node-gyp"
-          echo "--------------------"
-          echo "PYTHON=$PYTHON"
-          echo "npm_config_python=$npm_config_python"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
-
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.AppImage"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.tar.gz"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.rpm"
-          if-no-files-found: error
-      # endregion Upload artifacts - Linux
-
-      # region Upload artifacts - Linux ARM64
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.flatpak"
-          if-no-files-found: error
-      # endregion Upload artifacts - Linux ARM64
-
-      # Upload artifacts - macOS
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-macos-x86_64.dmg"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'macos' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-macos-x86_64.dmg
-          echo "DOWNLOAD_URL=$DOWNLOAD_URL"
-          if [ ! -s "$PREBUILD_DIR/$FILE_NAME" ]; then
-            curl -fL \
-              --retry 6 \
-              --retry-delay 5 \
-              --retry-all-errors \
-              --connect-timeout 20 \
-              --max-time 300 \
-              -o "$PREBUILD_DIR/$FILE_NAME" \
-              "$DOWNLOAD_URL"
-          fi
-          ls -lah "$PREBUILD_DIR"
+          cd packages/mitmproxy;
+          pnpm run test;
       - name: "Cache Flatpak runtime (Linux)"
         if: ${{ matrix.os == 'ubuntu' }}
         id: cache-flatpak-runtime
@@ -396,6 +170,7 @@ jobs:
         if: ${{ matrix.os == 'ubuntu' }}
         env:
           DEBUG: "@malept/flatpak-bundler"
+          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
         run: |
           echo "================================================================";
           echo "cd packages/gui";
@@ -501,28 +276,6 @@ jobs:
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
         uses: actions/upload-artifact@v4.4.0
         if: ${{ matrix.os == 'ubuntu' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.AppImage"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.tar.gz"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.rpm"
-          if-no-files-found: error
-
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'ubuntu-24.04-arm' }}
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb
           name: "DevSidecar-${{ env.BUILD_VERSION }}-linux-arm64.deb"
