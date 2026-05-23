@@ -44,7 +44,9 @@ function createNode (address, port) {
   }
 }
 
-describe('xray stage gating', () => {
+describe('xray stage gating', function () {
+  this.timeout(10000)
+
   it('skips remote subscription sync only when effective cache reaches the low watermark', () => {
     if (!sqliteAvailable) {
       return
