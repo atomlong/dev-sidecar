@@ -13,7 +13,6 @@ jobs:
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      BETTER_SQLITE3_PREBUILDS_CACHE: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
     strategy:
       fail-fast: false
       matrix:
@@ -52,44 +51,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-
-      - name: Pin node-gyp to setup-python interpreter
-        shell: bash
-        run: |
-          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-
-      - name: Print pinned node-gyp python
-        shell: bash
-        run: |
-          echo "======================================================================"
-          echo "Pinned Python for node-gyp"
-          echo "--------------------"
-          echo "PYTHON=$PYTHON"
-          echo "npm_config_python=$npm_config_python"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
-
-      - name: Pin node-gyp to setup-python interpreter
-        shell: bash
-        run: |
-          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-
-      - name: Print pinned node-gyp python
-        shell: bash
-        run: |
-          echo "======================================================================"
-          echo "Pinned Python for node-gyp"
-          echo "--------------------"
-          echo "PYTHON=$PYTHON"
-          echo "npm_config_python=$npm_config_python"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
 
       - name: Get package info
         id: package-info
@@ -137,15 +98,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-builder-cache-
 
-      - name: "Setup better-sqlite3 prebuild cache"
-        if: ${{ matrix.os == 'ubuntu' }}
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
-          key: ${{ runner.os }}-${{ runner.arch }}-better-sqlite3-prebuilds-${{ hashFiles('pnpm-lock.yaml', 'packages/gui/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-better-sqlite3-prebuilds-
-
       - name: "Set C++17 compiler flags (non-Windows)"
         if: ${{ matrix.os != 'windows' }}
         run: |
@@ -176,56 +128,6 @@ jobs:
         run: |
           cd packages/mitmproxy;
           pnpm run test;
-
-      - name: "Prefetch better-sqlite3 Electron prebuild (Linux)"
-        if: ${{ matrix.os == 'ubuntu' }}
-        shell: bash
-        env:
-          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
-        run: |
-          set -euo pipefail
-
-          PREBUILD_DIR="$BETTER_SQLITE3_PREBUILDS_CACHE"
-          mkdir -p "$PREBUILD_DIR"
-
-          BETTER_SQLITE3_VERSION="$(node -p "require('./packages/gui/package.json').dependencies['better-sqlite3']")"
-          ELECTRON_VERSION="$(node -p "require('./packages/gui/node_modules/electron/package.json').version")"
-          ELECTRON_ABI="$(node -p "require('./node_modules/node-abi').getAbi(process.argv[1], 'electron')" "$ELECTRON_VERSION")"
-          TARGET_ARCHES="${DEV_SIDECAR_LINUX_TARGET_ARCHES:-$(node -p "process.arch")}"
-
-          echo "================================================================"
-          echo "Prefetch better-sqlite3 Electron prebuild"
-          echo "----------------"
-          echo "BETTER_SQLITE3_VERSION=$BETTER_SQLITE3_VERSION"
-          echo "ELECTRON_VERSION=$ELECTRON_VERSION"
-          echo "ELECTRON_ABI=$ELECTRON_ABI"
-          echo "TARGET_ARCHES=$TARGET_ARCHES"
-
-          for ARCH in ${TARGET_ARCHES//,/ }; do
-            FILE_NAME="better-sqlite3-v${BETTER_SQLITE3_VERSION}-electron-v${ELECTRON_ABI}-linux-${ARCH}.tar.gz"
-            DOWNLOAD_URL="https://github.com/WiseLibs/better-sqlite3/releases/download/v${BETTER_SQLITE3_VERSION}/${FILE_NAME}"
-
-            echo "ARCH=$ARCH"
-            echo "FILE_NAME=$FILE_NAME"
-            echo "DOWNLOAD_URL=$DOWNLOAD_URL"
-
-            if [ ! -s "$PREBUILD_DIR/$FILE_NAME" ]; then
-              if ! curl -fL \
-                --retry 6 \
-                --retry-delay 5 \
-                --retry-all-errors \
-                --connect-timeout 20 \
-                --max-time 300 \
-                -o "$PREBUILD_DIR/$FILE_NAME" \
-                "$DOWNLOAD_URL"; then
-                echo "No published better-sqlite3 Electron prebuild for linux-$ARCH; falling back to source build during packaging."
-                rm -f "$PREBUILD_DIR/$FILE_NAME"
-                continue
-              fi
-            fi
-          done
-
-          ls -lah "$PREBUILD_DIR"
 
       - name: "Cache Flatpak runtime (Linux)"
         if: ${{ matrix.os == 'ubuntu' }}
@@ -298,7 +200,6 @@ jobs:
           ren DevSidecar-${{ steps.package-info.outputs.version }}-x64.exe   DevSidecar-${{ steps.package-info.outputs.version }}-windows-x86_64.exe;
           ren DevSidecar-${{ steps.package-info.outputs.version }}-ia32.exe  DevSidecar-${{ steps.package-info.outputs.version }}-windows-ia32.exe;
           ren DevSidecar-${{ steps.package-info.outputs.version }}-arm64.exe DevSidecar-${{ steps.package-info.outputs.version }}-windows-arm64.exe;
-          ren DevSidecar-${{ steps.package-info.outputs.version }}.exe       DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe;
           node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
       - name: "Rename artifacts - Linux"
         if: ${{ matrix.os == 'ubuntu' }}
@@ -347,13 +248,6 @@ jobs:
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ steps.package-info.outputs.version }}-windows-arm64.exe
           name: "DevSidecar-${{ steps.package-info.outputs.version }}-windows-arm64.exe"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'windows' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe
-          name: "DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe"
           if-no-files-found: error
       # endregion Upload artifacts - Windows
 
@@ -500,11 +394,6 @@ jobs:
         uses: actions/download-artifact@v4.1.8
         with:
           name: "DevSidecar-${{ steps.package-info.outputs.version }}-windows-arm64.exe"
-          path: release
-      - name: "Download DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe"
-        uses: actions/download-artifact@v4.1.8
-        with:
-          name: "DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe"
           path: release
       # -------------------------------------------------------------------------------------------------------------------------
       - name: "Download DevSidecar-${{ steps.package-info.outputs.version }}-linux-x86_64.deb"
