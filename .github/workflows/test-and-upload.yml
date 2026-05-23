@@ -31,7 +31,6 @@ jobs:
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      BETTER_SQLITE3_PREBUILDS_CACHE: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
       VUE_APP_PUBLISH_CHANNEL: beta
     strategy:
       fail-fast: false
@@ -60,23 +59,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: "Pin node-gyp to setup-python interpreter"
-        shell: bash
-        run: |
-          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-      - name: "Print pinned node-gyp python"
-        shell: bash
-        run: |
-          echo "================================================================"
-          echo "Pinned Python for node-gyp"
-          echo "----------------"
-          echo "PYTHON=$PYTHON"
-          echo "npm_config_python=$npm_config_python"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
       - name: "Get package info"
         id: package-info
         uses: luizfelipelaviola/get-package-info@v1
@@ -127,14 +109,6 @@ jobs:
           key: ${{ runner.os }}-electron-builder-cache-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
             ${{ runner.os }}-electron-builder-cache-
-      - name: "Setup better-sqlite3 prebuild cache"
-        if: ${{ matrix.os == 'ubuntu' }}
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
-          key: ${{ runner.os }}-${{ runner.arch }}-better-sqlite3-prebuilds-${{ hashFiles('pnpm-lock.yaml', 'packages/gui/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-better-sqlite3-prebuilds-
       - name: "Set C++17 compiler flags (non-Windows)"
         if: ${{ matrix.os != 'windows' }}
         run: |
@@ -466,12 +440,10 @@ jobs:
           echo "npm run electron:build";
           echo "----------------";
           npm run electron:build;
-      - name: "npm run electron:build (Linux x64 + ARM64 + ARMv7l)"
+      - name: "npm run electron:build (Linux)"
         if: ${{ matrix.os == 'ubuntu' }}
         env:
           DEBUG: "@malept/flatpak-bundler"
-          npm_config_better_sqlite3_local_prebuilds: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
-          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
         run: |
           echo "================================================================";
           echo "cd packages/gui";
@@ -496,7 +468,6 @@ jobs:
           ren DevSidecar-${{ env.BUILD_VERSION }}-x64.exe   DevSidecar-${{ env.BUILD_VERSION }}-windows-x86_64.exe;
           ren DevSidecar-${{ env.BUILD_VERSION }}-ia32.exe  DevSidecar-${{ env.BUILD_VERSION }}-windows-ia32.exe;
           ren DevSidecar-${{ env.BUILD_VERSION }}-arm64.exe DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe;
-          ren DevSidecar-${{ env.BUILD_VERSION }}.exe       DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe;
           node -e "const fs=require('fs'); for (const e of fs.readdirSync('.', { withFileTypes: true })) console.log((e.isDirectory() ? '[D] ' : '[F] ') + e.name)";
       - name: "Rename artifacts - Linux"
         if: ${{ matrix.os == 'ubuntu' }}
@@ -544,13 +515,6 @@ jobs:
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'windows' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
           if-no-files-found: error
       # endregion Upload artifacts - Windows
       # region Upload artifacts - Linux
