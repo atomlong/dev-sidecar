@@ -1,7 +1,9 @@
 const { spawnSync } = require('node:child_process')
+const path = require('node:path')
 
 const publishUrl = process.env.VUE_APP_PUBLISH_URL
 const publishProvider = process.env.VUE_APP_PUBLISH_PROVIDER
+const debLifecycleScript = path.join(__dirname, 'pkg', 'deb-stop-processes.sh')
 
 function normalizeArch (arch) {
   if (arch === 'x64' || arch === 'arm64' || arch === 'armv7l') {
@@ -152,6 +154,12 @@ module.exports = {
     target: linuxTargets,
     appId: 'cn.docmirror.DevSidecar',
     category: 'System',
+  },
+  deb: {
+    fpm: [
+      `--before-install=${debLifecycleScript}`,
+      `--before-remove=${debLifecycleScript}`,
+    ],
   },
   mac: {
     icon: './build/mac/icon.icns',

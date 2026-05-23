@@ -426,8 +426,11 @@ npm run electron
 ### 8.3、打包成可执行文件
 
 ```shell
-# 先执行上面的步骤，然后运行如下命令打包成可执行文件
+# 先执行上面的步骤，然后运行如下命令打包成当前系统架构的可执行文件
 npm run electron:build
+
+# Linux 如果需要同时打包 x86_64、arm64、armv7l 安装包，可以显式指定架构
+DEV_SIDECAR_LINUX_TARGET_ARCHES=x64,arm64,armv7l npm run electron:build
 ```
 
 ### 8.4、提交pr
