@@ -31,7 +31,6 @@ jobs:
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      BETTER_SQLITE3_PREBUILDS_CACHE: ${{ github.workspace }}/.cache/better-sqlite3-prebuilds
       VUE_APP_PUBLISH_CHANNEL: beta
     strategy:
       fail-fast: false
@@ -243,13 +242,6 @@ jobs:
         with:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
-          if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'windows' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
           if-no-files-found: error
       # endregion Upload artifacts - Windows
       # region Upload artifacts - Linux
