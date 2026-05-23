@@ -468,13 +468,6 @@ jobs:
           path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe
           name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-arm64.exe"
           if-no-files-found: error
-      - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'windows' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe
-          name: "DevSidecar-${{ env.BUILD_VERSION }}-windows-universal.exe"
-          if-no-files-found: error
       # endregion Upload artifacts - Windows
       # region Upload artifacts - Linux
       - name: "Upload DevSidecar-${{ env.BUILD_VERSION }}-linux-x86_64.deb"

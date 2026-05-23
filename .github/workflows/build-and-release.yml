@@ -45,44 +45,6 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Pin node-gyp to setup-python interpreter
-        shell: bash
-        run: |
-          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-
-      - name: Print pinned node-gyp python
-        shell: bash
-        run: |
-          echo "======================================================================"
-          echo "Pinned Python for node-gyp"
-          echo "--------------------"
-          echo "PYTHON=$PYTHON"
-          echo "npm_config_python=$npm_config_python"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
-
-      - name: Pin node-gyp to setup-python interpreter
-        shell: bash
-        run: |
-          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "npm_config_python=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "NODE_GYP_FORCE_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-
-      - name: Print pinned node-gyp python
-        shell: bash
-        run: |
-          echo "======================================================================"
-          echo "Pinned Python for node-gyp"
-          echo "--------------------"
-          echo "PYTHON=$PYTHON"
-          echo "npm_config_python=$npm_config_python"
-          echo "NODE_GYP_FORCE_PYTHON=$NODE_GYP_FORCE_PYTHON"
-          "$PYTHON" --version
-
       - name: Get package info
         id: package-info
         uses: luizfelipelaviola/get-package-info@v1
@@ -278,13 +240,6 @@ jobs:
           path: packages/gui/dist_electron/DevSidecar-${{ steps.package-info.outputs.version }}-windows-arm64.exe
           name: "DevSidecar-${{ steps.package-info.outputs.version }}-windows-arm64.exe"
           if-no-files-found: error
-      - name: "Upload DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe"
-        uses: actions/upload-artifact@v4.4.0
-        if: ${{ matrix.os == 'windows' }}
-        with:
-          path: packages/gui/dist_electron/DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe
-          name: "DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe"
-          if-no-files-found: error
       # endregion Upload artifacts - Windows
 
       # region Upload artifacts - Linux
@@ -430,11 +385,6 @@ jobs:
         uses: actions/download-artifact@v4.1.8
         with:
           name: "DevSidecar-${{ steps.package-info.outputs.version }}-windows-arm64.exe"
-          path: release
-      - name: "Download DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe"
-        uses: actions/download-artifact@v4.1.8
-        with:
-          name: "DevSidecar-${{ steps.package-info.outputs.version }}-windows-universal.exe"
           path: release
       # -------------------------------------------------------------------------------------------------------------------------
       - name: "Download DevSidecar-${{ steps.package-info.outputs.version }}-linux-x86_64.deb"
