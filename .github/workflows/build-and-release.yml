@@ -181,6 +181,7 @@ jobs:
         if: ${{ matrix.os == 'ubuntu' }}
         env:
           DEBUG: "@malept/flatpak-bundler"
+          DEV_SIDECAR_LINUX_TARGET_ARCHES: x64,arm64,armv7l
         run: |
           echo "======================================================================";
           echo "cd packages/gui";
