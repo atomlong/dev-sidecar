@@ -1,4 +1,5 @@
 const defaultDns = require('node:dns')
+const net = require('node:net')
 const log = require('../../../utils/util.log.server')
 const speedTest = require('../../speed')
 
@@ -13,8 +14,16 @@ function setDnsLookupHeader (res, value) {
   }
 }
 
-function replyLookupResult (callback, options, ip, family) {
-  if (options && options.all === true) {
+function isValidIpAddress (ip) {
+  return typeof ip === 'string' && net.isIP(ip) !== 0
+}
+
+function getAddressFamily (ip) {
+  return net.isIP(ip) === 6 ? 6 : 4
+}
+
+function respondLookup (callback, ip, family, all) {
+  if (all) {
     callback(null, [{ address: ip, family }])
     return
   }
@@ -52,34 +61,39 @@ module.exports = {
     const family = Number.parseInt(dnsAndFamily.family) === 6 ? 6 : 4
 
     return (hostname, options, callback) => {
+      const all = options && options.all === true
       const tester = speedTest.getSpeedTester(hostname, port)
       if (tester) {
         const aliveIpObj = tester.pickFastAliveIpObj()
-        if (aliveIpObj) {
+        if (aliveIpObj && isValidIpAddress(aliveIpObj.host)) {
+          const addressFamily = getAddressFamily(aliveIpObj.host)
           log.info(`----- ${action}: ${hostname}, use alive ip from dns '${aliveIpObj.dns}': ${aliveIpObj.host}${target} -----`)
           setDnsLookupHeader(res, `IpTester: ${aliveIpObj.host} ${aliveIpObj.dns === '预设IP' ? 'PreSet' : aliveIpObj.dns}`)
-          replyLookupResult(callback, options, aliveIpObj.host, family)
+          respondLookup(callback, aliveIpObj.host, addressFamily, all)
           return
         } else {
-          log.info(`----- ${action}: ${hostname}, no alive ip${target}, tester: { "ready": ${tester.ready}, "backupList": ${JSON.stringify(tester.backupList)} }`)
+          log.info(`----- ${action}: ${hostname}, no valid alive ip${target}, tester: { "ready": ${tester.ready}, "backupList": ${JSON.stringify(tester.backupList)} }`)
         }
       }
 
       const ipChecker = createIpChecker(tester)
 
       dns.lookup(hostname, { ipChecker, family }).then((ip) => {
-        if (isDnsIntercept) {
-          isDnsIntercept.dns = dns
-          isDnsIntercept.hostname = hostname
-          isDnsIntercept.ip = ip
-        }
-
-        if (ip !== hostname) {
-          log.info(`----- ${action}: ${hostname}, use ip from dns '${dns.dnsName}': ${ip}(family: ${family})${target} -----`)
-          setDnsLookupHeader(res, `DNS: ${ip} (IPv${family}) ${dns.dnsName === '预设IP' ? 'PreSet' : dns.dnsName}`)
-          replyLookupResult(callback, options, ip, family)
+        if (ip !== hostname && isValidIpAddress(ip)) {
+          const addressFamily = getAddressFamily(ip)
+          if (isDnsIntercept) {
+            isDnsIntercept.dns = dns
+            isDnsIntercept.hostname = hostname
+            isDnsIntercept.ip = ip
+          }
+          log.info(`----- ${action}: ${hostname}, use ip from dns '${dns.dnsName}': ${ip}(family: ${addressFamily})${target} -----`)
+          setDnsLookupHeader(res, `DNS: ${ip} (IPv${addressFamily}) ${dns.dnsName === '预设IP' ? 'PreSet' : dns.dnsName}`)
+          respondLookup(callback, ip, addressFamily, all)
         } else {
           // 使用默认dns
+          if (ip != null && ip !== hostname && !isValidIpAddress(ip)) {
+            log.warn(`----- ${action}: ${hostname}, dns returned invalid ip '${ip}'${target}, fallback to default DNS`)
+          }
           log.info(`----- ${action}: ${hostname}, use default DNS: ${hostname}${target}, options:`, options, ', dns:', dns)
           defaultDns.lookup(hostname, options, callback)
         }
