@@ -94,18 +94,22 @@ module.exports = function createUpgradeHandler (createIntercepts, middlewares, e
 
           const isDnsIntercept = {}
           if (dnsConfig && dnsConfig.dnsMap) {
-            let dns = DnsUtil.hasDnsLookup(dnsConfig, rOptions.hostname)
-            if (!dns && rOptions.servername) {
-              dns = dnsConfig.dnsMap.ForSNI
+            let dnsAndFamily = DnsUtil.getDNSAndFamily(dnsConfig, rOptions.hostname)
+            if (!dnsAndFamily && rOptions.servername) {
+              const dns = dnsConfig.dnsMap.ForSNI
               if (dns) {
+                dnsAndFamily = { dns }
                 log.info(`域名 ${rOptions.hostname} 在dns中未配置，但使用了 sni: ${rOptions.servername}, 必须使用dns，现默认使用 '${dns.dnsName}' DNS.`)
               } else {
                 log.warn(`域名 ${rOptions.hostname} 在dns中未配置，但使用了 sni: ${rOptions.servername}，且DNS服务管理中，也未指定SNI默认使用的DNS。`)
               }
             }
-            if (dns) {
-              rOptions.lookup = dnsLookup.createLookupFunc(res, dns, 'request url', finalUrl, rOptions.port, isDnsIntercept)
-              log.debug(`域名 ${rOptions.hostname} DNS: ${dns.dnsName}`)
+            if (dnsAndFamily) {
+              rOptions.lookup = dnsLookup.createLookupFunc(res, dnsAndFamily, 'request url', finalUrl, rOptions.port, isDnsIntercept)
+              if (dnsAndFamily.family === 6) {
+                rOptions.family = 6
+              }
+              log.debug(`域名 ${rOptions.hostname} DNS: ${dnsAndFamily.dns.dnsName}, family: ${rOptions.family || 4}`)
             } else {
               log.info(`域名 ${rOptions.hostname} 在DNS中未配置`)
             }
