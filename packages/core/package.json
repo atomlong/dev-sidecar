@@ -25,6 +25,7 @@
     "log4js": "^6.9.1",
     "maxmind": "^5.0.6",
     "node-powershell": "^4.0.0",
+    "request": "^2.88.2",
     "spawn-sync": "^2.0.0",
     "winreg": "^1.2.5"
   },

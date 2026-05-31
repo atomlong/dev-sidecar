@@ -139,6 +139,48 @@ module.exports = defineConfig({
             from: 'extra/xray/${os}/${arch}',
             to: 'extra/xray',
           },
+          {
+            from: 'extra/xray',
+            to: 'extra/xray',
+            filter: [
+              '*.mmdb',
+              'geoip.dat',
+              'geosite.dat',
+            ],
+          },
+          {
+            // eslint-disable-next-line no-template-curly-in-string
+            from: 'extra/xray/${os}/${arch}',
+            to: 'extra/xray',
+          },
+          {
+            from: 'extra/xray',
+            to: 'extra/xray',
+            filter: [
+              '*.mmdb',
+              'geoip.dat',
+              'geosite.dat',
+            ],
+          },
+          {
+            // eslint-disable-next-line no-template-curly-in-string
+            from: 'extra/xray/${os}/${arch}',
+            to: 'extra/xray',
+          },
+          {
+            from: 'extra/xray',
+            to: 'extra/xray',
+            filter: [
+              '*.mmdb',
+              'geoip.dat',
+              'geosite.dat',
+            ],
+          },
+          {
+            // eslint-disable-next-line no-template-curly-in-string
+            from: 'extra/xray/${os}/${arch}',
+            to: 'extra/xray',
+          },
         ],
         appId: 'cn.docmirror.DevSidecar',
         productName: 'dev-sidecar',
