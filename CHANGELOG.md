@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## [v2.1.5] - Unreleased
 
 ### Added
 - Added targeted mitmproxy regression coverage for DNS-aware upgrade request handling.
