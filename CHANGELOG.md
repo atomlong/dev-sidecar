@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.1.5] - 2026-05-31
+## Unreleased
 
 ### Added
 - Added targeted mitmproxy regression coverage for DNS-aware upgrade request handling.
