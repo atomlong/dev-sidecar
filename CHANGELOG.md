@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.1.5] - 2026-05-31
+
+### Added
+- Added targeted mitmproxy regression coverage for DNS-aware upgrade request handling.
+
+### Fixed
+- Fixed WebSocket and other HTTP upgrade requests to reuse the normal DNS resolution path, restoring Copilot Web chat message sending when those requests pass through DevSidecar.
+
 ## [v2.1.4] - 2026-05-20
 
 ### Added
