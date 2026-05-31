@@ -86,6 +86,11 @@
     - 修复 `agent.options` 为空导致的拦截崩溃问题。
     - `sni`、`proxy`、`unVerifySsl`、普通请求与 Upgrade 请求路径已改为空值安全访问。
     - 已验证 `daily-cloudcode-pa.googleapis.com` 可正常拦截。
+- [x] **Copilot Web Chat Compatibility**:
+    - 已在真实浏览器复现 `wss://copilot.microsoft.com/c/api/chat` 握手在响应前关闭，并对应页面提示 `Sorry, I didn’t get that`。
+    - 根因定位为 `packages/mitmproxy/src/lib/proxy/mitmproxy/createUpgradeHandler.js` 仍调用已移除的 `DnsUtil.hasDnsLookup`，导致 upgrade 代理分支在请求真正发出前抛出 `TypeError`。
+    - 已修复为复用普通请求路径的 `DnsUtil.getDNSAndFamily` 逻辑，并新增 `test/createUpgradeHandlerTest.js` 回归测试覆盖该场景。
+    - 用户重新编译并重新部署后确认：Copilot Web 已恢复正常使用。
 - [x] **Configuration**: 支持 HTTP/HTTPS/FILE 协议加载远程配置。
 - [x] **Core Proxy**: HTTP/HTTPS 拦截与代理。
 - [x] **DNS Optimization**: DNS 优选与智能解析。

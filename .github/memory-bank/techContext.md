@@ -25,6 +25,7 @@
 - **Setup**:
     - `pnpm install`: Install dependencies.
     - `pnpm run electron:serve` (in `packages/gui`): Start dev server.
+    - Upgrade 链路定向回归验证：`cd packages/mitmproxy && pnpm test -- test/createUpgradeHandlerTest.js`.
 
 ## DevOps & Release
 - **CI/CD**: GitHub Actions (`.github/workflows/build-and-release.yml`).

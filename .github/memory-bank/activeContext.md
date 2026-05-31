@@ -7,6 +7,11 @@
 - 工作流增强：正在继续演进 `submit.sh`，本轮聚焦于移除自动代理检测、补齐上游公共仓库同步能力，并保证现有 submit/release 流程职责清晰。
 
 ## Recent Changes
+- [Fix] **Copilot Web 聊天发送失败修复**：
+    - 已在真实浏览器复现 Copilot Web 页面提示 `Sorry, I didn’t get that / Not sure what happened, but I didn’t get your message`，浏览器侧对应为 `wss://copilot.microsoft.com/c/api/chat` 在收到握手响应前就关闭连接。
+    - 运行日志确认：聊天升级请求进入 `packages/mitmproxy/src/lib/proxy/mitmproxy/createUpgradeHandler.js` 后，仍调用已移除的 `DnsUtil.hasDnsLookup`，触发 `TypeError`，导致 WebSocket upgrade 在请求真正建立前就失败。
+    - 已将 upgrade 路径改为复用普通请求路径的 `DnsUtil.getDNSAndFamily` + `dnsLookup.createLookupFunc` 逻辑，并新增 `packages/mitmproxy/test/createUpgradeHandlerTest.js` 回归测试覆盖“带 DNS 配置的升级请求不会在发起前崩溃”这一场景。
+    - 用户已重新编译并重新部署修复后的版本，实机确认 Copilot Web 已恢复正常使用。
 - [Release] **v2.1.4 预发布准备**：
     - 四个工作区包版本（core / cli / gui / mitmproxy）已提升到 `2.1.4`。
     - `CHANGELOG.md` 的 `v2.1.4` 条目已补充 Linux SQLite/Electron 打包修复、Xray 订阅 provenance、stage 3 per-subscription 可用节点汇总、stale subscription cleanup 语义，以及 egress probe 日志/清理修复；发布前已将标题日期落到 `2026-05-20`。
@@ -102,6 +107,7 @@
     - 同步更新了 `doc/wiki/Xray插件使用说明.md`。
 
 ## Next Steps
+- 观察其他依赖 DNS/SNI 改写的 WebSocket / HTTP upgrade 路径，确认没有继续保留与普通请求路径分叉的旧逻辑。
 - 继续观察 v2.1.4 安装后的 stage 3 长轮次，确认 `stage3-last-round.json`、订阅可用节点计数和 stale cleanup 语义符合预期。
 - 继续观察是否还会出现残留 `egress-*.json` 临时 Xray 进程；若复现，优先抓取 PID、父进程、cmdline、socket、日志上下文，并核对是否有对应 `正在停止 Xray 出口元数据探测进程` 日志。
 - 观察新的 GitHub Actions Build And Release run `26169088856` 是否基于 tag `v2.1.4` 正常完成，并确认 GitHub Release 附件已重新产出。
@@ -117,6 +123,7 @@
 - 如需要对外发布补丁版本，更新 `CHANGELOG.md` 并走 `submit.sh` 发布流程。
 
 ## Active Considerations
+- **Upgrade 路径一致性**：Mitmproxy 的普通请求与 WebSocket / HTTP upgrade 请求不能各自维护一套 DNS/SNI 处理逻辑；后续凡是修改 `createRequestHandler` 的 DNS 语义时，都要同步检查 `createUpgradeHandler`，否则很容易出现“页面能开、流式聊天失败”的隐性回归。
 - **v2.1.4 发布边界**：当前对外能力应聚焦 Linux packaged SQLite/Electron 兼容、Xray 订阅 provenance、stage 3 订阅可用节点汇总、stale subscription cleanup 语义和 egress probe 根因修复，不再继续扩展新功能。
 - **订阅可用性口径**：第二阶段只能建立订阅来源关系，不能证明可用；per-subscription usable-node count 必须来自第三阶段完整轮次的实际可用节点 key。
 - **egress probe 根因定位**：残留 egress 进程若只剩本地监听且无外部连接，优先判断父进程清理链路；清理逻辑必须按 PID 确认，而不能只看 Node `child.killed`。

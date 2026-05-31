@@ -57,6 +57,10 @@ flowchart TD
     - **Tunnel Support**: 识别 `tunnel://` 协议，建立 HTTP Tunnel 连接至上游代理（如 Xray），实现透明代理。
 - **DNS (`lib/dns`)**: 实现 DNS 优选逻辑 (DoH/DoT)。
 - **TLS (`lib/proxy/tls`)**: 处理 HTTPS 证书动态生成和 SNI 伪装。
+- **Parallel Request Paths**:
+    - 普通 HTTP/HTTPS 请求走 `createRequestHandler`，WebSocket / HTTP upgrade 请求走 `createUpgradeHandler`。
+    - 这两条入口在 DNS、SNI、compat agent、lookup 注入上的语义必须保持一致；`createRequestHandler` 当前是 upgrade 路径的对齐基线。
+    - 一旦 upgrade 路径保留了旧 API 或旧兼容逻辑，最典型的表现就是普通页面与短请求正常，但聊天、流式推送或其他基于 upgrade 的连接在握手前失败。
 
 ## Design Patterns
 - **Monorepo**: 使用 pnpm workspace 管理多包依赖。
