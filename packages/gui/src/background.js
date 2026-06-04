@@ -415,12 +415,15 @@ function initApp () {
 try {
   app.disableHardwareAcceleration() // 禁用gpu
 
+  const args = process.argv ? minimist(process.argv) : {}
+  const serviceModeArg = `${args.serviceMode || args.service || process.env.DEV_SIDECAR_SERVICE_MODE || ''}`
+  const serviceMode = serviceModeArg === 'true' || serviceModeArg === '1'
+
   // 开启后是否默认隐藏window
   let startHideWindow = !DevSidecar.api.config.get().app.startShowWindow
   if (app.getLoginItemSettings().wasOpenedAsHidden) {
     startHideWindow = true
   } else if (process.argv) {
-    const args = minimist(process.argv)
     log.info('start args:', args)
 
     // 通过启动参数，判断是否隐藏窗口
@@ -431,7 +434,7 @@ try {
       startHideWindow = false
     }
   }
-  log.info('startHideWindow = ', startHideWindow, ', app.getLoginItemSettings() = ', jsonApi.stringify2(app.getLoginItemSettings()))
+  log.info('startHideWindow = ', startHideWindow, ', serviceMode = ', serviceMode, ', app.getLoginItemSettings() = ', jsonApi.stringify2(app.getLoginItemSettings()))
 
   // 禁止双开
   const isFirstInstance = app.requestSingleInstanceLock()
@@ -453,7 +456,7 @@ try {
     })
     app.on('second-instance', (event, commandLine) => {
       log.info('new app started, command:', commandLine)
-      if (win) {
+      if (!serviceMode && win) {
         showWin()
         win.focus()
       }
@@ -470,6 +473,9 @@ try {
     })
 
     app.on('activate', () => {
+      if (serviceMode) {
+        return
+      }
       // On macOS it's common to re-create a window in the app when the
       // dock icon is clicked and there are no other windows open.
       if (win == null) {
@@ -494,26 +500,35 @@ try {
         }
       }
 
-      try {
-        if (!createWindow(startHideWindow)) {
-          return // 创建窗口失败，应用将关闭
+      if (!serviceMode) {
+        try {
+          if (!createWindow(startHideWindow)) {
+            return // 创建窗口失败，应用将关闭
+          }
+        } catch (err) {
+          log.error('createWindow error:', err)
         }
-      } catch (err) {
-        log.error('createWindow error:', err)
       }
 
       try {
         const context = { win, app, beforeQuit, quit, ipcMain, dialog, log, api: DevSidecar.api, changeAppConfig }
-        backend.install(context) // 模块安装
+        if (serviceMode) {
+          log.info('serviceMode enabled: install core api bridge without BrowserWindow/tray modules')
+          backend.api.install(context)
+        } else {
+          backend.install(context) // 模块安装
+        }
       } catch (err) {
         log.error('install modules error:', err)
       }
 
-      try {
-        // 最小化到托盘
-        tray = setTray()
-      } catch (err) {
-        log.error('setTray error:', err)
+      if (!serviceMode) {
+        try {
+          // 最小化到托盘
+          tray = setTray()
+        } catch (err) {
+          log.error('setTray error:', err)
+        }
       }
 
       _powerMonitor.on('shutdown', async (e) => {

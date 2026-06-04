@@ -5,10 +5,18 @@ const { URL } = require('node:url')
  */
 function safeBase64Decode (b64) {
   if (!b64) return ''
-  // Strip whitespace
-  let str = b64.replace(/\s/g, '')
-  // Fix padding
-  str = str.replace(/-/g, '+').replace(/_/g, '/')
+  let str = String(b64)
+  // Strip whitespace only when needed. Large subscription sources can contain
+  // tens of thousands of VMess links; unconditional replace() creates a short-
+  // lived copy for every node and pushes the stage2 RSS peak above the systemd
+  // budget even though nodes are consumed in chunks.
+  if (/\s/.test(str)) {
+    str = str.replace(/\s/g, '')
+  }
+  // Fix URL-safe base64 only when needed for the same reason.
+  if (/[-_]/.test(str)) {
+    str = str.replace(/-/g, '+').replace(/_/g, '/')
+  }
   while (str.length % 4) {
     str += '='
   }
@@ -108,6 +116,417 @@ function getBase64DecodedByteLength (value) {
   }
 
   return Buffer.from(normalized, 'base64').length
+}
+
+function forEachNonEmptyLine (text, handler) {
+  const source = String(text || '')
+  const visit = typeof handler === 'function' ? handler : null
+  if (!visit || source.length === 0) {
+    return
+  }
+
+  let start = 0
+  for (let index = 0; index <= source.length; index += 1) {
+    const code = index < source.length ? source.charCodeAt(index) : -1
+    if (code !== 10 && code !== 13 && index !== source.length) {
+      continue
+    }
+
+    if (index > start) {
+      const line = source.slice(start, index).trim()
+      if (line && !line.startsWith('#')) {
+        visit(line)
+      }
+    }
+
+    if (code === 13 && index + 1 < source.length && source.charCodeAt(index + 1) === 10) {
+      index += 1
+    }
+    start = index + 1
+  }
+}
+
+function normalizeSubscriptionText (text) {
+  let normalized = String(text || '')
+  if (!normalized) {
+    return ''
+  }
+
+  // Clean text: remove control chars but keep newlines
+  // eslint-disable-next-line no-control-regex
+  normalized = normalized.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+
+  // Handle HTML break tags common in some subscription sources
+  normalized = normalized.replace(/<br\s*\/?>/gi, '\n')
+
+  // Handle concatenated links (e.g. vmess://...vmess://...) only when the text
+  // does not already appear to be newline-delimited. This avoids copying very
+  // large subscription strings that are already line-oriented.
+  if (!/[\r\n]/.test(normalized)) {
+    normalized = normalized.replace(/(vmess|vless|ss|trojan|https?|socks5?|socks):\/\//gi, '\n$1://')
+  }
+
+  // Check if whole text is Base64 (Subscription)
+  if (!normalized.includes('://')) {
+    try {
+      const decoded = safeBase64Decode(normalized)
+      if (decoded) {
+        normalized = decoded
+      }
+    } catch (e) {
+      // Not base64
+    }
+  }
+
+  return normalized
+}
+
+function shouldParseRawLineDelimitedSubscriptionText (text) {
+  const source = String(text || '')
+  if (!source || !source.includes('://') || !/[\r\n]/.test(source)) {
+    return false
+  }
+
+  if (/<br\s*\/?>/i.test(source)) {
+    return false
+  }
+
+  // normalizeSubscriptionText removes these control characters. When they are
+  // absent, large plain line-delimited subscriptions can be parsed directly and
+  // avoid building a second full-size normalized string before chunk flushing.
+  // eslint-disable-next-line no-control-regex
+  return !/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(source)
+}
+
+function shouldParseProtocolDelimitedSubscriptionText (text) {
+  const source = String(text || '')
+  if (!source || !source.includes('://') || /[\r\n]/.test(source)) {
+    return false
+  }
+
+  if (/<br\s*\/?>/i.test(source)) {
+    return false
+  }
+
+  // Same safety condition as the raw line-delimited fast path: when no
+  // normalization-only control characters are present, concatenated link
+  // subscriptions can be streamed by protocol boundaries. This avoids
+  // normalizeSubscriptionText() doing a global replace() over multi-megabyte
+  // plaintext proxy lists such as gfpcom/free-proxy-list/http.txt, which
+  // briefly flattens/copies the whole string before the first parser chunk and
+  // shows up as a cgroup anon spike in systemd memory. This only changes how
+  // entries are split; every link is still parsed and emitted.
+  // eslint-disable-next-line no-control-regex
+  return !/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(source)
+}
+
+function getSubscriptionParseSource (text) {
+  return shouldParseRawLineDelimitedSubscriptionText(text) ? String(text || '') : normalizeSubscriptionText(text)
+}
+
+const PROTOCOL_BOUNDARY_REGEX = /(vmess|vless|ss|trojan|https?|socks5?|socks):\/\//ig
+
+function forEachProtocolDelimitedEntry (text, handler) {
+  const source = String(text || '')
+  const visit = typeof handler === 'function' ? handler : null
+  if (!visit || source.length === 0) {
+    return
+  }
+
+  PROTOCOL_BOUNDARY_REGEX.lastIndex = 0
+  let currentStart = -1
+  let match
+  while ((match = PROTOCOL_BOUNDARY_REGEX.exec(source)) !== null) {
+    if (currentStart >= 0 && match.index > currentStart) {
+      const entry = source.slice(currentStart, match.index).trim()
+      if (entry && !entry.startsWith('#')) {
+        visit(entry)
+      }
+    }
+    currentStart = match.index
+  }
+
+  if (currentStart >= 0 && currentStart < source.length) {
+    const entry = source.slice(currentStart).trim()
+    if (entry && !entry.startsWith('#')) {
+      visit(entry)
+    }
+  }
+}
+
+function parseLineToNode (line) {
+  if (line.startsWith('vless://')) {
+    return parseVless(line)
+  }
+  if (line.startsWith('vmess://')) {
+    return parseVmess(line)
+  }
+  if (line.startsWith('trojan://')) {
+    return parseTrojan(line)
+  }
+  if (line.startsWith('ss://')) {
+    return parseSs(line)
+  }
+  if (line.startsWith('http://') || line.startsWith('https://')) {
+    return parseHttpProxy(line)
+  }
+  if (line.startsWith('socks://') || line.startsWith('socks5://')) {
+    return parseSocksProxy(line)
+  }
+
+  return null
+}
+
+function isParsedNodeValid (p) {
+  if (!p) {
+    return false
+  }
+
+  sanitizeNodeForCurrentXray(p)
+
+  let isValid = false
+  if (p.protocol === 'vless' || p.protocol === 'vmess') {
+    const vnext = p.settings.vnext?.[0]
+    if (vnext && vnext.address && vnext.port > 0 && vnext.port < 65536) {
+      const user = vnext.users?.[0]
+      const id = user?.id
+      if (id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        isValid = true
+      }
+
+      if (isValid && user?.flow && /xtls-rprx-(origin|direct|splice)/.test(user.flow)) {
+        isValid = false
+      }
+    }
+  } else if (p.protocol === 'trojan' || p.protocol === 'shadowsocks') {
+    const server = p.settings.servers?.[0]
+    if (server && server.address && server.port > 0 && server.port < 65536) {
+      if (server.password) {
+        isValid = true
+      }
+
+      if (isValid && p.protocol === 'shadowsocks') {
+        const method = server.method
+        if (!method || !/^[a-zA-Z0-9-_]+$/.test(method)) {
+          isValid = false
+        }
+        const allowedMethods = /^(aes-(128|256)-gcm|chacha20-ietf-poly1305|xchacha20-ietf-poly1305|2022-blake3-aes-(128|256)-gcm|2022-blake3-chacha20-poly1305)$/
+        if (isValid && !allowedMethods.test(method)) {
+          isValid = false
+        }
+
+        if (isValid && method.startsWith('2022-blake3-')) {
+          try {
+            let expectedBytes = 0
+            if (method.includes('aes-128-gcm')) {
+              expectedBytes = 16
+            } else if (method.includes('aes-256-gcm') || method.includes('chacha20-poly1305')) {
+              expectedBytes = 32
+            }
+
+            if (expectedBytes > 0) {
+              let key = server.password.replace(/-/g, '+').replace(/_/g, '/')
+              const maxLen = expectedBytes === 16 ? 24 : 44
+              if (key.length > maxLen) {
+                key = key.substring(0, maxLen)
+              }
+
+              const buffer = Buffer.from(key, 'base64')
+              if (buffer.length !== expectedBytes) {
+                isValid = false
+              } else {
+                server.password = key
+              }
+            }
+          } catch (e) {
+            isValid = false
+          }
+        }
+      }
+    }
+  } else if (p.protocol === 'http' || p.protocol === 'socks') {
+    const server = p.settings.servers?.[0]
+    if (server && server.address && server.port > 0 && server.port < 65536) {
+      isValid = true
+    }
+  }
+
+  if (isValid && p.streamSettings?.security === 'reality') {
+    if (!['tcp', 'grpc', 'xhttp'].includes(p.streamSettings.network)) {
+      isValid = false
+    }
+
+    const reality = p.streamSettings.realitySettings
+    if (isValid && (!reality || !reality.publicKey)) {
+      isValid = false
+    } else if (isValid) {
+      if (!/^[A-Za-z0-9_-]+={0,2}$/.test(reality.publicKey) || getBase64DecodedByteLength(reality.publicKey) !== 32) {
+        isValid = false
+      }
+    }
+  }
+
+  if (isValid && (p.streamSettings?.network === 'http' || p.streamSettings?.network === 'h2')) {
+    isValid = false
+  }
+
+  if (isValid && p.streamSettings?.network === 'kcp') {
+    isValid = false
+  }
+
+  if (isValid && !isNodeSupportedByCurrentXray(p)) {
+    isValid = false
+  }
+
+  return isValid
+}
+
+function parseInChunks (text, options = {}) {
+  const chunkSize = Math.max(1, Number(options.chunkSize) || 1000)
+  const onChunk = typeof options.onChunk === 'function' ? options.onChunk : null
+  const protocolCounts = {}
+  let totalNodes = 0
+  const chunk = []
+
+  const flushChunk = () => {
+    if (!onChunk || chunk.length === 0) {
+      chunk.length = 0
+      return
+    }
+    const output = chunk.slice()
+    chunk.length = 0
+    onChunk(output)
+  }
+
+  const parseEntry = (line) => {
+    const parsedNode = parseLineToNode(line)
+    if (!parsedNode || !isParsedNodeValid(parsedNode)) {
+      return
+    }
+
+    totalNodes += 1
+    const protocol = String(parsedNode.protocol || '').toLowerCase()
+    if (protocol) {
+      protocolCounts[protocol] = (protocolCounts[protocol] || 0) + 1
+    }
+
+    if (onChunk) {
+      chunk.push(parsedNode)
+      if (chunk.length >= chunkSize) {
+        flushChunk()
+      }
+    }
+  }
+
+  if (shouldParseProtocolDelimitedSubscriptionText(text)) {
+    forEachProtocolDelimitedEntry(text, parseEntry)
+  } else {
+    const decodedText = getSubscriptionParseSource(text)
+    forEachNonEmptyLine(decodedText, parseEntry)
+  }
+
+  flushChunk()
+  return {
+    totalNodes,
+    protocolCounts,
+  }
+}
+
+async function parseInChunksAsync (text, options = {}) {
+  const chunkSize = Math.max(1, Number(options.chunkSize) || 1000)
+  const onChunk = typeof options.onChunk === 'function' ? options.onChunk : null
+  const yieldEveryChunks = Math.max(1, Number(options.yieldEveryChunks) || 1)
+  const protocolCounts = {}
+  let totalNodes = 0
+  let flushedChunkCount = 0
+  const chunk = []
+
+  const maybeYield = async () => {
+    if (flushedChunkCount % yieldEveryChunks !== 0) {
+      return
+    }
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  const flushChunk = async () => {
+    if (!onChunk || chunk.length === 0) {
+      chunk.length = 0
+      return
+    }
+    const output = chunk.slice()
+    chunk.length = 0
+    await onChunk(output)
+    flushedChunkCount += 1
+    await maybeYield()
+  }
+
+  const parseEntry = async (line) => {
+    if (!line || line.startsWith('#')) {
+      return
+    }
+
+    const parsedNode = parseLineToNode(line)
+    if (!parsedNode || !isParsedNodeValid(parsedNode)) {
+      return
+    }
+
+    totalNodes += 1
+    const protocol = String(parsedNode.protocol || '').toLowerCase()
+    if (protocol) {
+      protocolCounts[protocol] = (protocolCounts[protocol] || 0) + 1
+    }
+
+    if (onChunk) {
+      chunk.push(parsedNode)
+      if (chunk.length >= chunkSize) {
+        await flushChunk()
+      }
+    }
+  }
+
+  if (shouldParseProtocolDelimitedSubscriptionText(text)) {
+    const source = String(text || '')
+    PROTOCOL_BOUNDARY_REGEX.lastIndex = 0
+    let currentStart = -1
+    let match
+    while ((match = PROTOCOL_BOUNDARY_REGEX.exec(source)) !== null) {
+      if (currentStart >= 0 && match.index > currentStart) {
+        await parseEntry(source.slice(currentStart, match.index).trim())
+      }
+      currentStart = match.index
+    }
+    if (currentStart >= 0 && currentStart < source.length) {
+      await parseEntry(source.slice(currentStart).trim())
+    }
+  } else {
+    const decodedText = getSubscriptionParseSource(text)
+    const source = String(decodedText || '')
+    let start = 0
+    for (let index = 0; index <= source.length; index += 1) {
+      const code = index < source.length ? source.charCodeAt(index) : -1
+      if (code !== 10 && code !== 13 && index !== source.length) {
+        continue
+      }
+
+      let line = ''
+      if (index > start) {
+        line = source.slice(start, index).trim()
+      }
+
+      if (code === 13 && index + 1 < source.length && source.charCodeAt(index + 1) === 10) {
+        index += 1
+      }
+      start = index + 1
+
+      await parseEntry(line)
+    }
+  }
+
+  await flushChunk()
+  return {
+    totalNodes,
+    protocolCounts,
+  }
 }
 
 /**
@@ -225,7 +644,9 @@ function parseVless (link) {
 function parseVmess (link) {
   try {
     // Fix: Remove spaces before hash tag
-    link = link.replace(/\s+#/g, '#')
+    if (/\s+#/.test(link)) {
+      link = link.replace(/\s+#/g, '#')
+    }
     
     let base64Data = link.substring('vmess://'.length)
     // Strip hash tag if present (VMess usually keeps config in JSON, but link might have #comment)
@@ -492,6 +913,11 @@ function parseSs (link) {
 
 function parseHttpProxy (link) {
   try {
+    const fastParsed = parseHttpProxyFast(link)
+    if (fastParsed) {
+      return fastParsed
+    }
+
     link = link.replace(/\s+#/g, '#').replace(/ /g, '%20')
     const url = new URL(link)
     const isHttps = url.protocol === 'https:'
@@ -532,6 +958,119 @@ function parseHttpProxy (link) {
   }
 }
 
+function decodeUrlComponentIfNeeded (value) {
+  const text = String(value || '')
+  if (!text.includes('%')) {
+    return text
+  }
+  try {
+    return decodeURIComponent(text)
+  } catch {
+    return text
+  }
+}
+
+function parseHttpProxyFast (link) {
+  let source = typeof link === 'string' ? link.trim() : String(link || '').trim()
+  if (!source) {
+    return null
+  }
+
+  const lower = source.slice(0, 8).toLowerCase()
+  const isHttps = lower.startsWith('https://')
+  const isHttp = !isHttps && lower.startsWith('http://')
+  if (!isHttp && !isHttps) {
+    return null
+  }
+
+  // Keep complex URL forms on the standards-compliant fallback path. The large
+  // plaintext proxy lists that dominate stage2 memory are simple
+  // http(s)://[user[:pass]@]host:port[#tag] entries, so this avoids thousands of
+  // transient WHATWG URL objects in the hot path without changing behavior for
+  // uncommon forms.
+  const protocolLength = isHttps ? 8 : 7
+  source = source.slice(protocolLength)
+  if (!source || /\s/.test(source)) {
+    return null
+  }
+
+  let hash = ''
+  const hashIndex = source.indexOf('#')
+  if (hashIndex >= 0) {
+    hash = source.slice(hashIndex + 1)
+    source = source.slice(0, hashIndex)
+  }
+
+  if (!source || /[/?]/.test(source)) {
+    return null
+  }
+
+  let auth = ''
+  const atIndex = source.lastIndexOf('@')
+  if (atIndex >= 0) {
+    auth = source.slice(0, atIndex)
+    source = source.slice(atIndex + 1)
+  }
+
+  let host = ''
+  let portText = ''
+  if (source.startsWith('[')) {
+    const end = source.indexOf(']')
+    if (end <= 1 || source[end + 1] !== ':') {
+      return null
+    }
+    host = source.slice(1, end)
+    portText = source.slice(end + 2)
+  } else {
+    const colonIndex = source.lastIndexOf(':')
+    if (colonIndex <= 0) {
+      return null
+    }
+    host = source.slice(0, colonIndex)
+    portText = source.slice(colonIndex + 1)
+  }
+
+  const port = Number.parseInt(portText, 10)
+  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    return null
+  }
+
+  const server = {
+    address: decodeUrlComponentIfNeeded(host),
+    port,
+  }
+
+  if (auth) {
+    const colonIndex = auth.indexOf(':')
+    const user = colonIndex >= 0 ? auth.slice(0, colonIndex) : auth
+    const pass = colonIndex >= 0 ? auth.slice(colonIndex + 1) : ''
+    server.users = [{
+      user: decodeUrlComponentIfNeeded(user),
+      pass: decodeUrlComponentIfNeeded(pass),
+    }]
+  }
+
+  const tag = decodeUrlComponentIfNeeded(hash)
+  const proxy = {
+    tag: tag || `${isHttps ? 'https' : 'http'}-${server.address}:${server.port}`,
+    protocol: 'http',
+    settings: {
+      servers: [server],
+    },
+  }
+
+  if (isHttps) {
+    proxy.streamSettings = {
+      security: 'tls',
+      tlsSettings: {
+        serverName: server.address,
+      },
+    }
+  }
+
+  return proxy
+}
+
 function parseSocksProxy (link) {
   try {
     link = link.replace(/\s+#/g, '#').replace(/ /g, '%20')
@@ -565,172 +1104,19 @@ function parseSocksProxy (link) {
 module.exports = {
   sanitizeNodeForCurrentXray,
   isNodeSupportedByCurrentXray,
+  parseInChunks,
+  parseInChunksAsync,
   parse (text) {
     const proxies = []
     if (!text) return proxies
 
-    // Clean text: remove control chars but keep newlines
-    // eslint-disable-next-line no-control-regex
-    text = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    parseInChunks(text, {
+      chunkSize: 1000,
+      onChunk: (items) => {
+        proxies.push(...items)
+      },
+    })
 
-    // Handle HTML break tags common in some subscription sources
-    text = text.replace(/<br\s*\/?>/gi, '\n')
-
-    // Handle concatenated links (e.g. vmess://...vmess://...) by ensuring they are on separate lines
-    text = text.replace(/(vmess|vless|ss|trojan|https?|socks5?|socks):\/\//gi, '\n$1://')
-
-    // Check if whole text is Base64 (Subscription)
-    let decodedText = text
-    if (!text.includes('://')) {
-      try {
-        decodedText = safeBase64Decode(text)
-      } catch (e) {
-        // Not base64
-      }
-    }
-
-    const lines = decodedText.split(/[\n\r]+/)
-    for (let line of lines) {
-      line = line.trim()
-      if (!line || line.startsWith('#')) continue
-
-      let p = null
-      if (line.startsWith('vless://')) {
-        p = parseVless(line)
-      } else if (line.startsWith('vmess://')) {
-        p = parseVmess(line)
-      } else if (line.startsWith('trojan://')) {
-        p = parseTrojan(line)
-      } else if (line.startsWith('ss://')) {
-        p = parseSs(line)
-      } else if (line.startsWith('http://') || line.startsWith('https://')) {
-        p = parseHttpProxy(line)
-      } else if (line.startsWith('socks://') || line.startsWith('socks5://')) {
-        p = parseSocksProxy(line)
-      }
-
-      if (p) {
-        sanitizeNodeForCurrentXray(p)
-
-        // Validate proxy node
-        let isValid = false
-        if (p.protocol === 'vless' || p.protocol === 'vmess') {
-          const vnext = p.settings.vnext?.[0]
-          if (vnext && vnext.address && vnext.port > 0 && vnext.port < 65536) {
-            // Must have ID (UUID) and it must be valid
-            const user = vnext.users?.[0]
-            const id = user?.id
-            if (id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-              isValid = true
-            }
-
-            // Filter out Legacy XTLS (xtls-rprx-origin, xtls-rprx-direct, xtls-rprx-splice)
-            // Xray 1.8+ removed support for these
-            if (isValid && user?.flow && /xtls-rprx-(origin|direct|splice)/.test(user.flow)) {
-              isValid = false
-            }
-          }
-        } else if (p.protocol === 'trojan' || p.protocol === 'shadowsocks') {
-          const server = p.settings.servers?.[0]
-          if (server && server.address && server.port > 0 && server.port < 65536) {
-            // Must have password
-            if (server.password) {
-              isValid = true
-            }
-
-            // Validate SS method
-            if (isValid && p.protocol === 'shadowsocks') {
-              const method = server.method
-              // 1. Method should only contain alphanumeric and hyphens/underscores
-              if (!method || !/^[a-zA-Z0-9-_]+$/.test(method)) {
-                isValid = false
-              }
-              // 2. Enforce allowed ciphers (Only AEAD and SS-2022) to prevent Xray crash
-              // Legacy stream ciphers (aes-cfb, aes-ctr, chacha20-ietf, etc.) are NOT supported
-              const allowedMethods = /^(aes-(128|256)-gcm|chacha20-ietf-poly1305|xchacha20-ietf-poly1305|2022-blake3-aes-(128|256)-gcm|2022-blake3-chacha20-poly1305)$/
-              if (isValid && !allowedMethods.test(method)) {
-                isValid = false
-              }
-
-              // Validate and fix SS-2022 key
-              if (isValid && method.startsWith('2022-blake3-')) {
-                try {
-                  let expectedBytes = 0
-                  if (method.includes('aes-128-gcm')) {
-                    expectedBytes = 16
-                  } else if (method.includes('aes-256-gcm') || method.includes('chacha20-poly1305')) {
-                    expectedBytes = 32
-                  }
-
-                  if (expectedBytes > 0) {
-                    // Normalize base64 string
-                    let key = server.password.replace(/-/g, '+').replace(/_/g, '/')
-                    
-                    // Truncate if too long (likely garbage like '=7')
-                    // 16 bytes = 24 chars max, 32 bytes = 44 chars max
-                    const maxLen = expectedBytes === 16 ? 24 : 44
-                    if (key.length > maxLen) {
-                      key = key.substring(0, maxLen)
-                    }
-
-                    // Check if it is valid base64
-                    const buffer = Buffer.from(key, 'base64')
-                    if (buffer.length !== expectedBytes) {
-                      isValid = false
-                    } else {
-                      // Update with clean key (ensure padding is correct if we truncated)
-                      server.password = key
-                    }
-                  }
-                } catch (e) {
-                  isValid = false
-                }
-              }
-            }
-          }
-        } else if (p.protocol === 'http' || p.protocol === 'socks') {
-          const server = p.settings.servers?.[0]
-          if (server && server.address && server.port > 0 && server.port < 65536) {
-            isValid = true
-          }
-        }
-
-        // Validate Reality settings
-        if (isValid && p.streamSettings?.security === 'reality') {
-          // Xray REALITY only supports RAW (tcp), XHTTP, and gRPC
-          if (!['tcp', 'grpc', 'xhttp'].includes(p.streamSettings.network)) {
-            isValid = false
-          }
-
-          const reality = p.streamSettings.realitySettings
-          if (isValid && (!reality || !reality.publicKey)) {
-            isValid = false
-          } else if (isValid) {
-            if (!/^[A-Za-z0-9_-]+={0,2}$/.test(reality.publicKey) || getBase64DecodedByteLength(reality.publicKey) !== 32) {
-              isValid = false
-            }
-          }
-        }
-
-        // Filter out deprecated HTTP/H2 transport
-        if (isValid && (p.streamSettings?.network === 'http' || p.streamSettings?.network === 'h2')) {
-          isValid = false
-        }
-
-        // Filter out deprecated mKCP (header/seed removed in recent Xray)
-        if (isValid && p.streamSettings?.network === 'kcp') {
-          isValid = false
-        }
-
-        if (isValid && !isNodeSupportedByCurrentXray(p)) {
-          isValid = false
-        }
-
-        if (isValid) {
-          proxies.push(p)
-        }
-      }
-    }
     return proxies
   },
 }
