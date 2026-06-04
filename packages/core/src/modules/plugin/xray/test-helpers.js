@@ -283,6 +283,8 @@ function createCacheSyncPlan (candidateNodes, existingEntries, stats = {}) {
       owner: existingEntry && existingEntry.owner ? existingEntry.owner : '',
       source: existingEntry && existingEntry.source ? existingEntry.source : 'source-sync',
       updatedAt: existingEntry && existingEntry.updatedAt ? existingEntry.updatedAt : timestamp,
+      nextCheckAt: existingEntry && existingEntry.nextCheckAt ? existingEntry.nextCheckAt : timestamp,
+      failureStreak: existingEntry && Number.isFinite(existingEntry.failureStreak) ? existingEntry.failureStreak : 0,
       tag: existingEntry && existingEntry.tag ? existingEntry.tag : '',
     }
     const syncedEntry = {
@@ -297,17 +299,10 @@ function createCacheSyncPlan (candidateNodes, existingEntries, stats = {}) {
       addedEntries.push(syncedEntry)
     }
   }
-  const removedNodes = []
-  for (const entry of existingEntries || []) {
-    const fingerprint = xrayCache.fingerprintNode(entry && entry.node)
-    if (fingerprint && !candidateFingerprints.has(fingerprint)) {
-      removedNodes.push(entry.node)
-    }
-  }
   return {
     addedEntries,
-    removedNodes,
-    hasChanges: addedEntries.length > 0 || removedNodes.length > 0,
+    removedNodes: [],
+    hasChanges: addedEntries.length > 0,
     selectedCount: candidateFingerprints.size,
   }
 }

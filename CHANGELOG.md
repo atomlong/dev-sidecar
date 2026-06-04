@@ -6,9 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - Added targeted mitmproxy regression coverage for DNS-aware upgrade request handling.
+- Added automatic Xray SQLite cache migration from the legacy `nodes` layout to split `node_runtime` and `node_payload` storage.
+- Added one-time retirement metadata and post-retirement compaction for migrated Xray caches so existing installations can reclaim disk space without losing cached nodes.
+
+### Changed
+- Changed Xray cache writes and reads to treat the hot/cold SQLite schema as the authoritative store after migration, and to stop maintaining the legacy `nodes` table once retirement completes.
+- Changed stage 2 large-subscription synchronization to flush accepted-node batches less frequently, reducing real Linux service peak memory from roughly 1.1 GB to about 550 MB in the current baseline verification.
 
 ### Fixed
 - Fixed WebSocket and other HTTP upgrade requests to reuse the normal DNS resolution path, restoring Copilot Web chat message sending when those requests pass through DevSidecar.
+- Fixed migrated Xray caches falling back to legacy-row assumptions after retirement, which could otherwise break empty-cache and follow-up refresh behavior.
 
 ## [v2.1.4] - 2026-05-20
 

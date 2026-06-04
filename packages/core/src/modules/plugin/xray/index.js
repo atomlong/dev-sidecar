@@ -4,6 +4,9 @@ const crypto = require('node:crypto')
 const https = require('node:https')
 const http = require('node:http')
 const net = require('node:net')
+const v8 = require('node:v8')
+const vm = require('node:vm')
+const { StringDecoder } = require('node:string_decoder')
 const pluginConfig = require('./config')
 const processApi = require('./process')
 const portFinder = require('./port-finder')
@@ -16,17 +19,26 @@ const probe = require('./probe')
 const geoip = require('./geoip')
 const { getXrayExePath } = require('../../../shell/scripts/extra-path/index')
 
-const STARTUP_NODE_LIMIT = 10
-const CACHE_REFRESH_INTERVAL = 21600
-const CACHE_BATCH_TIMEOUT = 30
-const CACHE_REFRESH_BATCH_SIZE = 31
-const CACHE_REFRESH_BATCH_SIZE_MAX = 2000
-const INITIAL_REFRESH_BATCH_SIZE = 31
+const STAGE2_CACHE_SYNC_CHUNK_SIZE = 2000
+const STAGE2_SUBSCRIPTION_PARSE_CHUNK_SIZE = 10
+const STAGE2_SUBSCRIPTION_PARSE_GC_CHUNKS = 1
+const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT = 100
+const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE = 1000
+const CACHE_SIZE_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
+const CACHE_SIZE_TARGET_BYTES = Math.floor(CACHE_SIZE_LIMIT_BYTES * 0.9)
+const HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS = 10000
+const HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS = 25000
+const HOT_COLD_MIGRATION_STAGE3_BATCH_ROWS = 25000
+const LARGE_SUBSCRIPTION_BYTES_THRESHOLD = 5 * 1024 * 1024
+const LARGE_SUBSCRIPTION_NODE_THRESHOLD = 50000
+const STAGE2_GC_HEAP_USED_THRESHOLD_BYTES = 96 * 1024 * 1024
 const CACHE_PROBE_SAMPLE_INTERVAL = 5
-const CACHE_REFRESH_PROBE_SAMPLE_COUNT = 2
-const INITIAL_REFRESH_PROBE_SAMPLE_COUNT = 2
 const CACHE_PROBE_SAMPLE_TIMEOUT = 15
-const INITIAL_REFRESH_BATCH_TIMEOUT = 30
+const CACHE_REFRESH_ROUND_BUDGET_MULTIPLIER = 20
+const CACHE_REFRESH_HOT_RATIO = 0.5
+const CACHE_REFRESH_NEW_RATIO = 0.3
+const CACHE_REFRESH_COLD_RATIO = 0.2
+const CACHE_FAILURE_BACKOFF_DAYS = [7, 30, 90]
 const EGRESS_METADATA_CONCURRENCY = 4
 const EGRESS_METADATA_LOOKUP_TIMEOUT = 12000
 const EGRESS_IP_LOOKUP_URLS = [
@@ -38,24 +50,6 @@ const EGRESS_IP_LOOKUP_URLS = [
 const LOCAL_INPUT_STATE_FILE_NAME = 'nodes_cache.state.json'
 const LOCAL_INPUT_STATE_SIGNATURE_VERSION = 2
 const LOCAL_INPUT_STATE_SEMANTICS_VERSION = 'xray-stage2-local-input-v2'
-
-const SUBSCRIPTION_SUMMARY_PROTOCOLS = new Set([
-  'http',
-  'https',
-  'socks',
-  'socks5',
-  'vmess',
-  'vless',
-  'trojan',
-  'ss',
-  'ssr',
-  'hy2',
-  'hysteria',
-  'hysteria2',
-  'tuic',
-  'wireguard',
-  'anytls',
-])
 
 function appendItems (target, items) {
   if (!Array.isArray(target) || !Array.isArray(items) || items.length === 0) {
@@ -84,6 +78,230 @@ function appendUniqueNodes (target, seen, nodes) {
   }
 
   return target
+}
+
+function collectUniqueNodeKeys (nodes) {
+  if (!Array.isArray(nodes) || nodes.length === 0) {
+    return []
+  }
+
+  const nodeKeys = []
+  const seenFingerprints = new Set()
+  const seenNodeKeys = new Set()
+
+  for (const node of nodes) {
+    const fingerprint = xrayCache.fingerprintNode(node)
+    if (!fingerprint || seenFingerprints.has(fingerprint)) {
+      continue
+    }
+    seenFingerprints.add(fingerprint)
+
+    const nodeKey = xrayCache.getNodeKey(node)
+    if (!nodeKey || seenNodeKeys.has(nodeKey)) {
+      continue
+    }
+
+    seenNodeKeys.add(nodeKey)
+    nodeKeys.push(nodeKey)
+  }
+
+  return nodeKeys
+}
+
+function formatMemoryUsageMb (value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return 'n/a'
+  }
+  return `${(numeric / (1024 * 1024)).toFixed(1)}MB`
+}
+
+function readFirstLine (filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8').trim().split('\n')[0] || ''
+  } catch (error) {
+    return ''
+  }
+}
+
+function getCurrentProcessCgroupPath () {
+  const cgroupText = readFirstLine('/proc/self/cgroup')
+  if (!cgroupText) {
+    return ''
+  }
+
+  const parts = cgroupText.split(':')
+  const relativePath = parts.length >= 3 ? parts.slice(2).join(':') : ''
+  if (!relativePath) {
+    return ''
+  }
+
+  return path.join('/sys/fs/cgroup', relativePath)
+}
+
+function readCgroupMemoryValue (cgroupPath, fileName) {
+  if (!cgroupPath) {
+    return null
+  }
+
+  const raw = readFirstLine(path.join(cgroupPath, fileName))
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : null
+}
+
+function readCgroupMemoryStat (cgroupPath) {
+  const result = {}
+  if (!cgroupPath) {
+    return result
+  }
+
+  let statText = ''
+  try {
+    statText = fs.readFileSync(path.join(cgroupPath, 'memory.stat'), 'utf8')
+  } catch (error) {
+    return result
+  }
+
+  for (const line of statText.split('\n')) {
+    const [key, rawValue] = line.trim().split(/\s+/)
+    if (!key || rawValue == null) {
+      continue
+    }
+    const value = Number(rawValue)
+    if (Number.isFinite(value)) {
+      result[key] = value
+    }
+  }
+
+  return result
+}
+
+function getCgroupMemoryUsage () {
+  const cgroupPath = getCurrentProcessCgroupPath()
+  if (!cgroupPath) {
+    return null
+  }
+
+  const current = readCgroupMemoryValue(cgroupPath, 'memory.current')
+  const peak = readCgroupMemoryValue(cgroupPath, 'memory.peak')
+  if (current == null && peak == null) {
+    return null
+  }
+
+  const stat = readCgroupMemoryStat(cgroupPath)
+  return {
+    current,
+    peak,
+    anon: stat.anon,
+    file: stat.file,
+    kernel: stat.kernel,
+    fileDirty: stat.file_dirty,
+    inactiveFile: stat.inactive_file,
+    activeFile: stat.active_file,
+  }
+}
+
+// TEMP DEBUG: remove after stage2 memory investigation is complete.
+function logStage2MemoryUsage (log, label, extra = {}) {
+  const usage = process.memoryUsage()
+  const cgroupUsage = getCgroupMemoryUsage()
+  const extraFields = Object.entries(extra)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(', ')
+  const cgroupFields = cgroupUsage
+    ? [
+        `cgroupCurrent=${formatMemoryUsageMb(cgroupUsage.current)}`,
+        `cgroupPeak=${formatMemoryUsageMb(cgroupUsage.peak)}`,
+        `cgroupAnon=${formatMemoryUsageMb(cgroupUsage.anon)}`,
+        `cgroupFile=${formatMemoryUsageMb(cgroupUsage.file)}`,
+        `cgroupKernel=${formatMemoryUsageMb(cgroupUsage.kernel)}`,
+        `cgroupFileDirty=${formatMemoryUsageMb(cgroupUsage.fileDirty)}`,
+        `cgroupInactiveFile=${formatMemoryUsageMb(cgroupUsage.inactiveFile)}`,
+        `cgroupActiveFile=${formatMemoryUsageMb(cgroupUsage.activeFile)}`,
+      ].join(', ')
+    : ''
+  const allExtraFields = [cgroupFields, extraFields].filter(Boolean).join(', ')
+
+  const message = `[TEMP][stage2-mem] ${label}: rss=${formatMemoryUsageMb(usage.rss)}, heapUsed=${formatMemoryUsageMb(usage.heapUsed)}, heapTotal=${formatMemoryUsageMb(usage.heapTotal)}, external=${formatMemoryUsageMb(usage.external)}${allExtraFields ? `, ${allExtraFields}` : ''}`
+
+  if (log && typeof log.info === 'function') {
+    log.info(message)
+  }
+
+  try {
+    console.error(message)
+  } catch (error) {
+    // ignore temporary debug output failures
+  }
+}
+
+function shouldLogLargeSubscriptionDetail ({ bytes = 0, nodes = 0 } = {}) {
+  return Number(bytes) >= LARGE_SUBSCRIPTION_BYTES_THRESHOLD || Number(nodes) >= LARGE_SUBSCRIPTION_NODE_THRESHOLD
+}
+
+function getStage2AcceptedFlushNodeCount (subscriptionSnapshot) {
+  if (subscriptionSnapshot && subscriptionSnapshot.largeSubscription === true) {
+    return STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE
+  }
+
+  return STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT
+}
+
+function yieldToEventLoop () {
+  return new Promise(resolve => setImmediate(resolve))
+}
+
+let stage2GcExposeAttempted = false
+
+function getStage2GarbageCollector () {
+  if (typeof global.gc === 'function') {
+    return global.gc
+  }
+
+  if (!stage2GcExposeAttempted) {
+    stage2GcExposeAttempted = true
+    try {
+      v8.setFlagsFromString('--expose_gc')
+      const exposedGc = vm.runInNewContext('gc')
+      if (typeof exposedGc === 'function') {
+        global.gc = exposedGc
+      }
+    } catch {
+      // ignore: explicit GC is an optimization for large subscription parsing
+    }
+  }
+
+  return typeof global.gc === 'function' ? global.gc : null
+}
+
+async function runStage2GarbageCollection (log, reason, extra = {}, options = {}) {
+  const gc = getStage2GarbageCollector()
+  if (!gc) {
+    return false
+  }
+
+  await yieldToEventLoop()
+  try {
+    gc()
+    await yieldToEventLoop()
+    if (options.logAfter !== false) {
+      logStage2MemoryUsage(log, 'stage2-after-gc', {
+        reason,
+        ...extra,
+      })
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function summarizeProtocolCounts (protocolCounts) {
+  return Object.entries(protocolCounts || {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([protocol, count]) => `${protocol}=${count}`)
+    .join(',') || 'none'
 }
 
 function normalizePositiveInt (value, fallback) {
@@ -203,6 +421,55 @@ function sleep (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function maybeLogHotColdMigrationProgress (log, phase, result) {
+  if (!result || (Number(result.migratedRows) || 0) <= 0) {
+    return
+  }
+
+  log.info(`Xray hot/cold cache migration: phase=${phase}, migratedRows=${result.migratedRows}, pending=${result.pending === true ? 1 : 0}`)
+}
+
+function maybeRetireLegacyNodesStorage (log, cachePath, phase, migrationResult) {
+  if (!migrationResult || migrationResult.pending === true) {
+    return null
+  }
+
+  const result = xrayCache.retireLegacyNodesStorage(cachePath, { lowFileCache: true })
+  if (!result || result.retired !== true) {
+    return result
+  }
+
+  if (result.alreadyRetired === true) {
+    return result
+  }
+
+  log.info(`Xray legacy nodes storage retired: phase=${phase}`)
+  return result
+}
+
+function maybeCompactRetiredSqliteCache (log, cachePath, phase, retirementResult) {
+  if (!retirementResult || retirementResult.retired !== true) {
+    return null
+  }
+
+  const result = xrayCache.compactRetiredSqliteCache(cachePath, { lowFileCache: true })
+  if (!result || result.compacted !== true) {
+    return result
+  }
+
+  if (result.alreadyCompacted === true) {
+    return result
+  }
+
+  if (result.skippedVacuum === true) {
+    log.info(`Xray retired cache compaction skipped: phase=${phase}`)
+    return result
+  }
+
+  log.info(`Xray retired cache compacted: phase=${phase}`)
+  return result
+}
+
 function timeoutError (message) {
   const error = new Error(message)
   error.code = 'ETIMEDOUT'
@@ -315,31 +582,31 @@ async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_
 }
 
 function getCacheRefreshIntervalSeconds (cfg) {
-  return normalizePositiveInt(cfg.cacheRefreshInterval, CACHE_REFRESH_INTERVAL)
+  return normalizePositiveInt(cfg.cacheRefreshInterval, pluginConfig.cacheRefreshInterval)
 }
 
 function getCacheBatchTimeoutSeconds (cfg) {
-  return Math.max(normalizePositiveInt(cfg.cacheBatchTimeout, CACHE_BATCH_TIMEOUT), CACHE_PROBE_SAMPLE_TIMEOUT)
+  return Math.max(normalizePositiveInt(cfg.cacheBatchTimeout, pluginConfig.cacheBatchTimeout), CACHE_PROBE_SAMPLE_TIMEOUT)
 }
 
 function getBootstrapBatchTimeoutSeconds (cfg) {
-  return Math.max(normalizePositiveInt(cfg.bootstrapBatchTimeout ?? cfg.initialRefreshBatchTimeout, INITIAL_REFRESH_BATCH_TIMEOUT), CACHE_PROBE_SAMPLE_TIMEOUT)
+  return Math.max(normalizePositiveInt(cfg.bootstrapBatchTimeout ?? cfg.initialRefreshBatchTimeout, pluginConfig.bootstrapBatchTimeout), CACHE_PROBE_SAMPLE_TIMEOUT)
 }
 
 function getBootstrapProbeSamples (cfg) {
-  return normalizePositiveInt(cfg.bootstrapProbeSamples ?? cfg.initialRefreshProbeSamples, INITIAL_REFRESH_PROBE_SAMPLE_COUNT)
+  return normalizePositiveInt(cfg.bootstrapProbeSamples ?? cfg.initialRefreshProbeSamples, pluginConfig.bootstrapProbeSamples)
 }
 
 function getCacheRefreshProbeSamples (cfg) {
-  return normalizePositiveInt(cfg.cacheRefreshProbeSamples, CACHE_REFRESH_PROBE_SAMPLE_COUNT)
+  return normalizePositiveInt(cfg.cacheRefreshProbeSamples, pluginConfig.cacheRefreshProbeSamples)
 }
 
 function getBootstrapCandidateLimit (cfg) {
-  return normalizePositiveInt(cfg.bootstrapCandidateLimit ?? cfg.initialRefreshBatchSize, INITIAL_REFRESH_BATCH_SIZE)
+  return normalizePositiveInt(cfg.bootstrapCandidateLimit ?? cfg.initialRefreshBatchSize, pluginConfig.bootstrapCandidateLimit)
 }
 
 function getCacheRefreshBatchSize (cfg) {
-  return Math.min(normalizePositiveInt(cfg.cacheRefreshBatchSize, CACHE_REFRESH_BATCH_SIZE), CACHE_REFRESH_BATCH_SIZE_MAX)
+  return normalizePositiveInt(cfg.cacheRefreshBatchSize, pluginConfig.cacheRefreshBatchSize)
 }
 
 function getSubscriptionSyncLowWatermark (cfg) {
@@ -539,7 +806,7 @@ async function collectBootstrapCandidateEntries (entries, allowedCountries, allo
     }
   }
 
-  const maxEntries = Math.max(1, normalizePositiveInt(limit, INITIAL_REFRESH_BATCH_SIZE))
+  const maxEntries = Math.max(1, normalizePositiveInt(limit, pluginConfig.bootstrapCandidateLimit))
   const countryFilters = geoip.parseCountryFilters(allowedCountries)
   const ownerFilters = parseOwnerFilters(allowedOwners)
   const shouldFilterByCountry = countryFilters.include.length > 0 || countryFilters.exclude.length > 0
@@ -593,12 +860,17 @@ function download (url, timeoutMs = 30000) {
         return
       }
 
-      let data = ''
+      const decoder = new StringDecoder('utf8')
+      const chunks = []
       res.on('data', (chunk) => {
-        data += chunk
+        chunks.push(decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
       })
       res.on('end', () => {
-        resolve(data)
+        const tail = decoder.end()
+        if (tail) {
+          chunks.push(tail)
+        }
+        resolve(chunks.join(''))
       })
     })
 
@@ -630,30 +902,11 @@ function formatSubscriptionUrlForLog (value) {
   }
 }
 
-function decodeSubscriptionTextForSummary (text) {
-  const raw = String(text || '')
-  if (raw.includes('://')) {
-    return raw
-  }
-
-  try {
-    let normalized = raw.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
-    while (normalized.length % 4) {
-      normalized += '='
-    }
-    const decoded = Buffer.from(normalized, 'base64').toString('utf-8')
-    return decoded.includes('://') ? decoded : raw
-  } catch {
-    return raw
-  }
-}
-
-function summarizeSubscriptionContent (content) {
-  const decodedText = decodeSubscriptionTextForSummary(content).replace(/<br\s*\/?>/gi, '\n')
+function summarizeParsedSubscription (nodes, content) {
   const protocolCounts = {}
-  for (const match of decodedText.matchAll(/\b([a-zA-Z][a-zA-Z0-9+.-]*):\/\//g)) {
-    const protocol = match[1].toLowerCase()
-    if (!SUBSCRIPTION_SUMMARY_PROTOCOLS.has(protocol)) {
+  for (const node of nodes || []) {
+    const protocol = String(node && node.protocol || '').toLowerCase()
+    if (!protocol) {
       continue
     }
     protocolCounts[protocol] = (protocolCounts[protocol] || 0) + 1
@@ -661,7 +914,6 @@ function summarizeSubscriptionContent (content) {
 
   return {
     bytes: Buffer.byteLength(String(content || '')),
-    lines: decodedText.split(/[\n\r]+/).filter(line => line.trim()).length,
     protocolCounts,
   }
 }
@@ -759,85 +1011,295 @@ function collectNodesFromLinks (links) {
   return nodes
 }
 
-async function loadSubscriptionNodes (subscriptionUrls, log) {
+async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
   if (!Array.isArray(subscriptionUrls) || subscriptionUrls.length === 0) {
-    return { nodes: [], subscriptions: [] }
+    return { nodes: [], subscriptions: [], uniqueNodeCount: 0, rawNodeCount: 0, snapshotCount: 0 }
   }
 
-  const SUBSCRIPTION_BATCH_SIZE = 5
+  const SUBSCRIPTION_BATCH_SIZE = 1
   const uniqueNodes = []
   const seen = new Set()
-  const subscriptions = []
+  const seenNodeKeys = new Set()
+  const nodeTarget = Array.isArray(options.nodeTarget) ? options.nodeTarget : uniqueNodes
+  const maintainLocalNodeArray = nodeTarget === uniqueNodes
+  const stage2SeenCachePath = typeof options.stage2SeenCachePath === 'string' && options.stage2SeenCachePath ? options.stage2SeenCachePath : ''
+  const nodeSeen = !stage2SeenCachePath && options.nodeSeen instanceof Set ? options.nodeSeen : seenNodeKeys
+  const supportedNodeKeysTarget = options.supportedNodeKeysTarget instanceof Set ? options.supportedNodeKeysTarget : null
+  const onBatchAccepted = typeof options.onBatchAccepted === 'function' ? options.onBatchAccepted : null
+  const onAcceptedNodes = typeof options.onAcceptedNodes === 'function' ? options.onAcceptedNodes : null
+  const onAcceptedNodeKeys = typeof options.onAcceptedNodeKeys === 'function' ? options.onAcceptedNodeKeys : null
+  const subscriptions = maintainLocalNodeArray ? [] : null
+  const stage2SeenFilter = stage2SeenCachePath ? xrayCache.createStage2SeenNodeFilter(stage2SeenCachePath) : null
+  let pendingAcceptedNodeKeys = []
+  let pendingSupportedAcceptedNodes = []
+  let pendingSourceMeta = null
   let rawNodeCount = 0
+  let snapshotCount = 0
+  let acceptedUniqueNodeCount = 0
   const total = subscriptionUrls.length
 
-  for (let i = 0; i < subscriptionUrls.length; i += SUBSCRIPTION_BATCH_SIZE) {
-    const batch = subscriptionUrls.slice(i, i + SUBSCRIPTION_BATCH_SIZE)
-    const results = await Promise.allSettled(batch.map(async (subUrl, batchIndex) => {
-      const subscriptionIndex = i + batchIndex + 1
-      const subscriptionLabel = `[${subscriptionIndex}/${total}] ${formatSubscriptionUrlForLog(subUrl)}`
-      try {
-        log.info(`正在更新订阅: ${subscriptionLabel}`)
-        const content = await download(subUrl)
-        // Suppress parser's per-node error logs for subscription content
-        // since subscriptions often contain malformed/garbage nodes
-        const origError = console.error
-        const origWarn = console.warn
-        console.error = () => {}
-        console.warn = () => {}
-        try {
-          const nodes = parser.parse(content)
-          const summary = summarizeSubscriptionContent(content)
-          const protocolSummary = Object.entries(summary.protocolCounts)
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([protocol, count]) => `${protocol}=${count}`)
-            .join(',') || 'none'
-          if (nodes.length === 0) {
-            log.warn(`订阅解析为空: ${subscriptionLabel}, bytes=${summary.bytes}, lines=${summary.lines}, protocols=${protocolSummary}`)
-          } else {
-            log.info(`订阅解析成功: ${subscriptionLabel}, nodes=${nodes.length}, bytes=${summary.bytes}, protocols=${protocolSummary}`)
-          }
-          return {
-            url: subUrl,
-            displayLabel: subscriptionLabel,
-            sortOrder: subscriptionIndex,
-            nodes,
-          }
-        } finally {
-          console.error = origError
-          console.warn = origWarn
-        }
-      } catch (e) {
-        log.warn(`订阅更新失败: ${subscriptionLabel}`, e.message || e)
-        return {
-          url: subUrl,
-          displayLabel: subscriptionLabel,
-          sortOrder: subscriptionIndex,
-          nodes: [],
-        }
-      }
-    }))
+  if (stage2SeenCachePath && !stage2SeenFilter) {
+    throw new Error('Xray stage2 seen-node dedup initialization failed')
+  }
 
-    for (const result of results) {
-      if (result.status === 'fulfilled' && result.value && Array.isArray(result.value.nodes)) {
-        const parsedNodes = result.value.nodes
-        rawNodeCount += parsedNodes.length
-        appendUniqueNodes(uniqueNodes, seen, parsedNodes)
-        subscriptions.push({
-          sourceKey: xrayCache.getSubscriptionSourceKey(result.value.url, result.value.sortOrder),
-          url: result.value.url,
-          displayLabel: result.value.displayLabel,
-          sortOrder: result.value.sortOrder,
-          nodeKeys: xrayCache.deduplicateNodes(parsedNodes)
-            .map(node => xrayCache.getNodeKey(node))
-            .filter(Boolean),
-        })
-      }
+  logStage2MemoryUsage(log, 'subscription-load-start', {
+    subscriptions: total,
+    candidateNodes: Array.isArray(nodeTarget) ? nodeTarget.length : 0,
+  })
+
+  const getSubscriptionSourceMeta = (subscriptionSnapshot) => ({
+    sourceKey: subscriptionSnapshot.sourceKey,
+    url: subscriptionSnapshot.url,
+    displayLabel: subscriptionSnapshot.displayLabel,
+    sortOrder: subscriptionSnapshot.sortOrder,
+  })
+
+  const flushAcceptedBuffers = (sourceMeta = {}) => {
+    const meta = pendingSourceMeta || sourceMeta
+
+    if (pendingAcceptedNodeKeys.length > 0 && onAcceptedNodeKeys) {
+      onAcceptedNodeKeys(pendingAcceptedNodeKeys, meta)
+    }
+
+    if (!maintainLocalNodeArray && pendingSupportedAcceptedNodes.length > 0 && onAcceptedNodes) {
+      onAcceptedNodes(pendingSupportedAcceptedNodes, meta)
+    }
+
+    pendingAcceptedNodeKeys = []
+    pendingSupportedAcceptedNodes = []
+    pendingSourceMeta = null
+  }
+
+  const queueAcceptedBuffers = (acceptedNodeKeys, supportedAcceptedNodes, subscriptionSnapshot) => {
+    const sourceMeta = getSubscriptionSourceMeta(subscriptionSnapshot)
+    if (pendingSourceMeta && pendingSourceMeta.sourceKey !== sourceMeta.sourceKey) {
+      flushAcceptedBuffers()
+    }
+    pendingSourceMeta = sourceMeta
+
+    if (acceptedNodeKeys.length > 0) {
+      pendingAcceptedNodeKeys.push(...acceptedNodeKeys)
+    }
+    if (!maintainLocalNodeArray && supportedAcceptedNodes.length > 0) {
+      pendingSupportedAcceptedNodes.push(...supportedAcceptedNodes)
+    }
+
+    const flushThreshold = getStage2AcceptedFlushNodeCount(subscriptionSnapshot)
+    if (Math.max(pendingAcceptedNodeKeys.length, pendingSupportedAcceptedNodes.length) >= flushThreshold) {
+      flushAcceptedBuffers(sourceMeta)
     }
   }
 
-  log.info(`订阅汇总: 原始 ${rawNodeCount} 个节点, 去重后 ${uniqueNodes.length} 个`)
-  return { nodes: uniqueNodes, subscriptions }
+  const processSubscriptionChunk = (parsedNodes, subscriptionSnapshot) => {
+    if (!subscriptionSnapshot || !Array.isArray(parsedNodes) || parsedNodes.length === 0) {
+      return
+    }
+
+    rawNodeCount += parsedNodes.length
+    const supportedAcceptedNodes = []
+    const acceptedNodeKeySeen = new Set()
+
+    const acceptNode = (node, nodeKey) => {
+      if (!parser.isNodeSupportedByCurrentXray(node)) {
+        return
+      }
+
+      if (!nodeKey) {
+        nodeKey = xrayCache.getNodeKey(node)
+      }
+      if (!nodeKey || acceptedNodeKeySeen.has(nodeKey)) {
+        return
+      }
+
+      acceptedNodeKeySeen.add(nodeKey)
+      supportedAcceptedNodes.push(node)
+      if (supportedNodeKeysTarget) {
+        supportedNodeKeysTarget.add(nodeKey)
+      }
+    }
+
+    if (maintainLocalNodeArray) {
+      for (const node of parsedNodes) {
+        const beforeCount = uniqueNodes.length
+        appendUniqueNodes(uniqueNodes, seen, [node])
+        if (uniqueNodes.length > beforeCount) {
+          acceptNode(node)
+        }
+      }
+    } else if (stage2SeenFilter) {
+      acceptedUniqueNodeCount += stage2SeenFilter.acceptNodes(parsedNodes, {
+        onAcceptedNode: (node, nodeKey) => {
+          acceptNode(node, nodeKey)
+        },
+      })
+    } else {
+      for (const node of parsedNodes) {
+        const nodeKey = xrayCache.getNodeKey(node)
+        if (!nodeKey || seenNodeKeys.has(nodeKey)) {
+          continue
+        }
+        seenNodeKeys.add(nodeKey)
+        nodeSeen.add(nodeKey)
+        acceptNode(node, nodeKey)
+      }
+    }
+
+    const acceptedNodeKeys = [...acceptedNodeKeySeen]
+    subscriptionSnapshot.acceptedNodeKeyCount = (subscriptionSnapshot.acceptedNodeKeyCount || 0) + acceptedNodeKeys.length
+
+    if (acceptedNodeKeys.length > 0 || supportedAcceptedNodes.length > 0) {
+      queueAcceptedBuffers(acceptedNodeKeys, supportedAcceptedNodes, subscriptionSnapshot)
+    }
+  }
+
+  try {
+    for (let i = 0; i < subscriptionUrls.length; i += SUBSCRIPTION_BATCH_SIZE) {
+      const batch = subscriptionUrls.slice(i, i + SUBSCRIPTION_BATCH_SIZE)
+      const batchSubscriptions = []
+      for (let batchIndex = 0; batchIndex < batch.length; batchIndex += 1) {
+        const subUrl = batch[batchIndex]
+        const subscriptionIndex = i + batchIndex + 1
+        const subscriptionLabel = `[${subscriptionIndex}/${total}] ${formatSubscriptionUrlForLog(subUrl)}`
+        const subscriptionSnapshot = {
+          sourceKey: xrayCache.getSubscriptionSourceKey(subUrl, subscriptionIndex),
+          url: subUrl,
+          displayLabel: subscriptionLabel,
+          sortOrder: subscriptionIndex,
+          acceptedNodeKeyCount: 0,
+        }
+        snapshotCount += 1
+        if (subscriptions) {
+          subscriptions.push(subscriptionSnapshot)
+        }
+        batchSubscriptions.push(subscriptionSnapshot)
+        try {
+          log.info(`正在更新订阅: ${subscriptionLabel}`)
+          let content = await download(subUrl)
+          const contentBytes = Buffer.byteLength(String(content || ''))
+          const shouldLogDetail = shouldLogLargeSubscriptionDetail({ bytes: contentBytes })
+          subscriptionSnapshot.largeSubscription = shouldLogDetail
+          if (shouldLogDetail) {
+            logStage2MemoryUsage(log, 'subscription-large-before-parse', {
+              subscription: subscriptionLabel,
+              bytes: contentBytes,
+            })
+            await runStage2GarbageCollection(log, 'large-subscription-before-parse', {
+              subscription: subscriptionLabel,
+              bytes: contentBytes,
+            }, {
+              logAfter: true,
+            })
+          }
+          const origError = console.error
+          const origWarn = console.warn
+          console.error = () => {}
+          console.warn = () => {}
+          try {
+            let parsedChunkCount = 0
+            const parseSummary = await parser.parseInChunksAsync(content, {
+              chunkSize: STAGE2_SUBSCRIPTION_PARSE_CHUNK_SIZE,
+              yieldEveryChunks: 1,
+              onChunk: async (chunkNodes) => {
+                if (Array.isArray(chunkNodes) && chunkNodes.length > 0) {
+                  processSubscriptionChunk(chunkNodes, subscriptionSnapshot)
+                }
+                parsedChunkCount += 1
+                if (shouldLogDetail && parsedChunkCount % STAGE2_SUBSCRIPTION_PARSE_GC_CHUNKS === 0) {
+                  const shouldLogChunkGc = parsedChunkCount === 1 || parsedChunkCount % 100 === 0
+                  await runStage2GarbageCollection(log, 'large-subscription-parse-chunks', {
+                    subscription: subscriptionLabel,
+                    chunks: parsedChunkCount,
+                    acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
+                  }, {
+                    logAfter: shouldLogChunkGc,
+                  })
+                }
+              },
+            })
+            flushAcceptedBuffers(getSubscriptionSourceMeta(subscriptionSnapshot))
+            const summary = {
+              bytes: contentBytes,
+              protocolCounts: parseSummary.protocolCounts,
+            }
+            const parsedNodeCount = parseSummary.totalNodes
+            const shouldLogPostParseDetail = shouldLogDetail || shouldLogLargeSubscriptionDetail({ bytes: summary.bytes, nodes: parsedNodeCount })
+            if (shouldLogPostParseDetail) {
+              logStage2MemoryUsage(log, 'subscription-large-after-parse', {
+                subscription: subscriptionLabel,
+                bytes: summary.bytes,
+                nodes: parsedNodeCount,
+              })
+            }
+            const protocolSummary = summarizeProtocolCounts(summary.protocolCounts)
+            if (parsedNodeCount === 0) {
+              log.warn(`订阅解析为空: ${subscriptionLabel}, bytes=${summary.bytes}, protocols=${protocolSummary}`)
+            } else {
+              log.info(`订阅解析成功: ${subscriptionLabel}, nodes=${parsedNodeCount}, bytes=${summary.bytes}, protocols=${protocolSummary}`)
+            }
+            if (shouldLogPostParseDetail) {
+              logStage2MemoryUsage(log, 'subscription-large-after-accept', {
+                subscription: subscriptionLabel,
+                acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
+                snapshots: batchSubscriptions.length,
+              })
+            }
+            content = null
+            if (shouldLogPostParseDetail) {
+              await yieldToEventLoop()
+              logStage2MemoryUsage(log, 'subscription-large-after-yield', {
+                subscription: subscriptionLabel,
+                acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
+              })
+              await runStage2GarbageCollection(log, 'large-subscription', {
+                subscription: subscriptionLabel,
+                acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
+              })
+            }
+          } finally {
+            console.error = origError
+            console.warn = origWarn
+          }
+        } catch (e) {
+          log.warn(`订阅更新失败: ${subscriptionLabel}`, e.message || e)
+        }
+      }
+
+      if (batchSubscriptions.length > 0 && onBatchAccepted) {
+        await onBatchAccepted(batchSubscriptions, {
+          processed: Math.min(i + SUBSCRIPTION_BATCH_SIZE, total),
+          total,
+          uniqueNodes: maintainLocalNodeArray ? seen.size : (stage2SeenCachePath ? acceptedUniqueNodeCount : seenNodeKeys.size),
+        })
+      }
+
+      logStage2MemoryUsage(log, 'subscription-batch-finished', {
+        processed: Math.min(i + SUBSCRIPTION_BATCH_SIZE, total),
+        total,
+        uniqueNodes: maintainLocalNodeArray ? seen.size : (stage2SeenCachePath ? acceptedUniqueNodeCount : seenNodeKeys.size),
+        snapshots: snapshotCount,
+      })
+      if (process.memoryUsage().heapUsed >= STAGE2_GC_HEAP_USED_THRESHOLD_BYTES) {
+        await runStage2GarbageCollection(log, 'stage2-batch-high-heap', {
+          processed: Math.min(i + SUBSCRIPTION_BATCH_SIZE, total),
+          total,
+        })
+      }
+    }
+  } finally {
+    if (stage2SeenFilter && typeof stage2SeenFilter.close === 'function') {
+      stage2SeenFilter.close()
+    }
+  }
+
+  const uniqueNodeCount = maintainLocalNodeArray ? seen.size : (stage2SeenCachePath ? acceptedUniqueNodeCount : seenNodeKeys.size)
+  log.info(`订阅汇总: 原始 ${rawNodeCount} 个节点, 去重后 ${uniqueNodeCount} 个`)
+  return {
+    nodes: maintainLocalNodeArray ? uniqueNodes : [],
+    subscriptions: subscriptions || [],
+    uniqueNodeCount,
+    rawNodeCount,
+    snapshotCount,
+  }
 }
 
 function getStage3RoundSummaryPath (xrayDir) {
@@ -890,6 +1352,180 @@ function sortEntriesForRefresh (entries) {
     const rightDelay = Number.isFinite(right.delay) ? right.delay : Number.POSITIVE_INFINITY
     return leftDelay - rightDelay
   })
+}
+
+function toLocalTimestampAfterMs (delayMs, now = Date.now()) {
+  const baseTime = Number(now)
+  const safeBaseTime = Number.isFinite(baseTime) ? baseTime : Date.now()
+  const normalizedDelay = Number(delayMs)
+  const safeDelay = Number.isFinite(normalizedDelay) && normalizedDelay > 0 ? normalizedDelay : 0
+  return xrayCache.formatLocalTimestamp(new Date(safeBaseTime + safeDelay))
+}
+
+function getFailureBackoffMs (failureStreak) {
+  const normalizedStreak = normalizePositiveInt(failureStreak, 1)
+  const index = Math.min(CACHE_FAILURE_BACKOFF_DAYS.length - 1, Math.max(0, normalizedStreak - 1))
+  return CACHE_FAILURE_BACKOFF_DAYS[index] * 24 * 60 * 60 * 1000
+}
+
+function classifyRefreshPriority (entry) {
+  if (!entry || typeof entry !== 'object') {
+    return 'new'
+  }
+
+  if (normalizePositiveInt(entry.failureStreak, 0) > 0) {
+    return 'cold'
+  }
+
+  if (entry.stable === true) {
+    return 'hot'
+  }
+
+  return 'new'
+}
+
+function takePriorityEntries (items, limit) {
+  if (!Array.isArray(items) || items.length === 0 || limit <= 0) {
+    return []
+  }
+  return items.splice(0, Math.min(limit, items.length))
+}
+
+function selectStage3RefreshCandidates (entriesWithRowIds, batchSize) {
+  const normalizedEntries = Array.isArray(entriesWithRowIds) ? entriesWithRowIds.filter(Boolean) : []
+  if (normalizedEntries.length === 0) {
+    return {
+      selected: [],
+      totalDueCount: 0,
+      roundBudget: 0,
+      distribution: { hot: 0, new: 0, cold: 0 },
+    }
+  }
+
+  const normalizedBatchSize = Math.max(1, normalizePositiveInt(batchSize, pluginConfig.cacheRefreshBatchSize))
+  const roundBudget = Math.min(normalizedEntries.length, normalizedBatchSize * CACHE_REFRESH_ROUND_BUDGET_MULTIPLIER)
+  const hot = []
+  const fresh = []
+  const cold = []
+  for (const item of normalizedEntries) {
+    const priority = classifyRefreshPriority(item.entry)
+    if (priority === 'hot') {
+      hot.push(item)
+    } else if (priority === 'cold') {
+      cold.push(item)
+    } else {
+      fresh.push(item)
+    }
+  }
+
+  const selected = []
+  const initialHot = Math.floor(roundBudget * CACHE_REFRESH_HOT_RATIO)
+  const initialNew = Math.floor(roundBudget * CACHE_REFRESH_NEW_RATIO)
+  const initialCold = Math.floor(roundBudget * CACHE_REFRESH_COLD_RATIO)
+
+  selected.push(...takePriorityEntries(hot, initialHot))
+  selected.push(...takePriorityEntries(fresh, initialNew))
+  selected.push(...takePriorityEntries(cold, initialCold))
+
+  const leftovers = [...hot, ...fresh, ...cold]
+  if (selected.length < roundBudget && leftovers.length > 0) {
+    selected.push(...leftovers.slice(0, roundBudget - selected.length))
+  }
+
+  return {
+    selected,
+    totalDueCount: normalizedEntries.length,
+    roundBudget,
+    distribution: {
+      hot: selected.filter(item => classifyRefreshPriority(item.entry) === 'hot').length,
+      new: selected.filter(item => classifyRefreshPriority(item.entry) === 'new').length,
+      cold: selected.filter(item => classifyRefreshPriority(item.entry) === 'cold').length,
+    },
+  }
+}
+
+function applyStage3ProbeResults ({
+  cachePath,
+  targetBatch,
+  annotatedEntries,
+  observedFingerprints,
+  cacheRefreshIntervalMs,
+  now = Date.now(),
+}) {
+  const successEntriesByFingerprint = new Map()
+  for (const entry of annotatedEntries || []) {
+    const fingerprint = xrayCache.fingerprintNode(entry && entry.node)
+    if (fingerprint) {
+      successEntriesByFingerprint.set(fingerprint, entry)
+    }
+  }
+
+  const observedFingerprintSet = new Set((observedFingerprints || []).filter(Boolean))
+  const updatedEntries = []
+  const availableNodeKeys = new Set()
+  let availableCount = 0
+  let removedCount = 0
+  let explicitFailureCount = 0
+  let partialCoverageCount = 0
+
+  for (const existingEntry of targetBatch || []) {
+    const fingerprint = xrayCache.fingerprintNode(existingEntry && existingEntry.node)
+    if (!fingerprint) {
+      continue
+    }
+
+    const successfulEntry = successEntriesByFingerprint.get(fingerprint)
+    if (successfulEntry) {
+      const mergedEntry = {
+        ...existingEntry,
+        ...successfulEntry,
+        failureStreak: 0,
+        nextCheckAt: toLocalTimestampAfterMs(cacheRefreshIntervalMs, now),
+      }
+      updatedEntries.push(mergedEntry)
+      availableCount += 1
+      const nodeKey = xrayCache.getNodeKey(mergedEntry.node)
+      if (nodeKey) {
+        availableNodeKeys.add(nodeKey)
+      }
+      xrayCache.deleteOutdated(cachePath, fingerprint)
+      continue
+    }
+
+    if (!observedFingerprintSet.has(fingerprint)) {
+      updatedEntries.push(existingEntry)
+      partialCoverageCount += 1
+      continue
+    }
+
+    const nextFailureStreak = Math.max(1, normalizePositiveInt(existingEntry.failureStreak, 0) + 1)
+    explicitFailureCount += 1
+
+    if (nextFailureStreak >= 3) {
+      removedCount += 1
+      xrayCache.upsertOutdated(cachePath, fingerprint, now)
+      continue
+    }
+
+    updatedEntries.push({
+      ...existingEntry,
+      stable: false,
+      delay: null,
+      source: 'background-probe',
+      updatedAt: xrayCache.formatLocalTimestamp(new Date(now)),
+      nextCheckAt: toLocalTimestampAfterMs(getFailureBackoffMs(nextFailureStreak), now),
+      failureStreak: nextFailureStreak,
+    })
+  }
+
+  return {
+    updatedEntries,
+    availableNodeKeys: [...availableNodeKeys],
+    availableCount,
+    removedCount,
+    explicitFailureCount,
+    partialCoverageCount,
+  }
 }
 
 async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeLifecycle = null }) {
@@ -1027,6 +1663,8 @@ function createCacheSyncPlan (candidateNodes, existingEntries, stats = {}) {
       owner: existingEntry && existingEntry.owner ? existingEntry.owner : '',
       source: existingEntry && existingEntry.source ? existingEntry.source : 'source-sync',
       updatedAt: existingEntry && existingEntry.updatedAt ? existingEntry.updatedAt : timestamp,
+      nextCheckAt: existingEntry && existingEntry.nextCheckAt ? existingEntry.nextCheckAt : timestamp,
+      failureStreak: existingEntry ? normalizePositiveInt(existingEntry.failureStreak, 0) : 0,
       tag: existingEntry && existingEntry.tag ? existingEntry.tag : '',
     }
 
@@ -1045,19 +1683,90 @@ function createCacheSyncPlan (candidateNodes, existingEntries, stats = {}) {
     }
   }
 
-  const removedNodes = []
-  for (const entry of existingEntries || []) {
-    const fingerprint = xrayCache.fingerprintNode(entry && entry.node)
-    if (fingerprint && !candidateFingerprints.has(fingerprint)) {
-      removedNodes.push(entry.node)
+  return {
+    addedEntries,
+    removedNodes: [],
+    hasChanges: addedEntries.length > 0,
+    selectedCount: candidateFingerprints.size,
+  }
+}
+
+function syncCandidateNodesToCache (cachePath, candidateNodes, options = {}) {
+  let supportedCount = 0
+  let selectedCount = 0
+  let cacheMatchedCount = 0
+  let outdatedSkippedCount = 0
+  let addedCount = 0
+  let countryReadyCount = 0
+
+  const supportedChunk = []
+  const flushChunk = () => {
+    if (supportedChunk.length === 0) {
+      return
+    }
+
+    const candidateFingerprints = []
+    for (const node of supportedChunk) {
+      const fingerprint = xrayCache.fingerprintNode(node)
+      if (fingerprint) {
+        candidateFingerprints.push(fingerprint)
+      }
+    }
+
+    if (candidateFingerprints.length === 0) {
+      supportedChunk.length = 0
+      return
+    }
+
+    const cacheEntries = xrayCache.readCacheEntriesByFingerprints(cachePath, candidateFingerprints)
+    const outdatedFingerprints = xrayCache.readOutdatedHashSet(cachePath, candidateFingerprints)
+    const filteredCandidateNodes = outdatedFingerprints.size > 0
+      ? supportedChunk.filter(node => !outdatedFingerprints.has(xrayCache.fingerprintNode(node)))
+      : [...supportedChunk]
+
+    const syncStats = { countryReadyCount: 0 }
+    const cacheSyncPlan = createCacheSyncPlan(filteredCandidateNodes, cacheEntries, syncStats)
+    if (cacheSyncPlan.hasChanges) {
+      const initializedEntries = cacheSyncPlan.addedEntries.map(entry => ({
+        ...entry,
+        nextCheckAt: entry.nextCheckAt || xrayCache.formatLocalTimestamp(new Date()),
+        failureStreak: 0,
+      }))
+      const touchedNodes = initializedEntries.map(entry => entry.node)
+      const updated = xrayCache.writeCacheUpdates(cachePath, initializedEntries, touchedNodes, { lowFileCache: options.lowFileCache === true })
+      if (!updated) {
+        throw new Error('Xray SQLite cache is unavailable')
+      }
+    }
+
+    selectedCount += cacheSyncPlan.selectedCount
+    cacheMatchedCount += cacheEntries.length
+    outdatedSkippedCount += supportedChunk.length - filteredCandidateNodes.length
+    addedCount += cacheSyncPlan.addedEntries.length
+    countryReadyCount += syncStats.countryReadyCount
+    supportedChunk.length = 0
+  }
+
+  for (const node of candidateNodes || []) {
+    if (!parser.isNodeSupportedByCurrentXray(node)) {
+      continue
+    }
+    supportedCount += 1
+    supportedChunk.push(node)
+    if (supportedChunk.length >= STAGE2_CACHE_SYNC_CHUNK_SIZE) {
+      flushChunk()
     }
   }
 
+  flushChunk()
+
   return {
-    addedEntries,
-    removedNodes,
-    hasChanges: addedEntries.length > 0 || removedNodes.length > 0,
-    selectedCount: candidateFingerprints.size,
+    supportedCount,
+    selectedCount,
+    cacheMatchedCount,
+    outdatedSkippedCount,
+    addedCount,
+    countryReadyCount,
   }
 }
 
@@ -1152,11 +1861,14 @@ const Plugin = function (context) {
     })
   }
 
-  async function probeNodesBatch ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeSamples = CACHE_REFRESH_PROBE_SAMPLE_COUNT }) {
-    const effectiveProbeSamples = normalizePositiveInt(probeSamples, CACHE_REFRESH_PROBE_SAMPLE_COUNT)
+  async function probeNodesBatch ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeSamples = pluginConfig.cacheRefreshProbeSamples }) {
+    const effectiveProbeSamples = normalizePositiveInt(probeSamples, pluginConfig.cacheRefreshProbeSamples)
 
     if (!Array.isArray(batchNodes) || batchNodes.length === 0) {
-      return []
+      return {
+        entries: [],
+        observedFingerprints: [],
+      }
     }
 
     ensureDir(xrayDir)
@@ -1193,11 +1905,21 @@ const Plugin = function (context) {
       const observatory = metrics && (metrics.observatory || metrics.burstObservatory || metrics.Observatory || metrics.BurstObservatory)
       if (!observatory) {
         log.warn('Xray 后台探测: metrics 中没有 observatory 数据')
-        return []
+        return {
+          entries: [],
+          observedFingerprints: [],
+        }
       }
 
       const nodeMap = createNodeMap(batchNodes)
-      return xrayCache.buildCacheEntriesFromObservatory(observatory, nodeMap, 'background-probe')
+      const observedFingerprints = Object.keys(observatory || {})
+        .map(tag => nodeMap.get(tag))
+        .map(node => xrayCache.fingerprintNode(node))
+        .filter(Boolean)
+      return {
+        entries: xrayCache.buildCacheEntriesFromObservatory(observatory, nodeMap, 'background-probe'),
+        observedFingerprints,
+      }
     } finally {
       if (currentProbe === probeController) {
         currentProbe = null
@@ -1232,10 +1954,19 @@ const Plugin = function (context) {
       const liveConfigPath = path.join(xrayDir, 'config.json')
       const liveConfigBakPath = path.join(xrayDir, 'config.json.bak')
       const cachePath = path.join(xrayDir, 'nodes_cache.sqlite')
-      const startupNodeLimit = normalizePositiveInt(cfg.startupNodeLimit, STARTUP_NODE_LIMIT)
+      const startupNodeLimit = normalizePositiveInt(cfg.startupNodeLimit, pluginConfig.startupNodeLimit)
       const allowedCountries = cfg.allowedCountries
       const allowedOwners = cfg.allowedOwners
       const maxDelayMs = normalizeNonNegativeInt(cfg.maxDelayMs, 0)
+
+      const startupMigration = xrayCache.migrateHotColdSchema(cachePath, {
+        batchLimit: HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS,
+        maxRows: HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS,
+        lowFileCache: true,
+      })
+      maybeLogHotColdMigrationProgress(log, 'stage1', startupMigration)
+      const stage1Retirement = maybeRetireLegacyNodesStorage(log, cachePath, 'stage1', startupMigration)
+      maybeCompactRetiredSqliteCache(log, cachePath, 'stage1', stage1Retirement)
 
       // 1. Determine Port
       let port = cfg.localPort
@@ -1255,8 +1986,6 @@ const Plugin = function (context) {
 
       // 2. Stage 1 bootstrap: quickly verify a small set of previous cache nodes,
       // then fall back to last known stable entries if needed.
-      const cacheEntryCount = xrayCache.countCacheEntries(cachePath)
-      const cacheStableCount = xrayCache.countCacheEntries(cachePath, { stableOnly: true })
       const bootstrapCandidateLimit = getBootstrapCandidateLimit(cfg)
       const stableFallbackQuery = buildCacheEntryQueryOptions({
         stableOnly: true,
@@ -1266,18 +1995,18 @@ const Plugin = function (context) {
       const bootstrapCandidateQuery = buildCacheEntryQueryOptions({
         limit: bootstrapCandidateLimit,
       })
-      const cachedEntriesByDelay = xrayCache.readCacheEntries(cachePath, stableFallbackQuery)
-      const bootstrapCandidateEntries = xrayCache.readCacheEntries(cachePath, bootstrapCandidateQuery)
-      const fallbackStableEntries = (await collectBootstrapCandidateEntries(cachedEntriesByDelay, allowedCountries, allowedOwners, startupNodeLimit)).entries
+      const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
+      const bootstrapCandidateEntries = xrayCache.readCacheEntriesForStartup(cachePath, bootstrapCandidateQuery)
+      const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
       const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isNodeSupportedByCurrentXray(entry.node))
       const bootstrapCandidates = bootstrapCandidateEntries.map(entry => entry.node).filter(node => parser.isNodeSupportedByCurrentXray(node))
-      log.info(`Xray 启动预检查: cache=${cacheEntryCount}, cacheStable=${cacheStableCount}, stableFallbackLoaded=${cachedEntriesByDelay.length}, stableFallbackFiltered=${fallbackStableEntries.length}, stableFallbackSupported=${supportedFallbackEntries.length}, bootstrapCandidates=${bootstrapCandidateEntries.length}, bootstrapSupported=${bootstrapCandidates.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}`)
+      log.info(`Xray 启动预检查: source=nodes-cache, stableFallbackLoaded=${fallbackStableSourceEntries.length}, stableFallbackFiltered=${fallbackStableEntries.length}, stableFallbackSupported=${supportedFallbackEntries.length}, bootstrapCandidates=${bootstrapCandidateEntries.length}, bootstrapSupported=${bootstrapCandidates.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}`)
 
       let bootstrapSelectedEntries = []
 
       if (bootstrapCandidates.length > 0) {
         try {
-          const bootstrapEntries = await probeNodesBatch({
+          const bootstrapProbeResult = await probeNodesBatch({
             binPath,
             cfg,
             xrayDir,
@@ -1285,7 +2014,7 @@ const Plugin = function (context) {
             timeoutMs: getBootstrapBatchTimeoutSeconds(cfg) * 1000,
             probeSamples: getBootstrapProbeSamples(cfg),
           })
-          const annotatedBootstrapEntries = await annotateProbeEntries(bootstrapEntries, {
+          const annotatedBootstrapEntries = await annotateProbeEntries(bootstrapProbeResult.entries, {
             binPath,
             xrayDir,
             existingEntries: bootstrapCandidateEntries,
@@ -1298,7 +2027,7 @@ const Plugin = function (context) {
           const bootstrapByCountry = await filterEntriesByCountries(bootstrapByDelay, allowedCountries)
           const bootstrapByOwner = await filterEntriesByOwners(bootstrapByCountry, allowedOwners)
           bootstrapSelectedEntries = xrayCache.sortCacheEntries(bootstrapByOwner).slice(0, startupNodeLimit)
-          log.info(`Xray 启动前快速复检: cache=${cacheEntryCount}, candidateLimit=${bootstrapCandidateLimit}, queried=${bootstrapCandidateEntries.length}, tested=${bootstrapCandidates.length}, available=${bootstrapEntries.length}, afterDelay=${bootstrapByDelay.length}, afterCountry=${bootstrapByCountry.length}, afterOwner=${bootstrapByOwner.length}, selected=${bootstrapSelectedEntries.length}`)
+          log.info(`Xray 启动前快速复检: source=nodes-cache, candidateLimit=${bootstrapCandidateLimit}, queried=${bootstrapCandidateEntries.length}, tested=${bootstrapCandidates.length}, available=${annotatedBootstrapEntries.length}, afterDelay=${bootstrapByDelay.length}, afterCountry=${bootstrapByCountry.length}, afterOwner=${bootstrapByOwner.length}, selected=${bootstrapSelectedEntries.length}`)
         } catch (error) {
           log.warn('Xray 启动前快速复检失败，回退到上次稳定缓存:', error)
         }
@@ -1309,7 +2038,7 @@ const Plugin = function (context) {
       appendItems(startupNodeCandidates, supportedFallbackEntries.map(entry => entry.node))
       const startupNodes = xrayCache.deduplicateNodes(startupNodeCandidates).slice(0, startupNodeLimit)
 
-      log.info(`Xray 启动节点候选: cache=${cacheEntryCount}, cacheStable=${cacheStableCount}, fallbackStable=${fallbackStableEntries.length}, fallbackSupported=${supportedFallbackEntries.length}, startupSelected=${startupNodes.length}`)
+      log.info(`Xray 启动节点候选: source=nodes-cache, fallbackStable=${fallbackStableEntries.length}, fallbackSupported=${supportedFallbackEntries.length}, startupSelected=${startupNodes.length}`)
 
       if (startupNodes.length === 0) {
         log.warn('Xray 警告: 未找到任何可用节点，将只启用 Direct/Block')
@@ -1393,6 +2122,15 @@ const Plugin = function (context) {
     async refreshCacheFromSourcesOnce ({ binPath, cfg, xrayDir, liveConfigPath, liveConfigBakPath, cachePath }) {
       const generation = ++refreshGeneration
 
+      const stage2Migration = xrayCache.migrateHotColdSchema(cachePath, {
+        batchLimit: HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS,
+        maxRows: HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS,
+        lowFileCache: true,
+      })
+      maybeLogHotColdMigrationProgress(log, 'stage2', stage2Migration)
+      const stage2Retirement = maybeRetireLegacyNodesStorage(log, cachePath, 'stage2', stage2Migration)
+      maybeCompactRetiredSqliteCache(log, cachePath, 'stage2', stage2Retirement)
+
       const manualNodes = collectNodesFromLinks(cfg.nodes)
       const subscriptionSyncDecision = getSubscriptionSyncDecision({ cachePath, cfg })
       const localInputStatePath = getLocalInputStatePath(cachePath)
@@ -1417,39 +2155,133 @@ const Plugin = function (context) {
 
       const configSourcePath = fs.existsSync(liveConfigBakPath) ? liveConfigBakPath : liveConfigPath
       const configNodes = xrayCache.extractNodesFromXrayConfigFile(configSourcePath)
-      const cacheEntries = xrayCache.readCacheEntries(cachePath)
-      const cacheNodes = cacheEntries.map(entry => entry.node)
-      let subscriptionNodes = []
-      let subscriptionSnapshots = []
+      const candidateNodeSeen = new Set()
+      const allSubscriptionSourceKeys = new Set()
+      const localCandidateNodes = []
+      appendUniqueNodes(localCandidateNodes, candidateNodeSeen, configNodes)
+      appendUniqueNodes(localCandidateNodes, candidateNodeSeen, manualNodes)
+
+      let subscriptionNodeCount = 0
+      let subscriptionSnapshotCount = 0
+      let subscriptionSyncRefs = 0
+      let totalSupportedCandidateCount = 0
+      let totalCacheMatchedCount = 0
+      let totalOutdatedSkippedCount = 0
+      let totalAddedCount = 0
+      let totalCountryReadyCount = 0
+
+      logStage2MemoryUsage(log, 'stage2-before-subscription-load', {
+        configNodes: configNodes.length,
+        manualNodes: manualNodes.length,
+        deduplicated: localCandidateNodes.length,
+      })
+
+      const cacheSizeBeforeStage2 = xrayCache.getSqliteCacheSizeBytes(cachePath)
+      if (cacheSizeBeforeStage2 >= CACHE_SIZE_LIMIT_BYTES) {
+        const cleanupResult = xrayCache.cleanupOutdatedToSizeLimit(cachePath, CACHE_SIZE_TARGET_BYTES)
+        if (cleanupResult) {
+          log.warn(`Xray 节点缓存过大，已尝试清理 outdated tombstone: deleted=${cleanupResult.deleted}, sizeBefore=${cleanupResult.sizeBefore}, sizeAfter=${cleanupResult.sizeAfter}, limit=${CACHE_SIZE_LIMIT_BYTES}`)
+        }
+      }
+
+      const initialSyncStats = syncCandidateNodesToCache(cachePath, localCandidateNodes)
+      totalSupportedCandidateCount += initialSyncStats.supportedCount
+      totalCacheMatchedCount += initialSyncStats.cacheMatchedCount
+      totalOutdatedSkippedCount += initialSyncStats.outdatedSkippedCount
+      totalAddedCount += initialSyncStats.addedCount
+      totalCountryReadyCount += initialSyncStats.countryReadyCount
 
       if (shouldSkipSubscriptionFetch) {
         log.info(`Xray 订阅抓取已跳过: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
       } else {
+        const initialStage2SeenNodeKeys = collectUniqueNodeKeys(localCandidateNodes)
+        if (!xrayCache.resetStage2SeenNodeKeys(cachePath, initialStage2SeenNodeKeys)) {
+          throw new Error('Xray stage2 seen-node initialization failed')
+        }
         if (subscriptionSyncDecision.lowWatermark > 0) {
           log.info(`Xray 订阅抓取已触发: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
         }
-        const subscriptionResult = await loadSubscriptionNodes(cfg.subscriptions, log)
-        subscriptionNodes = subscriptionResult.nodes
-        subscriptionSnapshots = subscriptionResult.subscriptions
+        const subscriptionResult = await loadSubscriptionNodes(cfg.subscriptions, log, {
+          nodeTarget: [],
+          stage2SeenCachePath: cachePath,
+          onAcceptedNodeKeys: (acceptedNodeKeys, sourceMeta = {}) => {
+            const nodeKeys = Array.isArray(acceptedNodeKeys) ? acceptedNodeKeys : []
+            if (nodeKeys.length === 0 || !sourceMeta.sourceKey) {
+              return
+            }
+
+            const shouldReplaceExistingRefs = !allSubscriptionSourceKeys.has(sourceMeta.sourceKey)
+            const subscriptionChunkSyncStats = xrayCache.syncSubscriptionSourceChunk(cachePath, {
+              sourceKey: sourceMeta.sourceKey,
+              url: sourceMeta.url,
+              displayLabel: sourceMeta.displayLabel,
+              sortOrder: sourceMeta.sortOrder,
+            }, nodeKeys, {
+              staleAfterDays: getSubscriptionStaleAfterDays(cfg),
+              replaceExistingRefs: shouldReplaceExistingRefs,
+              lowFileCache: true,
+            })
+
+            if (!subscriptionChunkSyncStats) {
+              throw new Error('Xray subscription source chunk sync failed')
+            }
+
+            subscriptionSyncRefs += subscriptionChunkSyncStats.refs
+            allSubscriptionSourceKeys.add(sourceMeta.sourceKey)
+          },
+          onAcceptedNodes: (acceptedChunkNodes) => {
+            const acceptedNodes = Array.isArray(acceptedChunkNodes) ? acceptedChunkNodes : []
+            if (acceptedNodes.length === 0) {
+              return
+            }
+
+            const chunkSyncStats = syncCandidateNodesToCache(cachePath, acceptedNodes, { lowFileCache: true })
+            totalSupportedCandidateCount += chunkSyncStats.supportedCount
+            totalCacheMatchedCount += chunkSyncStats.cacheMatchedCount
+            totalOutdatedSkippedCount += chunkSyncStats.outdatedSkippedCount
+            totalAddedCount += chunkSyncStats.addedCount
+            totalCountryReadyCount += chunkSyncStats.countryReadyCount
+          },
+          onBatchAccepted: async (batchSubscriptions, batchStats = {}) => {
+            for (const subscription of batchSubscriptions) {
+              if (subscription && subscription.sourceKey) {
+                allSubscriptionSourceKeys.add(subscription.sourceKey)
+              }
+            }
+            const subscriptionSyncStats = xrayCache.syncSubscriptions(cachePath, batchSubscriptions, {
+              staleAfterDays: getSubscriptionStaleAfterDays(cfg),
+              markMissingUnconfigured: false,
+              replaceRefs: false,
+            })
+            if (!subscriptionSyncStats) {
+              throw new Error('Xray subscription batch sync failed')
+            }
+            subscriptionSnapshotCount += subscriptionSyncStats.configured
+          },
+        })
+        subscriptionNodeCount = subscriptionResult.uniqueNodeCount
+        subscriptionSnapshotCount = subscriptionResult.subscriptions.length
       }
 
       if (generation !== refreshGeneration) {
         return
       }
 
-      const candidateNodeSources = []
-      appendItems(candidateNodeSources, configNodes)
-      appendItems(candidateNodeSources, cacheNodes)
-      appendItems(candidateNodeSources, manualNodes)
-      appendItems(candidateNodeSources, subscriptionNodes)
-      const deduplicatedCandidateNodes = xrayCache.deduplicateNodes(candidateNodeSources)
-      const candidateNodes = deduplicatedCandidateNodes.filter(node => parser.isNodeSupportedByCurrentXray(node))
       const subscriptionFetchMode = shouldSkipSubscriptionFetch ? 'skipped' : 'loaded'
       const effectiveCacheLabel = subscriptionSyncDecision.effectiveCacheCount == null ? 'n/a' : subscriptionSyncDecision.effectiveCacheCount
 
-      log.info(`Xray 节点汇总候选: configBak=${configNodes.length}, cache=${cacheNodes.length}, manual=${manualNodes.length}, subscriptions=${subscriptionNodes.length}, subscriptionFetch=${subscriptionFetchMode}, effectiveCache=${effectiveCacheLabel}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, deduplicated=${deduplicatedCandidateNodes.length}, unsupportedDropped=${deduplicatedCandidateNodes.length - candidateNodes.length}, selected=${candidateNodes.length}`)
+      const totalUniqueCandidateCount = localCandidateNodes.length + subscriptionNodeCount
 
-      if (candidateNodes.length === 0) {
+      logStage2MemoryUsage(log, 'stage2-after-subscription-load', {
+        subscriptionNodes: subscriptionNodeCount,
+        deduplicated: totalUniqueCandidateCount,
+        supported: totalSupportedCandidateCount,
+        snapshots: subscriptionSnapshotCount,
+      })
+
+      log.info(`Xray 节点汇总候选: configBak=${configNodes.length}, cacheMatched=${totalCacheMatchedCount}, manual=${manualNodes.length}, subscriptions=${subscriptionNodeCount}, subscriptionFetch=${subscriptionFetchMode}, effectiveCache=${effectiveCacheLabel}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, deduplicated=${totalUniqueCandidateCount}, unsupportedDropped=${Math.max(0, totalUniqueCandidateCount - totalSupportedCandidateCount)}, selected=${totalSupportedCandidateCount}`)
+
+      if (totalSupportedCandidateCount === 0) {
         log.warn('Xray 节点汇总: 未找到任何候选节点，跳过缓存同步')
         return
       }
@@ -1458,37 +2290,30 @@ const Plugin = function (context) {
         return
       }
 
-      const syncStats = { countryReadyCount: 0 }
-      const cacheSyncPlan = createCacheSyncPlan(candidateNodes, cacheEntries, syncStats)
-      const candidateNodeKeys = new Set(candidateNodes.map(node => xrayCache.getNodeKey(node)).filter(Boolean))
-      const acceptedSubscriptionSnapshots = subscriptionSnapshots.map(subscription => ({
-        ...subscription,
-        nodeKeys: (subscription.nodeKeys || []).filter(nodeKey => candidateNodeKeys.has(nodeKey)),
-      }))
-
-      if (!cacheSyncPlan.hasChanges) {
-        log.info(`Xray 节点缓存同步已跳过: 候选集未变化, selected=${cacheSyncPlan.selectedCount}, countryReady=${syncStats.countryReadyCount}`)
+      if (totalAddedCount === 0) {
+        log.info(`Xray 节点缓存同步已跳过: 候选集未变化, selected=${totalSupportedCandidateCount}, countryReady=${totalCountryReadyCount}, outdatedSkipped=${totalOutdatedSkippedCount}`)
       } else {
-        const touchedNodes = [
-          ...cacheSyncPlan.addedEntries.map(entry => entry.node),
-          ...cacheSyncPlan.removedNodes,
-        ]
-        const updated = xrayCache.writeCacheUpdates(cachePath, cacheSyncPlan.addedEntries, touchedNodes)
-        if (!updated) {
-          throw new Error('Xray SQLite cache is unavailable')
-        }
-        log.info(`Xray 节点缓存已同步: 新增 ${cacheSyncPlan.addedEntries.length} 个节点, 删除 ${cacheSyncPlan.removedNodes.length} 个节点, selected=${cacheSyncPlan.selectedCount}, countryReady=${syncStats.countryReadyCount} -> ${cachePath}`)
+        log.info(`Xray 节点缓存已同步: 新增 ${totalAddedCount} 个节点, 删除 0 个节点, selected=${totalSupportedCandidateCount}, countryReady=${totalCountryReadyCount}, outdatedSkipped=${totalOutdatedSkippedCount} -> ${cachePath}`)
       }
 
       if (!shouldSkipSubscriptionFetch) {
-        const subscriptionSyncStats = xrayCache.syncSubscriptions(cachePath, acceptedSubscriptionSnapshots, {
+        logStage2MemoryUsage(log, 'stage2-before-subscription-sync', {
+          snapshots: subscriptionSnapshotCount,
+          supportedNodes: totalSupportedCandidateCount,
+          refs: subscriptionSyncRefs,
+        })
+        const subscriptionSyncStats = xrayCache.syncSubscriptions(cachePath, [], {
           staleAfterDays: getSubscriptionStaleAfterDays(cfg),
+          currentSourceKeys: [...allSubscriptionSourceKeys],
         })
         if (subscriptionSyncStats) {
-          log.info(`Xray 订阅来源已同步: configured=${subscriptionSyncStats.configured}, unconfigured=${subscriptionSyncStats.unconfigured}, refs=${subscriptionSyncStats.refs}`)
+          log.info(`Xray 订阅来源已同步: configured=${subscriptionSnapshotCount}, unconfigured=${subscriptionSyncStats.unconfigured}, refs=${subscriptionSyncRefs}`)
         } else {
           log.warn('Xray 订阅来源同步失败')
         }
+        logStage2MemoryUsage(log, 'stage2-after-subscription-sync', {
+          snapshots: subscriptionSnapshotCount,
+        })
       }
 
       if (!writeLocalInputState(localInputStatePath, currentLocalInputState)) {
@@ -1510,22 +2335,33 @@ const Plugin = function (context) {
         return
       }
 
+      const stage3Migration = xrayCache.migrateHotColdSchema(cachePath, {
+        batchLimit: HOT_COLD_MIGRATION_STAGE3_BATCH_ROWS,
+        maxRows: HOT_COLD_MIGRATION_STAGE3_BATCH_ROWS,
+        lowFileCache: true,
+      })
+      maybeLogHotColdMigrationProgress(log, 'stage3', stage3Migration)
+      const stage3Retirement = maybeRetireLegacyNodesStorage(log, cachePath, 'stage3', stage3Migration)
+      maybeCompactRetiredSqliteCache(log, cachePath, 'stage3', stage3Retirement)
+
       const generation = ++refreshGeneration
       const roundStartedAt = Date.now()
       const cacheRefreshInterval = getCacheRefreshIntervalSeconds(cfg) * 1000
       const cacheBatchTimeout = getCacheBatchTimeoutSeconds(cfg) * 1000
 
-      const cachedEntryRowIds = xrayCache.readCacheRowIds(cachePath, { orderBy: 'refresh' })
-      const configuredBatchSize = normalizePositiveInt(cfg.cacheRefreshBatchSize, CACHE_REFRESH_BATCH_SIZE)
+      const dueBefore = xrayCache.formatLocalTimestamp(new Date(roundStartedAt))
       const batchSize = getCacheRefreshBatchSize(cfg)
-      const plannedBatchCount = cachedEntryRowIds.length === 0 ? 0 : Math.ceil(cachedEntryRowIds.length / batchSize)
+      const totalDueCandidateCount = xrayCache.countCacheEntries(cachePath, { dueBefore })
+      const maxDueRowIds = xrayCache.readCacheRowIds(cachePath, {
+        orderBy: 'rowid_desc',
+        dueBefore,
+        limit: 1,
+      })
+      const maxDueRowId = maxDueRowIds.length > 0 ? maxDueRowIds[0] : 0
+      const plannedBatchCount = totalDueCandidateCount === 0 ? 0 : Math.ceil(totalDueCandidateCount / batchSize)
 
-      if (configuredBatchSize !== batchSize) {
-        log.warn(`Xray 缓存周期探测批次大小过大，已自动收敛: requested=${configuredBatchSize}, effective=${batchSize}`)
-      }
-
-      if (cachedEntryRowIds.length === 0) {
-        log.warn('Xray 缓存周期探测: 缓存文件中没有可探测的节点')
+      if (totalDueCandidateCount === 0) {
+        log.info('Xray 缓存周期探测: 当前没有到期的可探测节点')
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
         writeStage3RoundSummary({
           xrayDir,
@@ -1535,6 +2371,9 @@ const Plugin = function (context) {
             endedAt: new Date().toISOString(),
             durationMs: Date.now() - roundStartedAt,
             candidateCount: 0,
+            dueCandidateCount: 0,
+            processedNodeCount: 0,
+            roundAvailableNodeCount: 0,
             batchSize,
             plannedBatchCount,
             processedBatchCount: 0,
@@ -1550,22 +2389,35 @@ const Plugin = function (context) {
         return
       }
 
-      log.info(`Xray 缓存周期探测候选: cache=${cachedEntryRowIds.length}, batchSize=${batchSize}`)
+      log.info(`Xray 缓存周期探测候选: due=${totalDueCandidateCount}, batchSize=${batchSize}, plannedBatchCount=${plannedBatchCount}`)
 
       let successBatchCount = 0
       let availableCount = 0
       let removedCount = 0
+      let explicitFailureCount = 0
+      let partialCoverageCount = 0
       let batchIndex = 0
       let processedCount = 0
+      let lastScannedRowId = 0
       const roundAvailableNodeKeys = new Set()
 
-      while (processedCount < cachedEntryRowIds.length) {
+      while (processedCount < totalDueCandidateCount) {
         if (generation !== refreshGeneration) {
           return
         }
 
-        const targetBatchRowIds = cachedEntryRowIds.slice(processedCount, processedCount + batchSize)
-        const targetBatch = xrayCache.readCacheEntriesByRowIds(cachePath, targetBatchRowIds)
+        const targetBatchRowIds = xrayCache.readCacheRowIds(cachePath, {
+          orderBy: 'rowid',
+          dueBefore,
+          afterRowId: lastScannedRowId,
+          maxRowId: maxDueRowId,
+          limit: batchSize,
+        })
+        if (targetBatchRowIds.length === 0) {
+          break
+        }
+        lastScannedRowId = targetBatchRowIds[targetBatchRowIds.length - 1]
+        const targetBatch = xrayCache.readCacheEntriesForRefreshByRowIds(cachePath, targetBatchRowIds)
         const candidateNodes = targetBatch.map(entry => entry.node)
         const nextBatchIndex = batchIndex + 1
 
@@ -1585,10 +2437,10 @@ const Plugin = function (context) {
           return
         }
 
-        log.info(`Xray 缓存周期探测批次: ${nextBatchIndex}, progress=${processedCount}/${cachedEntryRowIds.length}, batchSize=${candidateNodes.length}`)
+        log.info(`Xray 缓存周期探测批次: ${nextBatchIndex}, progress=${processedCount}/${totalDueCandidateCount}, batchSize=${candidateNodes.length}`)
 
         try {
-          const batchEntries = await probeNodesBatch({
+          const batchProbeResult = await probeNodesBatch({
             binPath,
             cfg,
             xrayDir,
@@ -1601,7 +2453,7 @@ const Plugin = function (context) {
             return
           }
 
-          const annotatedEntries = await annotateProbeEntries(batchEntries, {
+          const annotatedEntries = await annotateProbeEntries(batchProbeResult.entries, {
             binPath,
             xrayDir,
             existingEntries: targetBatch,
@@ -1611,7 +2463,7 @@ const Plugin = function (context) {
               unregisterController: unregisterTransientProbeController,
             },
           })
-          if (annotatedEntries.length === 0) {
+          if (annotatedEntries.length === 0 && batchProbeResult.observedFingerprints.length === 0) {
             const networkStatusAfterEmptyResult = await ensureLocalNetworkAvailabilityForRefresh({
               generation,
               batchIndex: nextBatchIndex,
@@ -1626,26 +2478,44 @@ const Plugin = function (context) {
             }
           }
 
-          if (!xrayCache.writeCacheUpdates(cachePath, annotatedEntries, candidateNodes)) {
-            const currentEntries = xrayCache.mergeCacheEntries(xrayCache.readCacheEntries(cachePath), annotatedEntries, candidateNodes)
-            xrayCache.writeCache(cachePath, currentEntries)
+          const batchWritePlan = applyStage3ProbeResults({
+            cachePath,
+            targetBatch,
+            annotatedEntries,
+            observedFingerprints: batchProbeResult.observedFingerprints,
+            cacheRefreshIntervalMs: cacheRefreshInterval,
+            now: Date.now(),
+          })
+
+          let stage3WriteSucceeded = xrayCache.writeCacheUpdates(cachePath, batchWritePlan.updatedEntries, candidateNodes)
+          if (!stage3WriteSucceeded) {
+            log.warn(`Xray 缓存周期探测批次写回失败，尝试低缓存模式重试: batch=${nextBatchIndex}, cachePath=${cachePath}`)
+            stage3WriteSucceeded = xrayCache.writeCacheUpdates(cachePath, batchWritePlan.updatedEntries, candidateNodes, {
+              lowFileCache: true,
+            })
           }
+          if (!stage3WriteSucceeded) {
+            log.error(`Xray 缓存周期探测批次写回失败，已跳过本批持久化以避免整库回退重读: batch=${nextBatchIndex}, cachePath=${cachePath}`)
+            continue
+          }
+
           batchIndex = nextBatchIndex
           processedCount += targetBatchRowIds.length
           successBatchCount += 1
-          availableCount += annotatedEntries.length
-          removedCount += Math.max(0, candidateNodes.length - annotatedEntries.length)
-          for (const entry of annotatedEntries) {
-            const nodeKey = xrayCache.getNodeKey(entry && entry.node)
+          availableCount += batchWritePlan.availableCount
+          removedCount += batchWritePlan.removedCount
+          explicitFailureCount += batchWritePlan.explicitFailureCount
+          partialCoverageCount += batchWritePlan.partialCoverageCount
+          for (const nodeKey of batchWritePlan.availableNodeKeys) {
             if (nodeKey) {
               roundAvailableNodeKeys.add(nodeKey)
             }
           }
 
-          log.info(`Xray 缓存周期探测批次已写回: ${batchIndex}, available=${annotatedEntries.length}, cache=${cachedEntryRowIds.length} -> ${cachePath}`)
+          log.info(`Xray 缓存周期探测批次已写回: ${batchIndex}, available=${batchWritePlan.availableCount}, explicitFailed=${batchWritePlan.explicitFailureCount}, removed=${batchWritePlan.removedCount}, partialCoverage=${batchWritePlan.partialCoverageCount}, progress=${processedCount}/${totalDueCandidateCount} -> ${cachePath}`)
 
-          if (annotatedEntries.length === 0) {
-            log.warn(`Xray 缓存周期探测: 批次 ${batchIndex} 没有可用节点`)
+          if (batchWritePlan.availableCount === 0 && batchWritePlan.explicitFailureCount > 0) {
+            log.warn(`Xray 缓存周期探测: 批次 ${batchIndex} 没有可用节点，已按失败回退策略处理`)
           }
         } catch (error) {
           if (generation !== refreshGeneration) {
@@ -1686,14 +2556,19 @@ const Plugin = function (context) {
             startedAt: new Date(roundStartedAt).toISOString(),
             endedAt: new Date().toISOString(),
             durationMs: Date.now() - roundStartedAt,
-            candidateCount: cachedEntryRowIds.length,
+            candidateCount: processedCount,
+            dueCandidateCount: totalDueCandidateCount,
+            processedNodeCount: processedCount,
             batchSize,
             plannedBatchCount,
             processedBatchCount: batchIndex,
             successBatchCount,
             failedBatchCount: batchIndex - successBatchCount,
             availableNodeCount: availableCount,
+            roundAvailableNodeCount: availableCount,
             removedNodeCount: 0,
+            explicitFailureCount,
+            partialCoverageCount,
             nextRefreshAt,
             subscriptions: xrayCache.readSubscriptionAvailabilitySummary(cachePath).filter(subscription => subscription.configured),
           },
@@ -1702,10 +2577,10 @@ const Plugin = function (context) {
         return
       }
 
-      log.info(`Xray 缓存文件已刷新: 全量检测 ${cachedEntryRowIds.length} 个节点，成功批次 ${successBatchCount}/${batchIndex}，保留 ${availableCount} 个可用节点 -> ${cachePath}`)
+      log.info(`Xray 缓存文件已刷新: 本轮检测 ${processedCount}/${totalDueCandidateCount} 个到期节点，成功批次 ${successBatchCount}/${batchIndex}，本轮探测成功 ${availableCount} 个，显式失败 ${explicitFailureCount} 个，删除 ${removedCount} 个 -> ${cachePath}`)
 
       if (generation === refreshGeneration) {
-        const roundStatus = successBatchCount === plannedBatchCount ? 'completed' : 'partial'
+        const roundStatus = processedCount >= totalDueCandidateCount && successBatchCount === plannedBatchCount ? 'completed' : 'partial'
         const availabilityResult = roundStatus === 'completed'
           ? xrayCache.updateSubscriptionAvailability(cachePath, {
               staleAfterDays: getSubscriptionStaleAfterDays(cfg),
@@ -1724,14 +2599,19 @@ const Plugin = function (context) {
             startedAt: new Date(roundStartedAt).toISOString(),
             endedAt: new Date().toISOString(),
             durationMs: Date.now() - roundStartedAt,
-            candidateCount: cachedEntryRowIds.length,
+            candidateCount: processedCount,
+            dueCandidateCount: totalDueCandidateCount,
+            processedNodeCount: processedCount,
             batchSize,
             plannedBatchCount,
             processedBatchCount: batchIndex,
             successBatchCount,
             failedBatchCount: batchIndex - successBatchCount,
             availableNodeCount: availableCount,
+            roundAvailableNodeCount: availableCount,
             removedNodeCount: removedCount,
+            explicitFailureCount,
+            partialCoverageCount,
             nextRefreshAt,
             subscriptions: (availabilityResult ? availabilityResult.summary : xrayCache.readSubscriptionAvailabilitySummary(cachePath, { availableNodeKeys: [...roundAvailableNodeKeys] }))
               .filter(subscription => subscription.configured)
@@ -1804,5 +2684,10 @@ module.exports = {
   plugin: Plugin,
   __test: {
     ...testHelpers,
+    applyStage3ProbeResults,
+    classifyRefreshPriority,
+    getFailureBackoffMs,
+    selectStage3RefreshCandidates,
+    toLocalTimestampAfterMs,
   },
 }
