@@ -1,6 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
+const zlib = require('node:zlib')
 const parser = require('./parser')
 
 let betterSqlite3 = null
@@ -18,9 +19,14 @@ const SQLITE_WAL_AUTO_CHECKPOINT_PAGES = 4096
 const SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024
 const CACHE_META_LEGACY_NODES_RETIRED = 'legacy_nodes_retired'
 const CACHE_META_POST_RETIRE_COMPACTED = 'post_retire_compacted'
+const CACHE_META_COMPACT_V2_STORAGE_RETIRED = 'compact_v2_storage_retired'
+const CACHE_META_COMPACT_V2_MIGRATION_CURSOR = 'compact_v2_migration_cursor'
+const COMPACT_CACHE_V2_SCHEMA_VERSION = 1
+const COMPACT_CACHE_V2_HASH_BYTES = 16
 
 let lastIncrementalVacuumAt = 0
 const reportedSqliteCacheErrors = new Set()
+let compactV2IdentityFactoryForTest = null
 
 function loadBetterSqlite3 () {
   if (betterSqlite3LoadAttempted) {
@@ -111,6 +117,26 @@ function getStage2SeenDbPath (cacheFilePath) {
   return sqlitePath ? `${sqlitePath}.stage2-seen.sqlite` : ''
 }
 
+function getStage2DiagnosticPaths (cacheFilePath) {
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  const stage2SeenPath = getStage2SeenDbPath(cacheFilePath)
+  const paths = []
+  const addSqliteFamily = (basePath, label) => {
+    if (!basePath) {
+      return
+    }
+    paths.push({ label, path: basePath })
+    paths.push({ label: `${label}-wal`, path: `${basePath}-wal` })
+    paths.push({ label: `${label}-shm`, path: `${basePath}-shm` })
+    paths.push({ label: `${label}-journal`, path: `${basePath}-journal` })
+  }
+
+  addSqliteFamily(sqlitePath, 'cache')
+  addSqliteFamily(stage2SeenPath, 'stage2-seen')
+
+  return paths
+}
+
 function buildNodesTableSchemaSql () {
   return `
     CREATE TABLE IF NOT EXISTS nodes (
@@ -157,6 +183,76 @@ function buildNodePayloadTableSchemaSql () {
   `
 }
 
+function buildCompactNodeTableSchemaSql () {
+  return `
+    CREATE TABLE IF NOT EXISTS nodes_v2 (
+      node_id INTEGER PRIMARY KEY,
+      fingerprint_hash16 BLOB NOT NULL,
+      node_key_hash16 BLOB NOT NULL,
+      collision_suffix INTEGER NOT NULL DEFAULT 0,
+      node_json_compressed BLOB NOT NULL,
+      UNIQUE(fingerprint_hash16, collision_suffix),
+      UNIQUE(node_key_hash16, collision_suffix)
+    );
+  `
+}
+
+function buildCompactNodeIdentityTableSchemaSql () {
+  return `
+    CREATE TABLE IF NOT EXISTS node_identity_v2 (
+      node_id INTEGER PRIMARY KEY,
+      fingerprint_sha256 BLOB UNIQUE NOT NULL,
+      node_key_sha256 BLOB UNIQUE NOT NULL
+    );
+  `
+}
+
+function buildCompactNodeRuntimeTableSchemaSql () {
+  return `
+    CREATE TABLE IF NOT EXISTS node_runtime_v2 (
+      node_id INTEGER PRIMARY KEY,
+      stable INTEGER NOT NULL DEFAULT 0,
+      delay INTEGER,
+      country TEXT,
+      owner TEXT,
+      source TEXT,
+      updated_at INTEGER,
+      next_check_at INTEGER,
+      failure_streak INTEGER NOT NULL DEFAULT 0,
+      tag TEXT
+    );
+  `
+}
+
+function buildCompactSubscriptionTableSchemaSql () {
+  return `
+    CREATE TABLE IF NOT EXISTS subscriptions_v2 (
+      subscription_id INTEGER PRIMARY KEY,
+      source_key TEXT UNIQUE NOT NULL,
+      display_label TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      configured INTEGER NOT NULL DEFAULT 1,
+      last_seen_stage2_at INTEGER,
+      last_available_at INTEGER,
+      zero_available_since INTEGER,
+      stale_after_days INTEGER NOT NULL DEFAULT 30,
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+  `
+}
+
+function buildCompactSubscriptionRefsTableSchemaSql () {
+  return `
+    CREATE TABLE IF NOT EXISTS subscription_node_refs_v2 (
+      subscription_id INTEGER NOT NULL,
+      node_id INTEGER NOT NULL,
+      last_seen_stage2_at INTEGER,
+      PRIMARY KEY(subscription_id, node_id)
+    ) WITHOUT ROWID;
+  `
+}
+
 function buildOutdatedTableSchemaSql () {
   return `
     CREATE TABLE IF NOT EXISTS outdated (
@@ -172,6 +268,81 @@ function createNodeKey (fingerprint) {
     return ''
   }
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 32)
+}
+
+function createSha256Digest (value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest()
+}
+
+function createHashPrefixDigest (value, bytes = COMPACT_CACHE_V2_HASH_BYTES) {
+  return createSha256Digest(value).subarray(0, bytes)
+}
+
+function createCompactV2Identity (canonicalFingerprint) {
+  const fingerprint = String(canonicalFingerprint || '')
+  if (!fingerprint) {
+    return null
+  }
+  if (typeof compactV2IdentityFactoryForTest === 'function') {
+    const identity = compactV2IdentityFactoryForTest(fingerprint)
+    if (identity) {
+      return identity
+    }
+  }
+  const nodeKey = createNodeKey(fingerprint)
+  if (!nodeKey) {
+    return null
+  }
+  const fingerprintSha256 = createSha256Digest(fingerprint)
+  const nodeKeySha256 = createSha256Digest(nodeKey)
+  return {
+    nodeKey,
+    fingerprintSha256,
+    nodeKeySha256,
+    fingerprintHash16: fingerprintSha256.subarray(0, COMPACT_CACHE_V2_HASH_BYTES),
+    nodeKeyHash16: nodeKeySha256.subarray(0, COMPACT_CACHE_V2_HASH_BYTES),
+  }
+}
+
+function setCompactV2IdentityFactoryForTest (factory) {
+  compactV2IdentityFactoryForTest = typeof factory === 'function' ? factory : null
+}
+
+function createCompactV2IdentityFromSqliteFingerprint (sqliteFingerprint) {
+  const value = String(sqliteFingerprint || '')
+  if (!value) {
+    return null
+  }
+  if (!value.startsWith('sha256:')) {
+    return createCompactV2Identity(value)
+  }
+  const hex = value.slice('sha256:'.length)
+  if (!/^[0-9a-f]{64}$/i.test(hex)) {
+    return null
+  }
+  const fingerprintSha256 = Buffer.from(hex, 'hex')
+  return {
+    fingerprintSha256,
+    fingerprintHash16: fingerprintSha256.subarray(0, COMPACT_CACHE_V2_HASH_BYTES),
+  }
+}
+
+function buffersEqual (left, right) {
+  if (!Buffer.isBuffer(left) || !Buffer.isBuffer(right)) {
+    return false
+  }
+  return left.length === right.length && crypto.timingSafeEqual(left, right)
+}
+
+function compressCompactNodeJson (nodeJson) {
+  return zlib.deflateRawSync(Buffer.from(String(nodeJson || ''), 'utf8'), { level: 1 })
+}
+
+function decompressCompactNodeJson (compressed) {
+  if (!compressed) {
+    return ''
+  }
+  return zlib.inflateRawSync(compressed).toString('utf8')
 }
 
 function createCompactFingerprint (canonicalFingerprint) {
@@ -426,6 +597,14 @@ function markPostRetireCompacted (db) {
   return setCacheMetaValue(db, CACHE_META_POST_RETIRE_COMPACTED, '1')
 }
 
+function isCompactV2StorageRetired (db) {
+  return getCacheMetaValue(db, CACHE_META_COMPACT_V2_STORAGE_RETIRED) === '1'
+}
+
+function markCompactV2StorageRetired (db) {
+  return setCacheMetaValue(db, CACHE_META_COMPACT_V2_STORAGE_RETIRED, '1')
+}
+
 function createLegacyNodesSchema (db) {
   db.exec(buildNodesTableSchemaSql())
   const addedNodeKeyColumn = ensureSqliteColumn(db, 'nodes', 'node_key', 'TEXT')
@@ -456,6 +635,21 @@ function createHotColdSchema (db) {
     CREATE INDEX IF NOT EXISTS idx_node_runtime_refresh ON node_runtime(updated_at ASC, delay ASC);
     CREATE INDEX IF NOT EXISTS idx_node_runtime_next_check ON node_runtime(next_check_at ASC, stable DESC, delay ASC, updated_at ASC);
   `)
+}
+
+function createCompactV2Schema (db) {
+  db.exec(buildCompactSubscriptionTableSchemaSql())
+  db.exec(buildCompactNodeTableSchemaSql())
+  db.exec(buildCompactNodeIdentityTableSchemaSql())
+  db.exec(buildCompactNodeRuntimeTableSchemaSql())
+  db.exec(buildCompactSubscriptionRefsTableSchemaSql())
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_runtime_next_check_v2
+    ON node_runtime_v2(next_check_at, node_id)
+    WHERE next_check_at IS NOT NULL;
+  `)
+  setCacheMetaValue(db, 'compact_cache_v2_schema_version', String(COMPACT_CACHE_V2_SCHEMA_VERSION))
+  setCacheMetaValue(db, 'compact_cache_v2_hash_bytes', String(COMPACT_CACHE_V2_HASH_BYTES))
 }
 
 function migrateNodesToHotColdSchema (db, options = {}) {
@@ -513,6 +707,186 @@ function migrateNodesToHotColdSchema (db, options = {}) {
   return rows.length
 }
 
+function migrateNodeRowToCompactV2 (db, row) {
+  if (!db || !row || !row.node_json) {
+    return false
+  }
+
+  let node
+  try {
+    node = expandCompactCacheNodeFromStorage(JSON.parse(row.node_json))
+  } catch {
+    return false
+  }
+
+  const entry = {
+    node,
+    stable: row.stable === 1 || row.stable === true,
+    delay: row.delay,
+    country: row.country,
+    owner: row.owner,
+    source: row.source,
+    updatedAt: row.updated_at,
+    nextCheckAt: row.next_check_at,
+    failureStreak: row.failure_streak,
+    tag: row.tag,
+  }
+  const compactEntry = serializeCacheEntryForCompactV2(entry)
+  if (!compactEntry) {
+    return false
+  }
+  upsertCompactV2CacheEntry(db, compactEntry)
+  return true
+}
+
+function migrateNodesToCompactV2Schema (db, options = {}) {
+  if (!db) {
+    return { migratedRows: 0, lastNodeKey: '' }
+  }
+
+  const batchLimit = Math.max(1, Number(options.limit) || 5000)
+  const lastNodeKey = String(options.afterNodeKey || getCacheMetaValue(db, CACHE_META_COMPACT_V2_MIGRATION_CURSOR) || '')
+  let rows = []
+
+  if (hasTable(db, 'node_runtime') && hasTable(db, 'node_payload')) {
+    rows = db.prepare(`
+      SELECT r.fingerprint, r.node_key, p.node_json, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+      FROM node_runtime r
+      LEFT JOIN node_payload p ON p.node_key = r.node_key
+      WHERE p.node_json IS NOT NULL AND r.node_key > ?
+      ORDER BY r.node_key ASC
+      LIMIT ?
+    `).all(lastNodeKey, batchLimit)
+  } else if (hasTable(db, 'nodes')) {
+    rows = db.prepare(`
+      SELECT fingerprint, node_key, node_json, stable, delay, country, owner, source, updated_at, next_check_at, failure_streak, tag
+      FROM nodes
+      WHERE node_key > ?
+      ORDER BY node_key ASC
+      LIMIT ?
+    `).all(lastNodeKey, batchLimit)
+  }
+
+  if (rows.length === 0) {
+    return { migratedRows: 0, lastNodeKey }
+  }
+
+  let migrated = 0
+  const apply = db.transaction((items) => {
+    for (const row of items) {
+      if (migrateNodeRowToCompactV2(db, row)) {
+        migrated += 1
+      }
+    }
+  })
+  apply(rows)
+  const nextCursor = String(rows[rows.length - 1].node_key || lastNodeKey)
+  setCacheMetaValue(db, CACHE_META_COMPACT_V2_MIGRATION_CURSOR, nextCursor)
+  return { migratedRows: migrated, lastNodeKey: nextCursor }
+}
+
+function getLegacyNodeCountForCompactV2Migration (db) {
+  if (!db) {
+    return 0
+  }
+  if (hasTable(db, 'node_runtime') && hasTable(db, 'node_payload')) {
+    const row = db.prepare(`
+      SELECT COUNT(1) AS count
+      FROM node_runtime r
+      JOIN node_payload p ON p.node_key = r.node_key
+    `).get()
+    return Number(row && row.count) || 0
+  }
+  if (hasTable(db, 'nodes')) {
+    const row = db.prepare('SELECT COUNT(1) AS count FROM nodes').get()
+    return Number(row && row.count) || 0
+  }
+  return 0
+}
+
+function getCompactV2NodeCount (db) {
+  if (!db || !hasTable(db, 'node_runtime_v2')) {
+    return 0
+  }
+  const row = db.prepare('SELECT COUNT(1) AS count FROM node_runtime_v2').get()
+  return Number(row && row.count) || 0
+}
+
+function hasPendingCompactV2Migration (db) {
+  const legacyCount = getLegacyNodeCountForCompactV2Migration(db)
+  if (legacyCount <= 0) {
+    return false
+  }
+  return getCompactV2NodeCount(db) < legacyCount
+}
+
+function migrateSubscriptionsToCompactV2Schema (db) {
+  if (!db || !hasTable(db, 'subscriptions') || !hasTable(db, 'subscription_node_refs')) {
+    return { subscriptions: 0, refs: 0 }
+  }
+
+  const subscriptionRows = db.prepare(`
+    SELECT source_key, display_label, sort_order, configured, last_seen_stage2_at, last_available_at, zero_available_since, stale_after_days, created_at, updated_at
+    FROM subscriptions
+  `).all()
+  const refRows = db.prepare('SELECT subscription_source_key, node_key, last_seen_stage2_at FROM subscription_node_refs').all()
+  const upsertSubscription = db.prepare(`
+    INSERT INTO subscriptions_v2 (
+      source_key, display_label, sort_order, configured,
+      last_seen_stage2_at, last_available_at, zero_available_since,
+      stale_after_days, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(source_key) DO UPDATE SET
+      display_label = excluded.display_label,
+      sort_order = excluded.sort_order,
+      configured = excluded.configured,
+      last_seen_stage2_at = excluded.last_seen_stage2_at,
+      last_available_at = excluded.last_available_at,
+      zero_available_since = excluded.zero_available_since,
+      stale_after_days = excluded.stale_after_days,
+      updated_at = excluded.updated_at
+  `)
+  const upsertRef = db.prepare(`
+    INSERT INTO subscription_node_refs_v2 (subscription_id, node_id, last_seen_stage2_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(subscription_id, node_id) DO UPDATE SET
+      last_seen_stage2_at = excluded.last_seen_stage2_at
+  `)
+
+  let migratedRefs = 0
+  const apply = db.transaction(() => {
+    for (const row of subscriptionRows) {
+      upsertSubscription.run(
+        row.source_key,
+        row.display_label,
+        Number(row.sort_order) || 0,
+        row.configured === 0 ? 0 : 1,
+        toEpochSeconds(row.last_seen_stage2_at),
+        toEpochSeconds(row.last_available_at),
+        toEpochSeconds(row.zero_available_since),
+        Number(row.stale_after_days) || 30,
+        toEpochSeconds(row.created_at),
+        toEpochSeconds(row.updated_at)
+      )
+    }
+
+    for (const row of refRows) {
+      const subscriptionId = getCompactV2SubscriptionId(db, row.subscription_source_key)
+      const nodeId = getCompactV2NodeIdByNodeKey(db, row.node_key)
+      if (subscriptionId && nodeId) {
+        upsertRef.run(subscriptionId, nodeId, toEpochSeconds(row.last_seen_stage2_at))
+        migratedRefs += 1
+      }
+    }
+  })
+  apply()
+
+  return {
+    subscriptions: subscriptionRows.length,
+    refs: migratedRefs,
+  }
+}
+
 function hasPendingHotColdMigration (db) {
   if (!db) {
     return false
@@ -566,10 +940,11 @@ function migrateHotColdSchema (cacheFilePath, options = {}) {
       migratedRows,
       pending: hasPendingHotColdMigration(db),
     }
-  } catch {
+  } catch (error) {
     return {
       migratedRows: 0,
       pending: true,
+      error: error && error.message ? error.message : String(error),
     }
   } finally {
     if (db) {
@@ -599,6 +974,18 @@ function hasHotColdData (db) {
   }
 }
 
+function hasCompactV2Data (db) {
+  if (!db || !hasTable(db, 'nodes_v2') || !hasTable(db, 'node_runtime_v2')) {
+    return false
+  }
+  try {
+    const row = db.prepare('SELECT 1 AS ok FROM node_runtime_v2 LIMIT 1').get()
+    return Boolean(row && row.ok === 1)
+  } catch {
+    return false
+  }
+}
+
 function shouldMaintainLegacyNodes (db) {
   if (!db) {
     return false
@@ -613,11 +1000,15 @@ function shouldMaintainLegacyNodes (db) {
 
 function createSqliteSchema (db) {
   createCacheMetaSchema(db)
-  if (!isLegacyNodesRetired(db)) {
+  createCompactV2Schema(db)
+  const compactV2StorageRetired = isCompactV2StorageRetired(db)
+  if (!compactV2StorageRetired && !isLegacyNodesRetired(db)) {
     createLegacyNodesSchema(db)
   }
-  createHotColdSchema(db)
-  createSubscriptionSchema(db)
+  if (!compactV2StorageRetired) {
+    createHotColdSchema(db)
+    createSubscriptionSchema(db)
+  }
   createOutdatedSchema(db)
 }
 
@@ -752,6 +1143,108 @@ function readSqliteCacheEntriesFromHotCold (db, options = {}) {
   }
 
   return db.prepare(sql).all(...queryParams)
+}
+
+function readCompactV2CacheRows (db, options = {}) {
+  const { clauses, params } = buildCompactV2FilterClauses(options)
+  const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+  const limit = normalizeSqliteQueryLimit(options.limit)
+  const offset = normalizeSqliteQueryOffset(options.offset)
+  let sql = `
+    SELECT r.node_id, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+    FROM node_runtime_v2 r
+    JOIN nodes_v2 n ON n.node_id = r.node_id
+    ${whereClause}
+    ORDER BY ${getCompactV2OrderByClause(options.orderBy).replace(/\bupdated_at\b/g, 'r.updated_at').replace(/\bnext_check_at\b/g, 'r.next_check_at').replace(/\bstable\b/g, 'r.stable').replace(/\bdelay\b/g, 'r.delay').replace(/\bcountry\b/g, 'r.country').replace(/\bnode_id\b/g, 'r.node_id')}
+  `
+  const queryParams = [...params]
+
+  if (limit != null) {
+    sql += '\n      LIMIT ?'
+    queryParams.push(limit)
+  }
+  if (offset > 0) {
+    if (limit == null) {
+      sql += '\n      LIMIT -1'
+    }
+    sql += '\n      OFFSET ?'
+    queryParams.push(offset)
+  }
+
+  return db.prepare(sql).all(...queryParams)
+}
+
+function readCompactV2CacheEntries (db, options = {}) {
+  return readCompactV2CacheRows(db, options).map(deserializeCompactV2CacheEntry).filter(Boolean)
+}
+
+function readCompactV2CacheRowIds (db, options = {}) {
+  const { clauses, params } = buildCompactV2FilterClauses(options)
+  const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+  const limit = normalizeSqliteQueryLimit(options.limit)
+  const offset = normalizeSqliteQueryOffset(options.offset)
+  let sql = `
+    SELECT r.node_id AS rowid
+    FROM node_runtime_v2 r
+    ${whereClause}
+    ORDER BY ${getCompactV2OrderByClause(options.orderBy).replace(/\bupdated_at\b/g, 'r.updated_at').replace(/\bnext_check_at\b/g, 'r.next_check_at').replace(/\bstable\b/g, 'r.stable').replace(/\bdelay\b/g, 'r.delay').replace(/\bcountry\b/g, 'r.country').replace(/\bnode_id\b/g, 'r.node_id')}
+  `
+  const queryParams = [...params]
+
+  if (limit != null) {
+    sql += '\n      LIMIT ?'
+    queryParams.push(limit)
+  }
+  if (offset > 0) {
+    if (limit == null) {
+      sql += '\n      LIMIT -1'
+    }
+    sql += '\n      OFFSET ?'
+    queryParams.push(offset)
+  }
+
+  return db.prepare(sql).all(...queryParams)
+}
+
+function readCompactV2CacheEntriesByRowIds (db, rowIds) {
+  if (!Array.isArray(rowIds) || rowIds.length === 0) {
+    return []
+  }
+
+  const uniqueRowIds = [...new Set(rowIds
+    .map(rowId => Number(rowId))
+    .filter(rowId => Number.isInteger(rowId) && rowId > 0))]
+  if (uniqueRowIds.length === 0) {
+    return []
+  }
+
+  const placeholders = uniqueRowIds.map(() => '?').join(', ')
+  const rows = db.prepare(`
+    SELECT r.node_id AS rowid, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+    FROM node_runtime_v2 r
+    JOIN nodes_v2 n ON n.node_id = r.node_id
+    WHERE r.node_id IN (${placeholders})
+  `).all(...uniqueRowIds)
+
+  const rowMap = new Map()
+  for (const row of rows) {
+    const entry = deserializeCompactV2CacheEntry(row)
+    if (entry) {
+      rowMap.set(Number(row.rowid), entry)
+    }
+  }
+
+  return rowIds
+    .map(rowId => rowMap.get(Number(rowId)))
+    .filter(Boolean)
+}
+
+function countCompactV2CacheEntries (db, filters = {}) {
+  const { clauses, params } = buildCompactV2FilterClauses(filters)
+  const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+  const row = db.prepare(`SELECT COUNT(1) AS count FROM node_runtime_v2 ${whereClause}`).get(...params)
+  const count = Number(row && row.count)
+  return Number.isFinite(count) ? count : 0
 }
 
 function readSqliteCacheRowIdsFromHotCold (db, options = {}) {
@@ -897,6 +1390,10 @@ function readSqliteCacheEntriesForRefreshByRowIds (cacheFilePath, rowIds) {
       return []
     }
 
+    if (hasCompactV2Data(db)) {
+      return readCompactV2CacheEntriesByRowIds(db, rowIds)
+    }
+
     if (hasHotColdData(db)) {
       const runtimeRows = readSqliteCacheRuntimeRowsByRowIdsFromHotCold(db, rowIds)
       return hydrateHotColdRuntimeRowsWithPayload(db, runtimeRows, rowIds)
@@ -923,6 +1420,13 @@ function readSqliteCacheEntriesForStartup (cacheFilePath, options = {}) {
     db = openSqliteCache(cacheFilePath)
     if (!db) {
       return []
+    }
+
+    if (hasCompactV2Data(db)) {
+      const rowIds = readCompactV2CacheRowIds(db, options)
+        .map(row => Number(row && row.rowid))
+        .filter(rowId => Number.isInteger(rowId) && rowId > 0)
+      return readCompactV2CacheEntriesByRowIds(db, rowIds)
     }
 
     if (hasHotColdData(db)) {
@@ -1123,6 +1627,146 @@ function compactRetiredSqliteCache (cacheFilePath, options = {}) {
   }
 }
 
+function migrateCompactV2Storage (cacheFilePath, options = {}) {
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: options.lowFileCache === true })
+    if (!db) {
+      return {
+        migratedRows: 0,
+        pending: true,
+      }
+    }
+
+    if (isCompactV2StorageRetired(db)) {
+      return {
+        migratedRows: 0,
+        alreadyRetired: true,
+        pending: false,
+      }
+    }
+
+    const batchLimit = Math.max(1, Number(options.batchLimit) || 5000)
+    const maxRows = Math.max(batchLimit, Number(options.maxRows) || batchLimit)
+    let migratedRows = 0
+    let lastNodeKey = String(getCacheMetaValue(db, CACHE_META_COMPACT_V2_MIGRATION_CURSOR) || '')
+
+    while (migratedRows < maxRows) {
+      const remaining = maxRows - migratedRows
+      const migrated = migrateNodesToCompactV2Schema(db, {
+        limit: Math.min(batchLimit, remaining),
+        afterNodeKey: lastNodeKey,
+      })
+      if (!migrated || migrated.migratedRows <= 0) {
+        break
+      }
+      migratedRows += migrated.migratedRows
+      lastNodeKey = migrated.lastNodeKey || lastNodeKey
+    }
+
+    const pending = hasPendingCompactV2Migration(db)
+    const migratedSubscriptions = pending ? { subscriptions: 0, refs: 0 } : migrateSubscriptionsToCompactV2Schema(db)
+
+    return {
+      migratedRows,
+      pending,
+      compactV2Count: getCompactV2NodeCount(db),
+      legacyCount: getLegacyNodeCountForCompactV2Migration(db),
+      subscriptions: migratedSubscriptions.subscriptions,
+      refs: migratedSubscriptions.refs,
+    }
+  } catch {
+    return {
+      migratedRows: 0,
+      pending: true,
+    }
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
+function retireCompactV2LegacyStorage (cacheFilePath, options = {}) {
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: options.lowFileCache === true })
+    if (!db) {
+      return {
+        retired: false,
+        pending: true,
+      }
+    }
+
+    const legacyStorageTableCount = () => Number(db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name IN ('nodes', 'node_runtime', 'node_payload', 'subscriptions', 'subscription_node_refs')
+    `).get().count) || 0
+
+    if (isCompactV2StorageRetired(db) && legacyStorageTableCount() === 0) {
+      return {
+        retired: true,
+        alreadyRetired: true,
+        pending: false,
+      }
+    }
+
+    if (hasPendingCompactV2Migration(db)) {
+      return {
+        retired: false,
+        pending: true,
+        compactV2Count: getCompactV2NodeCount(db),
+        legacyCount: getLegacyNodeCountForCompactV2Migration(db),
+      }
+    }
+
+    const apply = db.transaction(() => {
+      db.exec('DROP INDEX IF EXISTS idx_nodes_node_key')
+      db.exec('DROP INDEX IF EXISTS idx_nodes_sort')
+      db.exec('DROP INDEX IF EXISTS idx_nodes_country_sort')
+      db.exec('DROP INDEX IF EXISTS idx_nodes_refresh')
+      db.exec('DROP INDEX IF EXISTS idx_nodes_next_check')
+      db.exec('DROP TABLE IF EXISTS nodes')
+
+      db.exec('DROP INDEX IF EXISTS idx_node_runtime_node_key')
+      db.exec('DROP INDEX IF EXISTS idx_node_runtime_sort')
+      db.exec('DROP INDEX IF EXISTS idx_node_runtime_country_sort')
+      db.exec('DROP INDEX IF EXISTS idx_node_runtime_refresh')
+      db.exec('DROP INDEX IF EXISTS idx_node_runtime_next_check')
+      db.exec('DROP TABLE IF EXISTS node_runtime')
+      db.exec('DROP TABLE IF EXISTS node_payload')
+
+      db.exec('DROP INDEX IF EXISTS idx_subscription_node_refs_node_key')
+      db.exec('DROP INDEX IF EXISTS idx_subscriptions_configured_sort')
+      db.exec('DROP TABLE IF EXISTS subscription_node_refs')
+      db.exec('DROP TABLE IF EXISTS subscriptions')
+
+      markLegacyNodesRetired(db)
+      markCompactV2StorageRetired(db)
+      setCacheMetaValue(db, CACHE_META_COMPACT_V2_MIGRATION_CURSOR, '')
+    })
+    apply()
+    maybeRunIncrementalVacuum(db)
+
+    return {
+      retired: true,
+      alreadyRetired: false,
+      pending: false,
+    }
+  } catch {
+    return {
+      retired: false,
+      pending: true,
+    }
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
 function normalizeMetadataLabel (value) {
   return String(value || '').trim().toUpperCase()
 }
@@ -1185,6 +1829,38 @@ function formatLocalTimestamp (value = new Date()) {
   const offsetRemainder = pad(offsetMinutes % 60)
 
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, '0')}${timezoneSign}${offsetHours}:${offsetRemainder}`
+}
+
+function toEpochSeconds (value) {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 100000000000 ? Math.floor(value / 1000) : Math.floor(value)
+  }
+  const text = String(value).trim()
+  if (!text) {
+    return null
+  }
+  if (/^\d+$/.test(text)) {
+    const n = Number(text)
+    if (Number.isFinite(n)) {
+      return n > 100000000000 ? Math.floor(n / 1000) : Math.floor(n)
+    }
+  }
+  const ms = Date.parse(text)
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null
+}
+
+function formatEpochSecondsAsLocalTimestamp (value) {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds)) {
+    return null
+  }
+  return formatLocalTimestamp(new Date(seconds * 1000))
 }
 
 function normalizeFailureStreak (value) {
@@ -1359,6 +2035,175 @@ function serializeCacheEntryForSqlite (entry) {
   }
 }
 
+function serializeCacheEntryForCompactV2 (entry) {
+  const serialized = serializeCacheEntryForSqlite(entry)
+  if (!serialized || !serialized.legacyFingerprint) {
+    return null
+  }
+  const identity = createCompactV2Identity(serialized.legacyFingerprint)
+  if (!identity) {
+    return null
+  }
+  return {
+    ...serialized,
+    ...identity,
+    nodeJsonCompressed: compressCompactNodeJson(serialized.nodeJson),
+    updatedAtEpoch: toEpochSeconds(serialized.updatedAt),
+    nextCheckAtEpoch: toEpochSeconds(serialized.nextCheckAt),
+  }
+}
+
+function allocateCompactV2CollisionSuffix (db, identity) {
+  const rows = db.prepare(`
+    SELECT n.collision_suffix, i.fingerprint_sha256, i.node_key_sha256
+    FROM nodes_v2 n
+    JOIN node_identity_v2 i ON i.node_id = n.node_id
+    WHERE n.fingerprint_hash16 = ? OR n.node_key_hash16 = ?
+    ORDER BY n.collision_suffix ASC
+  `).all(identity.fingerprintHash16, identity.nodeKeyHash16)
+
+  const used = new Set()
+  for (const row of rows) {
+    used.add(Number(row.collision_suffix) || 0)
+    if (buffersEqual(row.fingerprint_sha256, identity.fingerprintSha256) || buffersEqual(row.node_key_sha256, identity.nodeKeySha256)) {
+      return Number(row.collision_suffix) || 0
+    }
+  }
+
+  let suffix = 0
+  while (used.has(suffix)) {
+    suffix += 1
+  }
+  if (suffix > 0) {
+    console.warn(`[xray-cache-v2] hash16 collision detected; assigned collision_suffix=${suffix}`)
+  }
+  return suffix
+}
+
+function upsertCompactV2CacheEntry (db, compactEntry) {
+  if (!db || !compactEntry) {
+    return null
+  }
+
+  const existing = db.prepare(`
+    SELECT node_id
+    FROM node_identity_v2
+    WHERE fingerprint_sha256 = ? OR node_key_sha256 = ?
+    LIMIT 1
+  `).get(compactEntry.fingerprintSha256, compactEntry.nodeKeySha256)
+
+  let nodeId = existing && existing.node_id
+  let collisionSuffix = 0
+  if (!nodeId) {
+    collisionSuffix = allocateCompactV2CollisionSuffix(db, compactEntry)
+    const result = db.prepare(`
+      INSERT INTO nodes_v2 (fingerprint_hash16, node_key_hash16, collision_suffix, node_json_compressed)
+      VALUES (?, ?, ?, ?)
+    `).run(compactEntry.fingerprintHash16, compactEntry.nodeKeyHash16, collisionSuffix, compactEntry.nodeJsonCompressed)
+    nodeId = result.lastInsertRowid
+    db.prepare(`
+      INSERT INTO node_identity_v2 (node_id, fingerprint_sha256, node_key_sha256)
+      VALUES (?, ?, ?)
+    `).run(nodeId, compactEntry.fingerprintSha256, compactEntry.nodeKeySha256)
+  } else {
+    const row = db.prepare('SELECT collision_suffix FROM nodes_v2 WHERE node_id = ?').get(nodeId)
+    collisionSuffix = row ? Number(row.collision_suffix) || 0 : 0
+    db.prepare(`
+      UPDATE nodes_v2
+      SET fingerprint_hash16 = ?, node_key_hash16 = ?, collision_suffix = ?, node_json_compressed = ?
+      WHERE node_id = ?
+    `).run(compactEntry.fingerprintHash16, compactEntry.nodeKeyHash16, collisionSuffix, compactEntry.nodeJsonCompressed, nodeId)
+  }
+
+  db.prepare(`
+    INSERT INTO node_runtime_v2 (
+      node_id, stable, delay, country, owner, source,
+      updated_at, next_check_at, failure_streak, tag
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(node_id) DO UPDATE SET
+      stable = excluded.stable,
+      delay = excluded.delay,
+      country = excluded.country,
+      owner = excluded.owner,
+      source = excluded.source,
+      updated_at = excluded.updated_at,
+      next_check_at = excluded.next_check_at,
+      failure_streak = excluded.failure_streak,
+      tag = excluded.tag
+  `).run(
+    nodeId,
+    compactEntry.stable,
+    compactEntry.delay === null || compactEntry.delay === undefined ? null : Math.round(Number(compactEntry.delay)),
+    compactEntry.country,
+    compactEntry.owner,
+    compactEntry.source,
+    compactEntry.updatedAtEpoch,
+    compactEntry.nextCheckAtEpoch,
+    compactEntry.failureStreak,
+    compactEntry.tag
+  )
+
+  return {
+    nodeId,
+    nodeKey: compactEntry.nodeKey,
+    collisionSuffix,
+  }
+}
+
+function getCompactV2NodeIdByNodeKey (db, nodeKey) {
+  const normalizedNodeKey = String(nodeKey || '').trim()
+  if (!db || !normalizedNodeKey) {
+    return null
+  }
+  const nodeKeySha256 = createSha256Digest(normalizedNodeKey)
+  const row = db.prepare('SELECT node_id FROM node_identity_v2 WHERE node_key_sha256 = ? LIMIT 1').get(nodeKeySha256)
+  return row && row.node_id ? row.node_id : null
+}
+
+function deleteCompactV2CacheEntryByCanonicalFingerprint (db, canonicalFingerprint) {
+  const identity = createCompactV2IdentityFromSqliteFingerprint(canonicalFingerprint) || createCompactV2Identity(canonicalFingerprint)
+  if (!db || !identity) {
+    return false
+  }
+  const row = identity.nodeKeySha256
+    ? db.prepare(`
+      SELECT node_id
+      FROM node_identity_v2
+      WHERE fingerprint_sha256 = ? OR node_key_sha256 = ?
+      LIMIT 1
+    `).get(identity.fingerprintSha256, identity.nodeKeySha256)
+    : db.prepare('SELECT node_id FROM node_identity_v2 WHERE fingerprint_sha256 = ? LIMIT 1').get(identity.fingerprintSha256)
+  if (!row || !row.node_id) {
+    return false
+  }
+  db.prepare('DELETE FROM subscription_node_refs_v2 WHERE node_id = ?').run(row.node_id)
+  db.prepare('DELETE FROM node_runtime_v2 WHERE node_id = ?').run(row.node_id)
+  db.prepare('DELETE FROM node_identity_v2 WHERE node_id = ?').run(row.node_id)
+  db.prepare('DELETE FROM nodes_v2 WHERE node_id = ?').run(row.node_id)
+  return true
+}
+
+function upsertCompactV2SubscriptionStatement (db) {
+  return db.prepare(`
+    INSERT INTO subscriptions_v2 (
+      source_key, display_label, sort_order, configured,
+      last_seen_stage2_at, stale_after_days, created_at, updated_at
+    ) VALUES (@sourceKey, @displayLabel, @sortOrder, 1, @nowEpoch, @staleAfterDays, @nowEpoch, @nowEpoch)
+    ON CONFLICT(source_key) DO UPDATE SET
+      display_label = excluded.display_label,
+      sort_order = excluded.sort_order,
+      configured = 1,
+      last_seen_stage2_at = excluded.last_seen_stage2_at,
+      stale_after_days = excluded.stale_after_days,
+      updated_at = excluded.updated_at
+  `)
+}
+
+function getCompactV2SubscriptionId (db, sourceKey) {
+  const row = db.prepare('SELECT subscription_id FROM subscriptions_v2 WHERE source_key = ? LIMIT 1').get(sourceKey)
+  return row && row.subscription_id ? row.subscription_id : null
+}
+
 function deserializeSqliteCacheEntry (row) {
   if (!row || !row.node_json) {
     return null
@@ -1380,6 +2225,32 @@ function deserializeSqliteCacheEntry (row) {
     source: row.source || '',
     updatedAt: row.updated_at || null,
     nextCheckAt: row.next_check_at || null,
+    failureStreak: normalizeFailureStreak(row.failure_streak),
+    tag: row.tag || '',
+  })
+}
+
+function deserializeCompactV2CacheEntry (row) {
+  if (!row || !row.node_json_compressed) {
+    return null
+  }
+
+  let node
+  try {
+    node = expandCompactCacheNodeFromStorage(JSON.parse(decompressCompactNodeJson(row.node_json_compressed)))
+  } catch {
+    return null
+  }
+
+  return normalizeCacheEntry({
+    node,
+    stable: row.stable === 1,
+    delay: row.delay,
+    country: row.country || '',
+    owner: row.owner || '',
+    source: row.source || '',
+    updatedAt: formatEpochSecondsAsLocalTimestamp(row.updated_at),
+    nextCheckAt: formatEpochSecondsAsLocalTimestamp(row.next_check_at),
     failureStreak: normalizeFailureStreak(row.failure_streak),
     tag: row.tag || '',
   })
@@ -1448,6 +2319,92 @@ function buildSqliteFilterClauses (filters = {}) {
   return { clauses, params }
 }
 
+function buildCompactV2FilterClauses (filters = {}) {
+  const clauses = []
+  const params = []
+
+  if (filters.stableOnly === true) {
+    clauses.push('stable = 1')
+  }
+
+  const maxDelayMs = normalizeDelayMs(filters.maxDelayMs)
+  if (Number.isFinite(maxDelayMs) && maxDelayMs > 0) {
+    clauses.push('delay IS NOT NULL')
+    clauses.push('delay <= ?')
+    params.push(maxDelayMs)
+  }
+
+  const countryInclude = normalizeFilterValues(filters.countryInclude, normalizeCountryCode)
+  const countryExclude = normalizeFilterValues(filters.countryExclude, normalizeCountryCode)
+  if (countryInclude.length > 0) {
+    clauses.push(`country IN (${countryInclude.map(() => '?').join(', ')})`)
+    params.push(...countryInclude)
+  }
+  if (countryExclude.length > 0) {
+    clauses.push(`(country IS NULL OR country = '' OR country NOT IN (${countryExclude.map(() => '?').join(', ')}))`)
+    params.push(...countryExclude)
+  }
+
+  const ownerInclude = normalizeFilterValues(filters.ownerInclude, normalizeOwnerFilterKeyword)
+  const ownerExclude = normalizeFilterValues(filters.ownerExclude, normalizeOwnerFilterKeyword)
+  if (ownerInclude.length > 0) {
+    clauses.push(`(${ownerInclude.map(() => 'instr(lower(owner), ?) > 0').join(' OR ')})`)
+    params.push(...ownerInclude)
+  }
+  if (ownerExclude.length > 0) {
+    for (const keyword of ownerExclude) {
+      clauses.push("(owner IS NULL OR owner = '' OR instr(lower(owner), ?) = 0)")
+      params.push(keyword)
+    }
+  }
+
+  if (filters.dueBefore) {
+    const dueBefore = toEpochSeconds(filters.dueBefore)
+    if (dueBefore != null) {
+      clauses.push('(next_check_at <= ?)')
+      params.push(dueBefore)
+    }
+  }
+
+  const afterRowId = Number(filters.afterRowId)
+  if (Number.isInteger(afterRowId) && afterRowId > 0) {
+    clauses.push('node_id > ?')
+    params.push(afterRowId)
+  }
+
+  const maxRowId = Number(filters.maxRowId)
+  if (Number.isInteger(maxRowId) && maxRowId > 0) {
+    clauses.push('node_id <= ?')
+    params.push(maxRowId)
+  }
+
+  if (filters.unknownOnly === true) {
+    clauses.push("((country IS NULL OR country = '') OR (owner IS NULL OR owner = ''))")
+  }
+
+  return { clauses, params }
+}
+
+function getCompactV2OrderByClause (orderBy = 'default') {
+  if (orderBy === 'refresh') {
+    return 'updated_at ASC, delay ASC'
+  }
+
+  if (orderBy === 'due') {
+    return 'next_check_at ASC, node_id ASC'
+  }
+
+  if (orderBy === 'rowid') {
+    return 'node_id ASC'
+  }
+
+  if (orderBy === 'rowid_desc') {
+    return 'node_id DESC'
+  }
+
+  return 'stable DESC, delay ASC, updated_at DESC'
+}
+
 function getSqliteOrderByClause (orderBy = 'default') {
   if (orderBy === 'refresh') {
     return `updated_at ASC, delay ASC`
@@ -1501,6 +2458,10 @@ function readSqliteCacheEntries (cacheFilePath, options = {}) {
       return []
     }
 
+    if (hasCompactV2Data(db)) {
+      return readCompactV2CacheEntries(db, options)
+    }
+
     if (hasHotColdData(db)) {
       return readSqliteCacheEntriesFromHotCold(db, options).map(deserializeSqliteCacheEntry).filter(Boolean)
     }
@@ -1551,6 +2512,12 @@ function readSqliteCacheRowIds (cacheFilePath, options = {}) {
     db = openSqliteCache(cacheFilePath)
     if (!db) {
       return []
+    }
+
+    if (hasCompactV2Data(db)) {
+      return readCompactV2CacheRowIds(db, options)
+        .map(row => Number(row && row.rowid))
+        .filter(rowId => Number.isInteger(rowId) && rowId > 0)
     }
 
     if (hasHotColdData(db)) {
@@ -1618,6 +2585,10 @@ function readSqliteCacheEntriesByRowIds (cacheFilePath, rowIds) {
     db = openSqliteCache(cacheFilePath)
     if (!db) {
       return []
+    }
+
+    if (hasCompactV2Data(db)) {
+      return readCompactV2CacheEntriesByRowIds(db, rowIds)
     }
 
     if (hasHotColdData(db)) {
@@ -1735,6 +2706,10 @@ function countSqliteCacheEntries (cacheFilePath, filters = {}) {
     db = openSqliteCache(cacheFilePath)
     if (!db) {
       return 0
+    }
+
+    if (hasCompactV2Data(db)) {
+      return countCompactV2CacheEntries(db, filters)
     }
 
     if (hasHotColdData(db)) {
@@ -1974,22 +2949,35 @@ function writeSqliteCacheEntries (cacheFilePath, entries) {
 
     const maintainLegacyNodes = shouldMaintainLegacyNodes(db)
     const upsert = maintainLegacyNodes ? upsertSqliteEntryStatement(db) : null
-    const upsertRuntime = upsertNodeRuntimeStatement(db)
-    const upsertPayload = upsertNodePayloadStatement(db)
+    const maintainHotCold = !isCompactV2StorageRetired(db) && hasTable(db, 'node_runtime') && hasTable(db, 'node_payload')
+    const upsertRuntime = maintainHotCold ? upsertNodeRuntimeStatement(db) : null
+    const upsertPayload = maintainHotCold ? upsertNodePayloadStatement(db) : null
     const writeAll = db.transaction((items) => {
       if (maintainLegacyNodes && hasTable(db, 'nodes')) {
         db.prepare('DELETE FROM nodes').run()
       }
-      db.prepare('DELETE FROM node_runtime').run()
-      db.prepare('DELETE FROM node_payload').run()
+      if (maintainHotCold) {
+        db.prepare('DELETE FROM node_runtime').run()
+        db.prepare('DELETE FROM node_payload').run()
+      }
+      db.prepare('DELETE FROM subscription_node_refs_v2').run()
+      db.prepare('DELETE FROM node_runtime_v2').run()
+      db.prepare('DELETE FROM node_identity_v2').run()
+      db.prepare('DELETE FROM nodes_v2').run()
       for (const item of items) {
         const serialized = serializeCacheEntryForSqlite(item)
         if (serialized) {
           if (upsert) {
             upsert.run(serialized)
           }
-          upsertRuntime.run(serialized)
-          upsertPayload.run(serialized)
+          if (maintainHotCold) {
+            upsertRuntime.run(serialized)
+            upsertPayload.run(serialized)
+          }
+        }
+        const compactV2 = serializeCacheEntryForCompactV2(item)
+        if (compactV2) {
+          upsertCompactV2CacheEntry(db, compactV2)
         }
       }
     })
@@ -2014,6 +3002,7 @@ function writeCacheUpdates (cacheFilePath, updatedEntries, touchedNodes = null, 
     }
 
     const updatedByFingerprint = new Map()
+    const compactV2ByFingerprint = new Map()
     const legacyFingerprintByCompact = new Map()
     for (const entry of updatedEntries || []) {
       const serialized = serializeCacheEntryForSqlite(entry)
@@ -2022,6 +3011,10 @@ function writeCacheUpdates (cacheFilePath, updatedEntries, touchedNodes = null, 
         if (serialized.legacyFingerprint && serialized.legacyFingerprint !== serialized.fingerprint) {
           legacyFingerprintByCompact.set(serialized.fingerprint, serialized.legacyFingerprint)
         }
+      }
+      const compactV2 = serializeCacheEntryForCompactV2(entry)
+      if (compactV2) {
+        compactV2ByFingerprint.set(compactV2.fingerprint, compactV2)
       }
     }
 
@@ -2038,11 +3031,12 @@ function writeCacheUpdates (cacheFilePath, updatedEntries, touchedNodes = null, 
 
     const maintainLegacyNodes = shouldMaintainLegacyNodes(db)
     const upsert = maintainLegacyNodes ? upsertSqliteEntryStatement(db) : null
-    const upsertRuntime = upsertNodeRuntimeStatement(db)
-    const upsertPayload = upsertNodePayloadStatement(db)
+    const maintainHotCold = !isCompactV2StorageRetired(db) && hasTable(db, 'node_runtime') && hasTable(db, 'node_payload')
+    const upsertRuntime = maintainHotCold ? upsertNodeRuntimeStatement(db) : null
+    const upsertPayload = maintainHotCold ? upsertNodePayloadStatement(db) : null
     const remove = maintainLegacyNodes && hasTable(db, 'nodes') ? db.prepare('DELETE FROM nodes WHERE fingerprint = ?') : null
-    const removeRuntime = db.prepare('DELETE FROM node_runtime WHERE fingerprint = ?')
-    const removePayloadByNodeKey = db.prepare('DELETE FROM node_payload WHERE node_key = ?')
+    const removeRuntime = maintainHotCold ? db.prepare('DELETE FROM node_runtime WHERE fingerprint = ?') : null
+    const removePayloadByNodeKey = maintainHotCold ? db.prepare('DELETE FROM node_payload WHERE node_key = ?') : null
     const applyUpdates = db.transaction((fingerprints) => {
       for (const fingerprint of fingerprints) {
         const replacement = updatedByFingerprint.get(fingerprint)
@@ -2054,15 +3048,24 @@ function writeCacheUpdates (cacheFilePath, updatedEntries, touchedNodes = null, 
           if (upsert) {
             upsert.run(replacement)
           }
-          upsertRuntime.run(replacement)
-          upsertPayload.run(replacement)
+          if (maintainHotCold) {
+            upsertRuntime.run(replacement)
+            upsertPayload.run(replacement)
+          }
+          const compactV2 = compactV2ByFingerprint.get(fingerprint)
+          if (compactV2) {
+            upsertCompactV2CacheEntry(db, compactV2)
+          }
         } else {
-          const existing = db.prepare('SELECT node_key FROM node_runtime WHERE fingerprint = ?').get(fingerprint)
+          const existing = maintainHotCold ? db.prepare('SELECT node_key FROM node_runtime WHERE fingerprint = ?').get(fingerprint) : null
           if (remove) {
             remove.run(fingerprint)
           }
-          removeRuntime.run(fingerprint)
-          if (existing && existing.node_key) {
+          if (removeRuntime) {
+            removeRuntime.run(fingerprint)
+          }
+          deleteCompactV2CacheEntryByCanonicalFingerprint(db, legacyFingerprintByCompact.get(fingerprint) || fingerprint)
+          if (removePayloadByNodeKey && existing && existing.node_key) {
             removePayloadByNodeKey.run(existing.node_key)
           }
         }
@@ -2220,6 +3223,7 @@ function syncSubscriptions (cacheFilePath, subscriptions, options = {}) {
     }
 
     const now = options.now || formatLocalTimestamp()
+    const nowEpoch = toEpochSeconds(now) || Math.floor(Date.now() / 1000)
     const staleAfterDays = Math.max(1, Number(options.staleAfterDays) || 30)
     const markMissingUnconfigured = options.markMissingUnconfigured !== false
     const replaceRefs = options.replaceRefs !== false
@@ -2246,14 +3250,15 @@ function syncSubscriptions (cacheFilePath, subscriptions, options = {}) {
       }
     }
 
-    const existingRows = db.prepare('SELECT source_key FROM subscriptions WHERE configured = 1').all()
+    const maintainLegacySubscriptions = !isCompactV2StorageRetired(db) && hasTable(db, 'subscriptions') && hasTable(db, 'subscription_node_refs')
+    const existingRows = maintainLegacySubscriptions ? db.prepare('SELECT source_key FROM subscriptions WHERE configured = 1').all() : db.prepare('SELECT source_key FROM subscriptions_v2 WHERE configured = 1').all()
     const staleConfiguredKeys = markMissingUnconfigured
       ? existingRows
         .map(row => row && row.source_key)
         .filter(sourceKey => sourceKey && !currentSourceKeys.has(sourceKey))
       : []
 
-    const upsertSubscription = db.prepare(`
+    const upsertSubscription = maintainLegacySubscriptions ? db.prepare(`
       INSERT INTO subscriptions (source_key, display_label, sort_order, configured, last_seen_stage2_at, stale_after_days, created_at, updated_at)
       VALUES (@sourceKey, @displayLabel, @sortOrder, 1, @now, @staleAfterDays, @now, @now)
       ON CONFLICT(source_key) DO UPDATE SET
@@ -2263,33 +3268,67 @@ function syncSubscriptions (cacheFilePath, subscriptions, options = {}) {
         last_seen_stage2_at = excluded.last_seen_stage2_at,
         stale_after_days = excluded.stale_after_days,
         updated_at = excluded.updated_at
+      `) : null
+      const markUnconfigured = maintainLegacySubscriptions ? db.prepare('UPDATE subscriptions SET configured = 0, updated_at = ? WHERE source_key = ?') : null
+    const markUnconfiguredV2 = db.prepare('UPDATE subscriptions_v2 SET configured = 0, updated_at = ? WHERE source_key = ?')
+    const deleteRefsForSubscription = maintainLegacySubscriptions ? db.prepare('DELETE FROM subscription_node_refs WHERE subscription_source_key = ?') : null
+    const deleteRefsForSubscriptionV2 = db.prepare(`
+      DELETE FROM subscription_node_refs_v2
+      WHERE subscription_id = (SELECT subscription_id FROM subscriptions_v2 WHERE source_key = ?)
     `)
-    const markUnconfigured = db.prepare('UPDATE subscriptions SET configured = 0, updated_at = ? WHERE source_key = ?')
-    const deleteRefsForSubscription = db.prepare('DELETE FROM subscription_node_refs WHERE subscription_source_key = ?')
-    const upsertRef = db.prepare(`
+    const upsertRef = maintainLegacySubscriptions ? db.prepare(`
       INSERT INTO subscription_node_refs (subscription_source_key, node_key, last_seen_stage2_at, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(subscription_source_key, node_key) DO UPDATE SET
         last_seen_stage2_at = excluded.last_seen_stage2_at,
         updated_at = excluded.updated_at
+    `) : null
+    const upsertSubscriptionV2 = upsertCompactV2SubscriptionStatement(db)
+    const upsertRefV2 = db.prepare(`
+      INSERT INTO subscription_node_refs_v2 (subscription_id, node_id, last_seen_stage2_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(subscription_id, node_id) DO UPDATE SET
+        last_seen_stage2_at = excluded.last_seen_stage2_at
     `)
 
     const apply = db.transaction(() => {
       for (const sourceKey of staleConfiguredKeys) {
-        markUnconfigured.run(now, sourceKey)
+        if (maintainLegacySubscriptions) {
+          markUnconfigured.run(now, sourceKey)
+        }
+        markUnconfiguredV2.run(nowEpoch, sourceKey)
       }
       for (const subscription of normalizedSubscriptions) {
-        upsertSubscription.run({
+        if (maintainLegacySubscriptions) {
+          upsertSubscription.run({
+            sourceKey: subscription.sourceKey,
+            displayLabel: subscription.displayLabel,
+            sortOrder: subscription.sortOrder,
+            staleAfterDays,
+            now,
+          })
+        }
+        upsertSubscriptionV2.run({
           sourceKey: subscription.sourceKey,
           displayLabel: subscription.displayLabel,
           sortOrder: subscription.sortOrder,
           staleAfterDays,
-          now,
+          nowEpoch,
         })
+        const subscriptionId = getCompactV2SubscriptionId(db, subscription.sourceKey)
         if (replaceRefs) {
-          deleteRefsForSubscription.run(subscription.sourceKey)
+          if (deleteRefsForSubscription) {
+            deleteRefsForSubscription.run(subscription.sourceKey)
+          }
+          deleteRefsForSubscriptionV2.run(subscription.sourceKey)
           for (const nodeKey of subscription.nodeKeys) {
-            upsertRef.run(subscription.sourceKey, nodeKey, now, now, now)
+            if (maintainLegacySubscriptions) {
+              upsertRef.run(subscription.sourceKey, nodeKey, now, now, now)
+            }
+            const nodeId = getCompactV2NodeIdByNodeKey(db, nodeKey)
+            if (subscriptionId && nodeId) {
+              upsertRefV2.run(subscriptionId, nodeId, nowEpoch)
+            }
           }
         }
       }
@@ -2324,6 +3363,7 @@ function syncSubscriptionSourceChunk (cacheFilePath, subscription, nodeKeys, opt
     }
 
     const now = options.now || formatLocalTimestamp()
+    const nowEpoch = toEpochSeconds(now) || Math.floor(Date.now() / 1000)
     const staleAfterDays = Math.max(1, Number(options.staleAfterDays) || 30)
     const replaceExistingRefs = options.replaceExistingRefs === true
     const maxRefsPerSubscription = Number.isInteger(options.maxRefsPerSubscription) && options.maxRefsPerSubscription > 0
@@ -2333,7 +3373,8 @@ function syncSubscriptionSourceChunk (cacheFilePath, subscription, nodeKeys, opt
       .map(nodeKey => String(nodeKey || '').trim())
       .filter(Boolean))]
 
-    const upsertSubscription = db.prepare(`
+    const maintainLegacySubscriptions = !isCompactV2StorageRetired(db) && hasTable(db, 'subscriptions') && hasTable(db, 'subscription_node_refs')
+    const upsertSubscription = maintainLegacySubscriptions ? db.prepare(`
       INSERT INTO subscriptions (source_key, display_label, sort_order, configured, last_seen_stage2_at, stale_after_days, created_at, updated_at)
       VALUES (@sourceKey, @displayLabel, @sortOrder, 1, @now, @staleAfterDays, @now, @now)
       ON CONFLICT(source_key) DO UPDATE SET
@@ -2343,37 +3384,67 @@ function syncSubscriptionSourceChunk (cacheFilePath, subscription, nodeKeys, opt
         last_seen_stage2_at = excluded.last_seen_stage2_at,
         stale_after_days = excluded.stale_after_days,
         updated_at = excluded.updated_at
+    `) : null
+    const deleteRefsForSubscription = maintainLegacySubscriptions ? db.prepare('DELETE FROM subscription_node_refs WHERE subscription_source_key = ?') : null
+    const deleteRefsForSubscriptionV2 = db.prepare(`
+      DELETE FROM subscription_node_refs_v2
+      WHERE subscription_id = (SELECT subscription_id FROM subscriptions_v2 WHERE source_key = ?)
     `)
-    const deleteRefsForSubscription = db.prepare('DELETE FROM subscription_node_refs WHERE subscription_source_key = ?')
-    const countRefsForSubscription = db.prepare('SELECT COUNT(*) AS count FROM subscription_node_refs WHERE subscription_source_key = ?')
-    const upsertRef = db.prepare(`
+    const countRefsForSubscription = maintainLegacySubscriptions ? db.prepare('SELECT COUNT(*) AS count FROM subscription_node_refs WHERE subscription_source_key = ?') : null
+    const upsertRef = maintainLegacySubscriptions ? db.prepare(`
       INSERT INTO subscription_node_refs (subscription_source_key, node_key, last_seen_stage2_at, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(subscription_source_key, node_key) DO UPDATE SET
         last_seen_stage2_at = excluded.last_seen_stage2_at,
         updated_at = excluded.updated_at
+    `) : null
+    const upsertSubscriptionV2 = upsertCompactV2SubscriptionStatement(db)
+    const countRefsForSubscriptionV2 = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM subscription_node_refs_v2
+      WHERE subscription_id = (SELECT subscription_id FROM subscriptions_v2 WHERE source_key = ?)
+    `)
+    const upsertRefV2 = db.prepare(`
+      INSERT INTO subscription_node_refs_v2 (subscription_id, node_id, last_seen_stage2_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(subscription_id, node_id) DO UPDATE SET
+        last_seen_stage2_at = excluded.last_seen_stage2_at
     `)
 
     let writtenRefs = 0
     let skippedRefs = 0
 
     const apply = db.transaction(() => {
-      upsertSubscription.run({
+      if (upsertSubscription) {
+        upsertSubscription.run({
+          sourceKey: normalizedSubscription.sourceKey,
+          displayLabel: normalizedSubscription.displayLabel,
+          sortOrder: normalizedSubscription.sortOrder,
+          staleAfterDays,
+          now,
+        })
+      }
+      upsertSubscriptionV2.run({
         sourceKey: normalizedSubscription.sourceKey,
         displayLabel: normalizedSubscription.displayLabel,
         sortOrder: normalizedSubscription.sortOrder,
         staleAfterDays,
-        now,
+        nowEpoch,
       })
+      const subscriptionId = getCompactV2SubscriptionId(db, normalizedSubscription.sourceKey)
 
       if (replaceExistingRefs) {
-        deleteRefsForSubscription.run(normalizedSubscription.sourceKey)
+        if (deleteRefsForSubscription) {
+          deleteRefsForSubscription.run(normalizedSubscription.sourceKey)
+        }
+        deleteRefsForSubscriptionV2.run(normalizedSubscription.sourceKey)
       }
 
       let remainingRefs = Infinity
       if (maxRefsPerSubscription != null) {
-        const currentRefCount = Number((countRefsForSubscription.get(normalizedSubscription.sourceKey) || {}).count) || 0
-        remainingRefs = Math.max(0, maxRefsPerSubscription - currentRefCount)
+        const currentRefCount = countRefsForSubscription ? Number((countRefsForSubscription.get(normalizedSubscription.sourceKey) || {}).count) || 0 : 0
+        const currentRefCountV2 = Number((countRefsForSubscriptionV2.get(normalizedSubscription.sourceKey) || {}).count) || 0
+        remainingRefs = Math.max(0, maxRefsPerSubscription - Math.max(currentRefCount, currentRefCountV2))
       }
 
       for (const nodeKey of normalizedNodeKeys) {
@@ -2381,7 +3452,13 @@ function syncSubscriptionSourceChunk (cacheFilePath, subscription, nodeKeys, opt
           skippedRefs += 1
           continue
         }
-        upsertRef.run(normalizedSubscription.sourceKey, nodeKey, now, now, now)
+        if (upsertRef) {
+          upsertRef.run(normalizedSubscription.sourceKey, nodeKey, now, now, now)
+        }
+        const nodeId = getCompactV2NodeIdByNodeKey(db, nodeKey)
+        if (subscriptionId && nodeId) {
+          upsertRefV2.run(subscriptionId, nodeId, nowEpoch)
+        }
         writtenRefs += 1
         remainingRefs -= 1
       }
@@ -2541,6 +3618,71 @@ function readSubscriptionAvailabilitySummary (cacheFilePath, options = {}) {
       return []
     }
 
+    if (isCompactV2StorageRetired(db) || !hasTable(db, 'subscriptions')) {
+      const availableNodeKeys = [...new Set((options.availableNodeKeys || [])
+        .map(nodeKey => String(nodeKey || '').trim())
+        .filter(Boolean))]
+      const availableNodeIds = new Set()
+      for (const nodeKey of availableNodeKeys) {
+        const nodeId = getCompactV2NodeIdByNodeKey(db, nodeKey)
+        if (nodeId) {
+          availableNodeIds.add(Number(nodeId))
+        }
+      }
+
+      const rows = db.prepare(`
+        SELECT
+          s.source_key AS sourceKey,
+          s.display_label AS displayLabel,
+          s.sort_order AS sortOrder,
+          s.configured AS configured,
+          s.last_available_at AS lastAvailableAt,
+          s.zero_available_since AS zeroAvailableSince,
+          s.stale_after_days AS staleAfterDays,
+          COUNT(r.node_id) AS stage2NodeCount,
+          SUM(CASE WHEN n.node_id IS NOT NULL THEN 1 ELSE 0 END) AS retainedNodeCount
+        FROM subscriptions_v2 s
+        LEFT JOIN subscription_node_refs_v2 r ON r.subscription_id = s.subscription_id
+        LEFT JOIN node_runtime_v2 n ON n.node_id = r.node_id
+        GROUP BY s.source_key
+        ORDER BY s.configured DESC, s.sort_order ASC
+      `).all().map(row => ({
+        sourceKey: row.sourceKey,
+        displayLabel: row.displayLabel,
+        sortOrder: Number(row.sortOrder) || 0,
+        configured: row.configured === 1,
+        lastAvailableAt: formatEpochSecondsAsLocalTimestamp(row.lastAvailableAt) || null,
+        zeroAvailableSince: formatEpochSecondsAsLocalTimestamp(row.zeroAvailableSince) || null,
+        staleAfterDays: Number(row.staleAfterDays) || 30,
+        stage2NodeCount: Number(row.stage2NodeCount) || 0,
+        retainedNodeCount: Number(row.retainedNodeCount) || 0,
+        availableNodeCount: 0,
+      }))
+
+      if (availableNodeIds.size > 0) {
+        for (const row of rows) {
+          const refs = db.prepare(`
+            SELECT r.node_id
+            FROM subscription_node_refs_v2 r
+            JOIN subscriptions_v2 s ON s.subscription_id = r.subscription_id
+            WHERE s.source_key = ?
+          `).all(row.sourceKey)
+          row.availableNodeCount = refs.reduce((count, ref) => count + (availableNodeIds.has(Number(ref.node_id)) ? 1 : 0), 0)
+        }
+      }
+
+      rows.sort((left, right) => {
+        if (left.configured !== right.configured) {
+          return left.configured ? -1 : 1
+        }
+        if (left.availableNodeCount !== right.availableNodeCount) {
+          return right.availableNodeCount - left.availableNodeCount
+        }
+        return left.sortOrder - right.sortOrder
+      })
+      return rows
+    }
+
     const roundAvailableNodeKeys = new Set((options.availableNodeKeys || [])
       .map(nodeKey => String(nodeKey || '').trim())
       .filter(Boolean))
@@ -2610,10 +3752,49 @@ function updateSubscriptionAvailability (cacheFilePath, options = {}) {
     }
 
     const now = options.now || formatLocalTimestamp()
+    const nowEpoch = toEpochSeconds(now) || Math.floor(Date.now() / 1000)
     const staleAfterDays = Math.max(1, Number(options.staleAfterDays) || 30)
     const rows = readSubscriptionAvailabilitySummary(cacheFilePath, {
       availableNodeKeys: options.availableNodeKeys,
     })
+    const compactV2Retired = isCompactV2StorageRetired(db) || !hasTable(db, 'subscriptions')
+    if (compactV2Retired) {
+      const updateAvailableV2 = db.prepare('UPDATE subscriptions_v2 SET last_available_at = ?, zero_available_since = NULL, stale_after_days = ?, updated_at = ? WHERE source_key = ?')
+      const updateZeroV2 = db.prepare('UPDATE subscriptions_v2 SET zero_available_since = COALESCE(zero_available_since, ?), stale_after_days = ?, updated_at = ? WHERE source_key = ?')
+      const deleteRefsV2 = db.prepare(`
+        DELETE FROM subscription_node_refs_v2
+        WHERE subscription_id = (SELECT subscription_id FROM subscriptions_v2 WHERE source_key = ?)
+      `)
+      const deleteSubscriptionV2 = db.prepare('DELETE FROM subscriptions_v2 WHERE source_key = ?')
+      const deleted = []
+
+      const applyV2 = db.transaction(() => {
+        for (const row of rows) {
+          if (row.availableNodeCount > 0) {
+            updateAvailableV2.run(nowEpoch, staleAfterDays, nowEpoch, row.sourceKey)
+            continue
+          }
+
+          updateZeroV2.run(nowEpoch, staleAfterDays, nowEpoch, row.sourceKey)
+          const zeroSince = row.zeroAvailableSince || now
+          const zeroSinceTime = new Date(zeroSince).getTime()
+          const nowTime = new Date(now).getTime()
+          const staleMs = staleAfterDays * 24 * 60 * 60 * 1000
+          if (Number.isFinite(zeroSinceTime) && Number.isFinite(nowTime) && nowTime - zeroSinceTime >= staleMs && row.retainedNodeCount === 0) {
+            deleteRefsV2.run(row.sourceKey)
+            deleteSubscriptionV2.run(row.sourceKey)
+            deleted.push(row.sourceKey)
+          }
+        }
+      })
+      applyV2()
+
+      const summary = readSubscriptionAvailabilitySummary(cacheFilePath, {
+        availableNodeKeys: options.availableNodeKeys,
+      })
+      return { summary, deleted }
+    }
+
     const updateAvailable = db.prepare('UPDATE subscriptions SET last_available_at = ?, zero_available_since = NULL, stale_after_days = ?, updated_at = ? WHERE source_key = ?')
     const updateZero = db.prepare('UPDATE subscriptions SET zero_available_since = COALESCE(zero_available_since, ?), stale_after_days = ?, updated_at = ? WHERE source_key = ?')
     const deleteRefs = db.prepare('DELETE FROM subscription_node_refs WHERE subscription_source_key = ?')
@@ -2867,6 +4048,7 @@ module.exports = {
   fingerprintNode,
   getNodeKey,
   getSubscriptionSourceKey,
+  getStage2DiagnosticPaths,
   countCacheEntries,
   readCacheEntries,
   readCacheRowIds: readSqliteCacheRowIds,
@@ -2875,7 +4057,9 @@ module.exports = {
   readCacheEntriesForStartup: readSqliteCacheEntriesForStartup,
   readCacheEntriesByFingerprints: readSqliteCacheEntriesByFingerprints,
   migrateHotColdSchema,
+  migrateCompactV2Storage,
   retireLegacyNodesStorage,
+  retireCompactV2LegacyStorage,
   compactRetiredSqliteCache,
   readSubscriptionAvailabilitySummary,
   readCacheNodes,
@@ -2897,4 +4081,5 @@ module.exports = {
   writeCache,
   sortCacheEntries,
   resolveOwnerLabel,
+  setCompactV2IdentityFactoryForTest,
 }
