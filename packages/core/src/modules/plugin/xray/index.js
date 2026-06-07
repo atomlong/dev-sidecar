@@ -20,10 +20,11 @@ const geoip = require('./geoip')
 const { getXrayExePath } = require('../../../shell/scripts/extra-path/index')
 
 const STAGE2_CACHE_SYNC_CHUNK_SIZE = 2000
-const STAGE2_SUBSCRIPTION_PARSE_CHUNK_SIZE = 10
+const STAGE2_CACHE_SYNC_CHUNK_SIZE_LOW_FILE_CACHE = 10000
+const STAGE2_SUBSCRIPTION_PARSE_CHUNK_SIZE = 50
 const STAGE2_SUBSCRIPTION_PARSE_GC_CHUNKS = 1
 const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT = 100
-const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE = 1000
+const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE = 5000
 const CACHE_SIZE_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
 const CACHE_SIZE_TARGET_BYTES = Math.floor(CACHE_SIZE_LIMIT_BYTES * 0.9)
 const HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS = 10000
@@ -232,6 +233,112 @@ function logStage2MemoryUsage (log, label, extra = {}) {
   try {
     console.error(message)
   } catch (error) {
+    // ignore temporary debug output failures
+  }
+}
+
+function statStage2FilePath (filePath) {
+  if (!filePath) {
+    return null
+  }
+  try {
+    const stat = fs.statSync(filePath)
+    return {
+      exists: true,
+      size: stat.size,
+      mtimeMs: Math.round(stat.mtimeMs),
+    }
+  } catch {
+    return {
+      exists: false,
+      size: 0,
+      mtimeMs: 0,
+    }
+  }
+}
+
+function readProcessOpenFileStats (targetPaths = []) {
+  const normalizedTargets = new Map()
+  for (const targetPath of targetPaths) {
+    if (!targetPath) {
+      continue
+    }
+    normalizedTargets.set(path.normalize(targetPath), {
+      path: targetPath,
+      fds: 0,
+      deletedFds: 0,
+    })
+  }
+
+  if (normalizedTargets.size === 0) {
+    return []
+  }
+
+  let fdNames = []
+  try {
+    fdNames = fs.readdirSync('/proc/self/fd')
+  } catch {
+    return []
+  }
+
+  for (const fdName of fdNames) {
+    const fdPath = path.join('/proc/self/fd', fdName)
+    let link = ''
+    try {
+      link = fs.readlinkSync(fdPath)
+    } catch {
+      continue
+    }
+
+    const deleted = link.endsWith(' (deleted)')
+    const normalizedLink = path.normalize(deleted ? link.slice(0, -10) : link)
+    const stat = normalizedTargets.get(normalizedLink)
+    if (!stat) {
+      continue
+    }
+
+    stat.fds += 1
+    if (deleted) {
+      stat.deletedFds += 1
+    }
+  }
+
+  return [...normalizedTargets.values()]
+}
+
+// TEMP DEBUG: remove after stage2 file-cache investigation is complete.
+function logStage2FileUsage (log, label, cachePath, extra = {}) {
+  if (!cachePath) {
+    return
+  }
+
+  const diagnosticPaths = xrayCache.getStage2DiagnosticPaths(cachePath)
+  const fileStats = diagnosticPaths.map(item => ({
+    label: item.label,
+    path: item.path,
+    ...statStage2FilePath(item.path),
+  }))
+  const openStatsByPath = new Map(readProcessOpenFileStats(fileStats.map(item => item.path)).map(item => [path.normalize(item.path), item]))
+  const existingFiles = fileStats
+    .filter(item => item.exists || openStatsByPath.has(path.normalize(item.path)))
+    .map(item => {
+      const openStat = openStatsByPath.get(path.normalize(item.path)) || {}
+      return `${item.label}:size=${formatMemoryUsageMb(item.size)},fds=${openStat.fds || 0},deletedFds=${openStat.deletedFds || 0},mtimeMs=${item.mtimeMs || 0}`
+    })
+    .join('; ')
+  const extraFields = Object.entries(extra)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(', ')
+  const message = `[TEMP][stage2-file] ${label}: ${[existingFiles || 'files=none', extraFields].filter(Boolean).join(', ')}`
+
+  if (log && typeof log.info === 'function') {
+    log.info(message)
+  }
+
+  try {
+    console.error(message)
+  } catch {
     // ignore temporary debug output failures
   }
 }
@@ -1046,6 +1153,10 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
     subscriptions: total,
     candidateNodes: Array.isArray(nodeTarget) ? nodeTarget.length : 0,
   })
+  logStage2FileUsage(log, 'subscription-load-start', stage2SeenCachePath, {
+    subscriptions: total,
+    candidateNodes: Array.isArray(nodeTarget) ? nodeTarget.length : 0,
+  })
 
   const getSubscriptionSourceMeta = (subscriptionSnapshot) => ({
     sourceKey: subscriptionSnapshot.sourceKey,
@@ -1056,6 +1167,16 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
 
   const flushAcceptedBuffers = (sourceMeta = {}) => {
     const meta = pendingSourceMeta || sourceMeta
+    const pendingNodeKeyCount = pendingAcceptedNodeKeys.length
+    const pendingNodeCount = pendingSupportedAcceptedNodes.length
+
+    if (pendingNodeKeyCount > 0 || pendingNodeCount > 0) {
+      logStage2FileUsage(log, 'accepted-buffer-before-flush', stage2SeenCachePath, {
+        source: meta && meta.displayLabel,
+        nodeKeys: pendingNodeKeyCount,
+        nodes: pendingNodeCount,
+      })
+    }
 
     if (pendingAcceptedNodeKeys.length > 0 && onAcceptedNodeKeys) {
       onAcceptedNodeKeys(pendingAcceptedNodeKeys, meta)
@@ -1068,6 +1189,14 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
     pendingAcceptedNodeKeys = []
     pendingSupportedAcceptedNodes = []
     pendingSourceMeta = null
+
+    if (pendingNodeKeyCount > 0 || pendingNodeCount > 0) {
+      logStage2FileUsage(log, 'accepted-buffer-after-flush', stage2SeenCachePath, {
+        source: meta && meta.displayLabel,
+        nodeKeys: pendingNodeKeyCount,
+        nodes: pendingNodeCount,
+      })
+    }
   }
 
   const queueAcceptedBuffers = (acceptedNodeKeys, supportedAcceptedNodes, subscriptionSnapshot) => {
@@ -1183,6 +1312,10 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
               subscription: subscriptionLabel,
               bytes: contentBytes,
             })
+            logStage2FileUsage(log, 'subscription-large-before-parse', stage2SeenCachePath, {
+              subscription: subscriptionLabel,
+              bytes: contentBytes,
+            })
             await runStage2GarbageCollection(log, 'large-subscription-before-parse', {
               subscription: subscriptionLabel,
               bytes: contentBytes,
@@ -1206,6 +1339,13 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
                 parsedChunkCount += 1
                 if (shouldLogDetail && parsedChunkCount % STAGE2_SUBSCRIPTION_PARSE_GC_CHUNKS === 0) {
                   const shouldLogChunkGc = parsedChunkCount === 1 || parsedChunkCount % 100 === 0
+                  if (shouldLogChunkGc) {
+                    logStage2FileUsage(log, 'subscription-large-parse-chunks', stage2SeenCachePath, {
+                      subscription: subscriptionLabel,
+                      chunks: parsedChunkCount,
+                      acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
+                    })
+                  }
                   await runStage2GarbageCollection(log, 'large-subscription-parse-chunks', {
                     subscription: subscriptionLabel,
                     chunks: parsedChunkCount,
@@ -1225,6 +1365,11 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
             const shouldLogPostParseDetail = shouldLogDetail || shouldLogLargeSubscriptionDetail({ bytes: summary.bytes, nodes: parsedNodeCount })
             if (shouldLogPostParseDetail) {
               logStage2MemoryUsage(log, 'subscription-large-after-parse', {
+                subscription: subscriptionLabel,
+                bytes: summary.bytes,
+                nodes: parsedNodeCount,
+              })
+              logStage2FileUsage(log, 'subscription-large-after-parse', stage2SeenCachePath, {
                 subscription: subscriptionLabel,
                 bytes: summary.bytes,
                 nodes: parsedNodeCount,
@@ -1699,6 +1844,10 @@ function syncCandidateNodesToCache (cachePath, candidateNodes, options = {}) {
   let addedCount = 0
   let countryReadyCount = 0
 
+  const flushChunkSize = options.lowFileCache === true
+    ? STAGE2_CACHE_SYNC_CHUNK_SIZE_LOW_FILE_CACHE
+    : STAGE2_CACHE_SYNC_CHUNK_SIZE
+
   const supportedChunk = []
   const flushChunk = () => {
     if (supportedChunk.length === 0) {
@@ -1753,7 +1902,7 @@ function syncCandidateNodesToCache (cachePath, candidateNodes, options = {}) {
     }
     supportedCount += 1
     supportedChunk.push(node)
-    if (supportedChunk.length >= STAGE2_CACHE_SYNC_CHUNK_SIZE) {
+    if (supportedChunk.length >= flushChunkSize) {
       flushChunk()
     }
   }
@@ -2195,9 +2344,15 @@ const Plugin = function (context) {
         log.info(`Xray 订阅抓取已跳过: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
       } else {
         const initialStage2SeenNodeKeys = collectUniqueNodeKeys(localCandidateNodes)
+        logStage2FileUsage(log, 'stage2-before-seen-reset', cachePath, {
+          initialNodeKeys: initialStage2SeenNodeKeys.length,
+        })
         if (!xrayCache.resetStage2SeenNodeKeys(cachePath, initialStage2SeenNodeKeys)) {
           throw new Error('Xray stage2 seen-node initialization failed')
         }
+        logStage2FileUsage(log, 'stage2-after-seen-reset', cachePath, {
+          initialNodeKeys: initialStage2SeenNodeKeys.length,
+        })
         if (subscriptionSyncDecision.lowWatermark > 0) {
           log.info(`Xray 订阅抓取已触发: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
         }
@@ -2278,6 +2433,13 @@ const Plugin = function (context) {
         supported: totalSupportedCandidateCount,
         snapshots: subscriptionSnapshotCount,
       })
+      logStage2FileUsage(log, 'stage2-after-subscription-load', cachePath, {
+        subscriptionNodes: subscriptionNodeCount,
+        deduplicated: totalUniqueCandidateCount,
+        supported: totalSupportedCandidateCount,
+        snapshots: subscriptionSnapshotCount,
+        refs: subscriptionSyncRefs,
+      })
 
       log.info(`Xray 节点汇总候选: configBak=${configNodes.length}, cacheMatched=${totalCacheMatchedCount}, manual=${manualNodes.length}, subscriptions=${subscriptionNodeCount}, subscriptionFetch=${subscriptionFetchMode}, effectiveCache=${effectiveCacheLabel}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, deduplicated=${totalUniqueCandidateCount}, unsupportedDropped=${Math.max(0, totalUniqueCandidateCount - totalSupportedCandidateCount)}, selected=${totalSupportedCandidateCount}`)
 
@@ -2302,6 +2464,11 @@ const Plugin = function (context) {
           supportedNodes: totalSupportedCandidateCount,
           refs: subscriptionSyncRefs,
         })
+        logStage2FileUsage(log, 'stage2-before-subscription-sync', cachePath, {
+          snapshots: subscriptionSnapshotCount,
+          supportedNodes: totalSupportedCandidateCount,
+          refs: subscriptionSyncRefs,
+        })
         const subscriptionSyncStats = xrayCache.syncSubscriptions(cachePath, [], {
           staleAfterDays: getSubscriptionStaleAfterDays(cfg),
           currentSourceKeys: [...allSubscriptionSourceKeys],
@@ -2313,6 +2480,10 @@ const Plugin = function (context) {
         }
         logStage2MemoryUsage(log, 'stage2-after-subscription-sync', {
           snapshots: subscriptionSnapshotCount,
+        })
+        logStage2FileUsage(log, 'stage2-after-subscription-sync', cachePath, {
+          snapshots: subscriptionSnapshotCount,
+          refs: subscriptionSyncRefs,
         })
       }
 
