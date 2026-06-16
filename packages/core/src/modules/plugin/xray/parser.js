@@ -1,4 +1,10 @@
 const { URL } = require('node:url')
+const { StringDecoder } = require('node:string_decoder')
+
+const STREAM_PARSE_SNIFF_CHARS = 64 * 1024
+const STREAM_BASE64_DECODE_CHARS = 128 * 1024
+const STREAM_PROTOCOL_TAIL_CHARS = 16 * 1024
+const BASE64_SUBSCRIPTION_CHARS_REGEX = /^[A-Za-z0-9+/=_\-\s]+$/
 
 /**
  * Safely decodes a Base64 string.
@@ -226,6 +232,171 @@ function getSubscriptionParseSource (text) {
 
 const PROTOCOL_BOUNDARY_REGEX = /(vmess|vless|ss|trojan|https?|socks5?|socks):\/\//ig
 
+function createChunkedNodeEmitter (options = {}) {
+  const chunkSize = Math.max(1, Number(options.chunkSize) || 1000)
+  const onChunk = typeof options.onChunk === 'function' ? options.onChunk : null
+  const yieldEveryChunks = Math.max(1, Number(options.yieldEveryChunks) || 1)
+  const protocolCounts = {}
+  let totalNodes = 0
+  let flushedChunkCount = 0
+  const chunk = []
+
+  const maybeYield = async () => {
+    if (flushedChunkCount % yieldEveryChunks !== 0) {
+      return
+    }
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  const flushChunk = async () => {
+    if (!onChunk || chunk.length === 0) {
+      chunk.length = 0
+      return
+    }
+    const output = chunk.slice()
+    chunk.length = 0
+    await onChunk(output)
+    flushedChunkCount += 1
+    await maybeYield()
+  }
+
+  const parseEntry = async (line) => {
+    if (!line || line.startsWith('#')) {
+      return
+    }
+
+    const parsedNode = parseLineToNode(line)
+    if (!parsedNode || !isParsedNodeValid(parsedNode)) {
+      return
+    }
+
+    totalNodes += 1
+    const protocol = String(parsedNode.protocol || '').toLowerCase()
+    if (protocol) {
+      protocolCounts[protocol] = (protocolCounts[protocol] || 0) + 1
+    }
+
+    if (onChunk) {
+      chunk.push(parsedNode)
+      if (chunk.length >= chunkSize) {
+        await flushChunk()
+      }
+    }
+  }
+
+  return {
+    parseEntry,
+    flushChunk,
+    summary () {
+      return {
+        totalNodes,
+        protocolCounts,
+      }
+    },
+  }
+}
+
+function isLikelyBase64SubscriptionText (text) {
+  const source = String(text || '').trim()
+  if (!source || source.includes('://')) {
+    return false
+  }
+
+  return BASE64_SUBSCRIPTION_CHARS_REGEX.test(source)
+}
+
+function createStreamingSubscriptionEntryParser (entryHandler) {
+  const parseEntry = typeof entryHandler === 'function' ? entryHandler : async () => {}
+  let mode = null
+  let remainder = ''
+
+  const parseProtocolEntries = async (text, isFinal) => {
+    if (!text) {
+      return
+    }
+
+    PROTOCOL_BOUNDARY_REGEX.lastIndex = 0
+    const starts = []
+    let match
+    while ((match = PROTOCOL_BOUNDARY_REGEX.exec(text)) !== null) {
+      starts.push(match.index)
+    }
+
+    if (starts.length === 0) {
+      if (isFinal) {
+        await parseEntry(text.trim())
+        remainder = ''
+      } else {
+        remainder = text.length > STREAM_PROTOCOL_TAIL_CHARS ? text.slice(-STREAM_PROTOCOL_TAIL_CHARS) : text
+      }
+      return
+    }
+
+    let emitUntil = starts.length - 1
+    for (let index = 0; index < emitUntil; index += 1) {
+      await parseEntry(text.slice(starts[index], starts[index + 1]).trim())
+    }
+
+    if (isFinal) {
+      await parseEntry(text.slice(starts[emitUntil]).trim())
+      remainder = ''
+    } else {
+      remainder = text.slice(starts[emitUntil])
+    }
+  }
+
+  const processText = async (text, isFinal = false) => {
+    let source = String(text || '')
+    if (!source && !isFinal) {
+      return
+    }
+
+    if (mode === null && /[\r\n]/.test(remainder + source)) {
+      mode = 'line'
+    }
+
+    if (mode === 'line') {
+      source = remainder + source
+      remainder = ''
+      let start = 0
+      for (let index = 0; index <= source.length; index += 1) {
+        const code = index < source.length ? source.charCodeAt(index) : -1
+        if (index === source.length && !isFinal) {
+          break
+        }
+        if (code !== 10 && code !== 13 && index !== source.length) {
+          continue
+        }
+
+        if (index > start) {
+          await parseEntry(source.slice(start, index).trim())
+        }
+
+        if (code === 13 && index + 1 < source.length && source.charCodeAt(index + 1) === 10) {
+          index += 1
+        }
+        start = index + 1
+      }
+
+      if (!isFinal && start <= source.length) {
+        remainder = source.slice(start)
+      }
+      return
+    }
+
+    if (isFinal && mode === null) {
+      mode = /[\r\n]/.test(remainder + source) ? 'line' : 'protocol'
+    }
+
+    await parseProtocolEntries(remainder + source, isFinal)
+  }
+
+  return {
+    processText,
+    finish: async () => processText('', true),
+  }
+}
+
 function forEachProtocolDelimitedEntry (text, handler) {
   const source = String(text || '')
   const visit = typeof handler === 'function' ? handler : null
@@ -433,56 +604,7 @@ function parseInChunks (text, options = {}) {
 }
 
 async function parseInChunksAsync (text, options = {}) {
-  const chunkSize = Math.max(1, Number(options.chunkSize) || 1000)
-  const onChunk = typeof options.onChunk === 'function' ? options.onChunk : null
-  const yieldEveryChunks = Math.max(1, Number(options.yieldEveryChunks) || 1)
-  const protocolCounts = {}
-  let totalNodes = 0
-  let flushedChunkCount = 0
-  const chunk = []
-
-  const maybeYield = async () => {
-    if (flushedChunkCount % yieldEveryChunks !== 0) {
-      return
-    }
-    await new Promise(resolve => setImmediate(resolve))
-  }
-
-  const flushChunk = async () => {
-    if (!onChunk || chunk.length === 0) {
-      chunk.length = 0
-      return
-    }
-    const output = chunk.slice()
-    chunk.length = 0
-    await onChunk(output)
-    flushedChunkCount += 1
-    await maybeYield()
-  }
-
-  const parseEntry = async (line) => {
-    if (!line || line.startsWith('#')) {
-      return
-    }
-
-    const parsedNode = parseLineToNode(line)
-    if (!parsedNode || !isParsedNodeValid(parsedNode)) {
-      return
-    }
-
-    totalNodes += 1
-    const protocol = String(parsedNode.protocol || '').toLowerCase()
-    if (protocol) {
-      protocolCounts[protocol] = (protocolCounts[protocol] || 0) + 1
-    }
-
-    if (onChunk) {
-      chunk.push(parsedNode)
-      if (chunk.length >= chunkSize) {
-        await flushChunk()
-      }
-    }
-  }
+  const emitter = createChunkedNodeEmitter(options)
 
   if (shouldParseProtocolDelimitedSubscriptionText(text)) {
     const source = String(text || '')
@@ -491,16 +613,23 @@ async function parseInChunksAsync (text, options = {}) {
     let match
     while ((match = PROTOCOL_BOUNDARY_REGEX.exec(source)) !== null) {
       if (currentStart >= 0 && match.index > currentStart) {
-        await parseEntry(source.slice(currentStart, match.index).trim())
+        await emitter.parseEntry(source.slice(currentStart, match.index).trim())
       }
       currentStart = match.index
     }
     if (currentStart >= 0 && currentStart < source.length) {
-      await parseEntry(source.slice(currentStart).trim())
+      await emitter.parseEntry(source.slice(currentStart).trim())
     }
   } else {
-    const decodedText = getSubscriptionParseSource(text)
-    const source = String(decodedText || '')
+    // Avoid normalizeSubscriptionText() on large strings: it copies the entire
+    // text via .replace(), which briefly doubles memory for multi-MB inputs.
+    // Instead, use the raw text and normalize each line individually.
+    const rawSource = String(text || '')
+    const needsLineLevelNormalize = !shouldParseRawLineDelimitedSubscriptionText(text) && /[\r\n]/.test(rawSource)
+    const source = needsLineLevelNormalize ? rawSource : (getSubscriptionParseSource(text) || rawSource)
+    // eslint-disable-next-line no-control-regex
+    const CTRL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g
+    const BR_RE = /<br\s*\/?>/gi
     let start = 0
     for (let index = 0; index <= source.length; index += 1) {
       const code = index < source.length ? source.charCodeAt(index) : -1
@@ -511,6 +640,19 @@ async function parseInChunksAsync (text, options = {}) {
       let line = ''
       if (index > start) {
         line = source.slice(start, index).trim()
+        if (needsLineLevelNormalize && line) {
+          line = line.replace(CTRL_CHAR_RE, '').replace(BR_RE, '\n')
+          // <br> may have split this line into sub-lines
+          if (line.includes('\n')) {
+            for (const subLine of line.split('\n')) {
+              const trimmed = subLine.trim()
+              if (trimmed) {
+                await emitter.parseEntry(trimmed)
+              }
+            }
+            line = ''
+          }
+        }
       }
 
       if (code === 13 && index + 1 < source.length && source.charCodeAt(index + 1) === 10) {
@@ -518,14 +660,126 @@ async function parseInChunksAsync (text, options = {}) {
       }
       start = index + 1
 
-      await parseEntry(line)
+      await emitter.parseEntry(line)
     }
   }
 
-  await flushChunk()
+  await emitter.flushChunk()
+  return emitter.summary()
+}
+
+async function parseReadableInChunksAsync (readable, options = {}) {
+  if (!readable || typeof readable[Symbol.asyncIterator] !== 'function') {
+    throw new TypeError('parseReadableInChunksAsync requires an async iterable readable stream')
+  }
+
+  const emitter = createChunkedNodeEmitter(options)
+  const textParser = createStreamingSubscriptionEntryParser(emitter.parseEntry)
+  const utf8Decoder = new StringDecoder('utf8')
+  const base64Utf8Decoder = new StringDecoder('utf8')
+  let mode = options.mode === 'base64' || options.mode === 'plain' ? options.mode : 'detect'
+  let sniffBuffer = ''
+  let base64Buffer = ''
+  let bytes = 0
+
+  const feedPlainBuffer = async (buffer) => {
+    const text = utf8Decoder.write(buffer)
+    if (text) {
+      await textParser.processText(text)
+    }
+  }
+
+  const feedBase64Text = async (text, isFinal = false) => {
+    if (text) {
+      base64Buffer += text.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
+    }
+
+    let usableLength = isFinal ? base64Buffer.length : base64Buffer.length - (base64Buffer.length % 4)
+    if (!isFinal && usableLength > STREAM_BASE64_DECODE_CHARS) {
+      usableLength -= usableLength % 4
+    }
+
+    if (usableLength > 0) {
+      let part = base64Buffer.slice(0, usableLength)
+      base64Buffer = base64Buffer.slice(usableLength)
+      if (isFinal) {
+        while (part.length % 4) {
+          part += '='
+        }
+      }
+      const decoded = Buffer.from(part, 'base64')
+      const decodedText = base64Utf8Decoder.write(decoded)
+      if (decodedText) {
+        await textParser.processText(decodedText)
+      }
+    }
+
+    if (isFinal) {
+      const tail = base64Utf8Decoder.end()
+      if (tail) {
+        await textParser.processText(tail)
+      }
+    }
+  }
+
+  const decideMode = async (force = false) => {
+    if (mode !== 'detect') {
+      return
+    }
+    if (!force && sniffBuffer.length < STREAM_PARSE_SNIFF_CHARS && !sniffBuffer.includes('://')) {
+      return
+    }
+    mode = isLikelyBase64SubscriptionText(sniffBuffer) ? 'base64' : 'plain'
+    if (mode === 'base64') {
+      await feedBase64Text(sniffBuffer)
+    } else {
+      await textParser.processText(sniffBuffer)
+    }
+    sniffBuffer = ''
+  }
+
+  for await (const item of readable) {
+    const buffer = Buffer.isBuffer(item) ? item : Buffer.from(item)
+    bytes += buffer.length
+
+    if (mode === 'plain') {
+      await feedPlainBuffer(buffer)
+    } else if (mode === 'base64') {
+      const text = utf8Decoder.write(buffer)
+      if (text) {
+        await feedBase64Text(text, false)
+      }
+    } else {
+      sniffBuffer += utf8Decoder.write(buffer)
+      await decideMode(false)
+    }
+  }
+
+  if (mode === 'detect') {
+    sniffBuffer += utf8Decoder.end()
+    await decideMode(true)
+  } else if (mode === 'plain') {
+    const tail = utf8Decoder.end()
+    if (tail) {
+      await textParser.processText(tail)
+    }
+  } else {
+    const tail = utf8Decoder.end()
+    if (tail) {
+      await feedBase64Text(tail)
+    }
+  }
+
+  if (mode === 'base64') {
+    await feedBase64Text('', true)
+  }
+
+  await textParser.finish()
+  await emitter.flushChunk()
   return {
-    totalNodes,
-    protocolCounts,
+    ...emitter.summary(),
+    bytes,
+    streamMode: mode,
   }
 }
 
@@ -1106,6 +1360,7 @@ module.exports = {
   isNodeSupportedByCurrentXray,
   parseInChunks,
   parseInChunksAsync,
+  parseReadableInChunksAsync,
   parse (text) {
     const proxies = []
     if (!text) return proxies

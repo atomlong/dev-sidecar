@@ -1,0 +1,19 @@
+{
+  "name": "@docmirror/fadvise-linux",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Linux-only N-API helper for posix_fadvise(DONTNEED)",
+  "main": "index.js",
+  "license": "MPL-2.0",
+  "gypfile": true,
+  "os": [
+    "linux"
+  ],
+  "scripts": {
+    "install": "node-gyp rebuild"
+  },
+  "dependencies": {
+    "bindings": "^1.5.0",
+    "node-addon-api": "^8.3.1"
+  }
+}

@@ -721,7 +721,7 @@ function migrateNodeRowToCompactV2 (db, row) {
 
   const entry = {
     node,
-    stable: row.stable === 1 || row.stable === true,
+    stable: row.stable === 1 || row.stable === 'true' ? 1 : 0,
     delay: row.delay,
     country: row.country,
     owner: row.owner,
@@ -833,16 +833,13 @@ function migrateSubscriptionsToCompactV2Schema (db) {
   const upsertSubscription = db.prepare(`
     INSERT INTO subscriptions_v2 (
       source_key, display_label, sort_order, configured,
-      last_seen_stage2_at, last_available_at, zero_available_since,
-      stale_after_days, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      last_seen_stage2_at, stale_after_days, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(source_key) DO UPDATE SET
       display_label = excluded.display_label,
       sort_order = excluded.sort_order,
-      configured = excluded.configured,
+      configured = 1,
       last_seen_stage2_at = excluded.last_seen_stage2_at,
-      last_available_at = excluded.last_available_at,
-      zero_available_since = excluded.zero_available_since,
       stale_after_days = excluded.stale_after_days,
       updated_at = excluded.updated_at
   `)
@@ -3217,7 +3214,7 @@ function normalizeSubscriptionSnapshotInPlace (subscription, fallbackOrder = 0) 
 function syncSubscriptions (cacheFilePath, subscriptions, options = {}) {
   let db = null
   try {
-    db = openSqliteCache(cacheFilePath)
+    db = openSqliteCache(cacheFilePath, { lowFileCache: options.lowFileCache === true })
     if (!db) {
       return null
     }
@@ -3335,12 +3332,21 @@ function syncSubscriptions (cacheFilePath, subscriptions, options = {}) {
     })
     apply()
 
+    if (options.lowFileCache === true) {
+      try {
+        db.pragma('shrink_memory')
+      } catch {
+        // ignore shrink errors; it is only a memory pressure hint
+      }
+    }
+
     return {
       configured: normalizedSubscriptions.length,
       unconfigured: staleConfiguredKeys.length,
       refs: refCount,
     }
-  } catch {
+  } catch (syncErr) {
+    reportSqliteCacheError('syncSubscriptions', cacheFilePath, syncErr)
     return null
   } finally {
     if (db) {
@@ -3354,11 +3360,13 @@ function syncSubscriptionSourceChunk (cacheFilePath, subscription, nodeKeys, opt
   try {
     db = openSqliteCache(cacheFilePath, { lowFileCache: options.lowFileCache === true })
     if (!db) {
+      console.error(`[CHUNK-DEBUG] openSqliteCache returned null for syncSubscriptionSourceChunk (lowFileCache=${options.lowFileCache})`)
       return null
     }
 
     const normalizedSubscription = normalizeSubscriptionSnapshot(subscription, Number(subscription && subscription.sortOrder) || 0)
     if (!normalizedSubscription) {
+      console.error(`[CHUNK-DEBUG] normalizeSubscriptionSnapshot returned null for syncSubscriptionSourceChunk (sourceKey=${subscription && subscription.sourceKey}, url=${subscription && subscription.url})`)
       return null
     }
 
@@ -3478,7 +3486,9 @@ function syncSubscriptionSourceChunk (cacheFilePath, subscription, nodeKeys, opt
       refs: writtenRefs,
       skippedRefs,
     }
-  } catch {
+  } catch (chunkErr) {
+    console.error(`[CHUNK-ERR] syncSubscriptionSourceChunk caught: ${chunkErr && chunkErr.message}`, chunkErr && chunkErr.stack)
+    reportSqliteCacheError('syncSubscriptionSourceChunk', cacheFilePath, chunkErr)
     return null
   } finally {
     if (db) {
@@ -3599,6 +3609,13 @@ function createStage2SeenNodeFilter (cacheFilePath) {
     acceptNodes (nodes, callbacks = {}) {
       return apply(nodes, callbacks)
     },
+    shrinkMemory () {
+      try {
+        db.pragma('shrink_memory')
+      } catch {
+        // ignore shrink errors; it is only a memory pressure hint
+      }
+    },
     close () {
       try {
         db.close()
@@ -3651,8 +3668,8 @@ function readSubscriptionAvailabilitySummary (cacheFilePath, options = {}) {
         displayLabel: row.displayLabel,
         sortOrder: Number(row.sortOrder) || 0,
         configured: row.configured === 1,
-        lastAvailableAt: formatEpochSecondsAsLocalTimestamp(row.lastAvailableAt) || null,
-        zeroAvailableSince: formatEpochSecondsAsLocalTimestamp(row.zeroAvailableSince) || null,
+        lastAvailableAt: row.lastAvailableAt || null,
+        zeroAvailableSince: row.zeroAvailableSince || null,
         staleAfterDays: Number(row.staleAfterDays) || 30,
         stage2NodeCount: Number(row.stage2NodeCount) || 0,
         retainedNodeCount: Number(row.retainedNodeCount) || 0,
@@ -3741,6 +3758,98 @@ function readSubscriptionAvailabilitySummary (cacheFilePath, options = {}) {
       db.close()
     }
   }
+}
+
+function dropSqliteFileCache (cacheFilePath, extraPaths = [], options = {}) {
+  if (process.platform !== 'linux') {
+    return 0
+  }
+
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  const targets = [
+    sqlitePath,
+    `${sqlitePath}-journal`,
+    `${sqlitePath}-wal`,
+    `${sqlitePath}-shm`,
+    ...extraPaths,
+  ]
+  const uniqueTargets = [...new Set(targets.map(item => String(item || '').trim()).filter(Boolean))]
+
+  let applied = 0
+  const fdByPath = new Map()
+  try {
+    for (const targetPath of uniqueTargets) {
+      if (!targetPath || !fs.existsSync(targetPath)) {
+        continue
+      }
+      const fd = fs.openSync(targetPath, 'r')
+      fdByPath.set(targetPath, fd)
+    }
+
+    if (fdByPath.size === 0) {
+      return 0
+    }
+
+    if (typeof options.logFadvise === 'function') {
+      options.logFadvise('drop-sqlite-file-cache-opened', { paths: [...fdByPath.keys()], fdCount: fdByPath.size })
+    }
+
+    // Try native fadvise via @docmirror/fadvise-linux first
+    let usedNative = false
+    try {
+      const fadvise = require('@docmirror/fadvise-linux')
+      if (fadvise && typeof fadvise.fadviseDontNeed === 'function') {
+        for (const fd of fdByPath.values()) {
+          fadvise.fadviseDontNeed(fd, 0, 0)
+          applied += 1
+        }
+        usedNative = true
+      }
+    } catch (e) {
+      // fadvise-linux not available; fall through to built-in
+      if (typeof options.logFadvise === 'function') {
+        options.logFadvise('drop-sqlite-file-cache-native-fail', { error: e.message })
+      }
+    }
+
+    if (!usedNative) {
+      try {
+        const os = require('node:os')
+        for (const fd of fdByPath.values()) {
+          try {
+            os.posix_fadvise(fd, 0, 0, os.constants.POSIX_FADV_DONTNEED)
+            applied += 1
+          } catch (e) {
+            // ignore per-fd failures
+            if (typeof options.logFadvise === 'function') {
+              options.logFadvise('drop-sqlite-file-cache-os-fail', { error: e.message })
+            }
+          }
+        }
+      } catch (e) {
+        // Node.js built-in posix_fadvise not available
+        if (typeof options.logFadvise === 'function') {
+          options.logFadvise('drop-sqlite-file-cache-os-unavail', { error: e.message })
+        }
+      }
+    }
+
+    if (typeof options.logFadvise === 'function') {
+      options.logFadvise('drop-sqlite-file-cache-done', { applied, usedNative, fdCount: fdByPath.size })
+    }
+  } catch {
+    // best-effort: drop failures are not errors
+  } finally {
+    for (const fd of fdByPath.values()) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // ignore close failures
+      }
+    }
+  }
+
+  return applied
 }
 
 function updateSubscriptionAvailability (cacheFilePath, options = {}) {
@@ -4076,6 +4185,8 @@ module.exports = {
   getSqliteCacheSizeBytes,
   readOutdatedHashSet,
   upsertOutdated,
+  dropSqliteFileCache,
+  getStage2SeenDbPath,
   updateSubscriptionAvailability,
   writeCacheUpdates,
   writeCache,

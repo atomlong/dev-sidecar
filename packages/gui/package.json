@@ -11,7 +11,7 @@
   "homepage": "https://github.com/docmirror/dev-sidecar",
   "scripts": {
     "preelectron:build": "cross-env CXXFLAGS=-std=c++17 CL=/std:c++17 electron-builder install-app-deps && node scripts/clean-native-artifacts.js",
-    "postelectron:build": "npm rebuild better-sqlite3 --prefix ../core",
+    "postelectron:build": "node scripts/rebuild-core-native.js",
     "serve": "vue-cli-service serve",
     "build": "vue-cli-service build",
     "lint": "vue-cli-service lint",
@@ -23,6 +23,7 @@
     "electron:icons-black": "electron-icon-builder --input=./public/logo/win-black.png --output=build/black --flatten"
   },
   "dependencies": {
+    "@docmirror/fadvise-linux": "workspace:*",
     "@docmirror/dev-sidecar": "workspace:*",
     "@docmirror/mitmproxy": "workspace:*",
     "@starknt/shutdown-handler-napi": "^0.0.3",

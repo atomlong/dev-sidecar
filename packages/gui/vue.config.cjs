@@ -49,6 +49,7 @@ module.exports = defineConfig({
       mainProcessFile: './src/background.js',
       customFileProtocol: './',
       externals: [
+        '@docmirror/fadvise-linux',
         'better-sqlite3',
         'bindings',
         'file-uri-to-path',
