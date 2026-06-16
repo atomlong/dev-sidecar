@@ -1158,6 +1158,29 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
     candidateNodes: Array.isArray(nodeTarget) ? nodeTarget.length : 0,
   })
 
+  const stage2SeenExtraPaths = stage2SeenCachePath ? [xrayCache.getStage2SeenDbPath(stage2SeenCachePath)].filter(Boolean) : []
+
+  const reclaimStage2SqliteMemory = async (reason, extra = {}, options = {}) => {
+    if (!stage2SeenCachePath) {
+      return
+    }
+
+    if (stage2SeenFilter && typeof stage2SeenFilter.shrinkMemory === 'function') {
+      stage2SeenFilter.shrinkMemory()
+    }
+
+    xrayCache.dropSqliteFileCache(stage2SeenCachePath, stage2SeenExtraPaths, {
+      logFadvise: (label, detail) => logStage2MemoryUsage(log, label, { ...detail, reason, ...extra }),
+    })
+
+    const shouldRunGc = options.forceGc === true || process.memoryUsage().heapUsed >= STAGE2_GC_HEAP_USED_THRESHOLD_BYTES
+    if (shouldRunGc) {
+      await runStage2GarbageCollection(log, reason, extra, {
+        logAfter: options.logAfterGc !== false,
+      })
+    }
+  }
+
   const getSubscriptionSourceMeta = (subscriptionSnapshot) => ({
     sourceKey: subscriptionSnapshot.sourceKey,
     url: subscriptionSnapshot.url,
@@ -1314,6 +1337,11 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
         batchSubscriptions.push(subscriptionSnapshot)
         try {
           log.info(`正在更新订阅: ${subscriptionLabel}`)
+          await reclaimStage2SqliteMemory('pre-subscription-download', {
+            subscription: subscriptionLabel,
+            processed: subscriptionIndex - 1,
+            total,
+          })
           let content = await download(subUrl)
           const contentBytes = Buffer.byteLength(String(content || ''))
           // Release download buffer early for large subscriptions so V8 can
@@ -1321,6 +1349,12 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
           const shouldLogDetail = shouldLogLargeSubscriptionDetail({ bytes: contentBytes })
           subscriptionSnapshot.largeSubscription = shouldLogDetail
           if (shouldLogDetail) {
+            await reclaimStage2SqliteMemory('large-subscription-before-parse-fadvise', {
+              subscription: subscriptionLabel,
+              bytes: contentBytes,
+            }, {
+              logAfterGc: false,
+            })
             logStage2MemoryUsage(log, 'subscription-large-before-parse', {
               subscription: subscriptionLabel,
               bytes: contentBytes,
@@ -1453,13 +1487,7 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
       // file cache grows monotonically (up to ~630 MB for a 632 MB
       // database) and inflates the cgroup peak by ~400-500 MB.
       if (stage2SeenCachePath) {
-        if (stage2SeenFilter && typeof stage2SeenFilter.shrinkMemory === 'function') {
-          stage2SeenFilter.shrinkMemory()
-        }
-        const stage2SeenExtraPaths = [xrayCache.getStage2SeenDbPath(stage2SeenCachePath)].filter(Boolean)
-        xrayCache.dropSqliteFileCache(stage2SeenCachePath, stage2SeenExtraPaths, {
-          logFadvise: (label, detail) => logStage2MemoryUsage(log, label, { ...detail, reason: 'post-subscription-batch' }),
-        })
+        await reclaimStage2SqliteMemory('post-subscription-batch')
       }
 
       if (process.memoryUsage().heapUsed >= STAGE2_GC_HEAP_USED_THRESHOLD_BYTES) {
