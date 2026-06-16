@@ -16,6 +16,8 @@
     "test": "mocha"
   },
   "dependencies": {
+    "@docmirror/fadvise-linux": "workspace:*",
+    "@docmirror/mitmproxy": "workspace:*",
     "@starknt/sysproxy": "^0.0.3",
     "@vscode/sudo-prompt": "^9.3.2",
     "better-sqlite3": "12.10.0",

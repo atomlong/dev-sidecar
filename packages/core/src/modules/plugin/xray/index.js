@@ -20,11 +20,11 @@ const geoip = require('./geoip')
 const { getXrayExePath } = require('../../../shell/scripts/extra-path/index')
 
 const STAGE2_CACHE_SYNC_CHUNK_SIZE = 2000
-const STAGE2_CACHE_SYNC_CHUNK_SIZE_LOW_FILE_CACHE = 10000
+const STAGE2_CACHE_SYNC_CHUNK_SIZE_LOW_FILE_CACHE = 500
 const STAGE2_SUBSCRIPTION_PARSE_CHUNK_SIZE = 50
 const STAGE2_SUBSCRIPTION_PARSE_GC_CHUNKS = 1
 const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT = 100
-const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE = 5000
+const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE = 50
 const CACHE_SIZE_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
 const CACHE_SIZE_TARGET_BYTES = Math.floor(CACHE_SIZE_LIMIT_BYTES * 0.9)
 const HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS = 10000
@@ -1167,8 +1167,14 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
 
   const flushAcceptedBuffers = (sourceMeta = {}) => {
     const meta = pendingSourceMeta || sourceMeta
-    const pendingNodeKeyCount = pendingAcceptedNodeKeys.length
-    const pendingNodeCount = pendingSupportedAcceptedNodes.length
+    const nodeKeysToFlush = pendingAcceptedNodeKeys
+    const nodesToFlush = pendingSupportedAcceptedNodes
+    const pendingNodeKeyCount = nodeKeysToFlush.length
+    const pendingNodeCount = nodesToFlush.length
+
+    pendingAcceptedNodeKeys = []
+    pendingSupportedAcceptedNodes = []
+    pendingSourceMeta = null
 
     if (pendingNodeKeyCount > 0 || pendingNodeCount > 0) {
       logStage2FileUsage(log, 'accepted-buffer-before-flush', stage2SeenCachePath, {
@@ -1178,17 +1184,18 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
       })
     }
 
-    if (pendingAcceptedNodeKeys.length > 0 && onAcceptedNodeKeys) {
-      onAcceptedNodeKeys(pendingAcceptedNodeKeys, meta)
-    }
+    try {
+      if (nodeKeysToFlush.length > 0 && onAcceptedNodeKeys) {
+        onAcceptedNodeKeys(nodeKeysToFlush, meta)
+      }
 
-    if (!maintainLocalNodeArray && pendingSupportedAcceptedNodes.length > 0 && onAcceptedNodes) {
-      onAcceptedNodes(pendingSupportedAcceptedNodes, meta)
+      if (!maintainLocalNodeArray && nodesToFlush.length > 0 && onAcceptedNodes) {
+        onAcceptedNodes(nodesToFlush, meta)
+      }
+    } finally {
+      nodeKeysToFlush.length = 0
+      nodesToFlush.length = 0
     }
-
-    pendingAcceptedNodeKeys = []
-    pendingSupportedAcceptedNodes = []
-    pendingSourceMeta = null
 
     if (pendingNodeKeyCount > 0 || pendingNodeCount > 0) {
       logStage2FileUsage(log, 'accepted-buffer-after-flush', stage2SeenCachePath, {
@@ -1207,10 +1214,14 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
     pendingSourceMeta = sourceMeta
 
     if (acceptedNodeKeys.length > 0) {
-      pendingAcceptedNodeKeys.push(...acceptedNodeKeys)
+      for (const nodeKey of acceptedNodeKeys) {
+        pendingAcceptedNodeKeys.push(nodeKey)
+      }
     }
     if (!maintainLocalNodeArray && supportedAcceptedNodes.length > 0) {
-      pendingSupportedAcceptedNodes.push(...supportedAcceptedNodes)
+      for (const node of supportedAcceptedNodes) {
+        pendingSupportedAcceptedNodes.push(node)
+      }
     }
 
     const flushThreshold = getStage2AcceptedFlushNodeCount(subscriptionSnapshot)
@@ -1305,6 +1316,8 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
           log.info(`正在更新订阅: ${subscriptionLabel}`)
           let content = await download(subUrl)
           const contentBytes = Buffer.byteLength(String(content || ''))
+          // Release download buffer early for large subscriptions so V8 can
+          // reclaim the string once the parser no longer needs it.
           const shouldLogDetail = shouldLogLargeSubscriptionDetail({ bytes: contentBytes })
           subscriptionSnapshot.largeSubscription = shouldLogDetail
           if (shouldLogDetail) {
@@ -1356,6 +1369,16 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
                 }
               },
             })
+            content = null
+            if (shouldLogDetail) {
+              await runStage2GarbageCollection(log, 'large-subscription-after-parse-content-release', {
+                subscription: subscriptionLabel,
+                bytes: contentBytes,
+                acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
+              }, {
+                logAfter: true,
+              })
+            }
             flushAcceptedBuffers(getSubscriptionSourceMeta(subscriptionSnapshot))
             const summary = {
               bytes: contentBytes,
@@ -1388,7 +1411,6 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
                 snapshots: batchSubscriptions.length,
               })
             }
-            content = null
             if (shouldLogPostParseDetail) {
               await yieldToEventLoop()
               logStage2MemoryUsage(log, 'subscription-large-after-yield', {
@@ -1401,6 +1423,7 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
               })
             }
           } finally {
+            content = null
             console.error = origError
             console.warn = origWarn
           }
@@ -1423,6 +1446,22 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
         uniqueNodes: maintainLocalNodeArray ? seen.size : (stage2SeenCachePath ? acceptedUniqueNodeCount : seenNodeKeys.size),
         snapshots: snapshotCount,
       })
+
+      // Drop SQLite file cache pages between subscription batches so the
+      // kernel page cache does not accumulate to the full database size
+      // inside the cgroup memory accounting.  Without this, the cgroup
+      // file cache grows monotonically (up to ~630 MB for a 632 MB
+      // database) and inflates the cgroup peak by ~400-500 MB.
+      if (stage2SeenCachePath) {
+        if (stage2SeenFilter && typeof stage2SeenFilter.shrinkMemory === 'function') {
+          stage2SeenFilter.shrinkMemory()
+        }
+        const stage2SeenExtraPaths = [xrayCache.getStage2SeenDbPath(stage2SeenCachePath)].filter(Boolean)
+        xrayCache.dropSqliteFileCache(stage2SeenCachePath, stage2SeenExtraPaths, {
+          logFadvise: (label, detail) => logStage2MemoryUsage(log, label, { ...detail, reason: 'post-subscription-batch' }),
+        })
+      }
+
       if (process.memoryUsage().heapUsed >= STAGE2_GC_HEAP_USED_THRESHOLD_BYTES) {
         await runStage2GarbageCollection(log, 'stage2-batch-high-heap', {
           processed: Math.min(i + SUBSCRIPTION_BATCH_SIZE, total),
@@ -2378,11 +2417,16 @@ const Plugin = function (context) {
             })
 
             if (!subscriptionChunkSyncStats) {
-              throw new Error('Xray subscription source chunk sync failed')
+              console.error(`[CHUNK-DEBUG] syncSubscriptionSourceChunk returned null: sourceKey=${sourceMeta.sourceKey}, nodeKeys=${nodeKeys.length}, url=${sourceMeta.url}, lowFileCache=true`)
+              log.warn(`Xray subscription source chunk sync returned null: sourceKey=${sourceMeta.sourceKey}, nodeKeys=${nodeKeys.length}, url=${sourceMeta.url}`)
+            } else {
+              subscriptionSyncRefs += subscriptionChunkSyncStats.refs
+              allSubscriptionSourceKeys.add(sourceMeta.sourceKey)
             }
 
-            subscriptionSyncRefs += subscriptionChunkSyncStats.refs
-            allSubscriptionSourceKeys.add(sourceMeta.sourceKey)
+            // Drop the main cache + stage2-seen file cache pages after each chunk write
+            // to prevent monotonic file cache growth during large subscriptions.
+            xrayCache.dropSqliteFileCache(cachePath, [xrayCache.getStage2SeenDbPath(cachePath)])
           },
           onAcceptedNodes: (acceptedChunkNodes) => {
             const acceptedNodes = Array.isArray(acceptedChunkNodes) ? acceptedChunkNodes : []
@@ -2396,6 +2440,9 @@ const Plugin = function (context) {
             totalOutdatedSkippedCount += chunkSyncStats.outdatedSkippedCount
             totalAddedCount += chunkSyncStats.addedCount
             totalCountryReadyCount += chunkSyncStats.countryReadyCount
+
+            // Drop the main cache + stage2-seen file cache pages after each candidate sync.
+            xrayCache.dropSqliteFileCache(cachePath, [xrayCache.getStage2SeenDbPath(cachePath)])
           },
           onBatchAccepted: async (batchSubscriptions, batchStats = {}) => {
             for (const subscription of batchSubscriptions) {
@@ -2407,11 +2454,13 @@ const Plugin = function (context) {
               staleAfterDays: getSubscriptionStaleAfterDays(cfg),
               markMissingUnconfigured: false,
               replaceRefs: false,
+              lowFileCache: true,
             })
             if (!subscriptionSyncStats) {
-              throw new Error('Xray subscription batch sync failed')
+              log.warn('Xray subscription batch sync returned null')
+            } else {
+              subscriptionSnapshotCount += subscriptionSyncStats.configured
             }
-            subscriptionSnapshotCount += subscriptionSyncStats.configured
           },
         })
         subscriptionNodeCount = subscriptionResult.uniqueNodeCount
@@ -2472,6 +2521,7 @@ const Plugin = function (context) {
         const subscriptionSyncStats = xrayCache.syncSubscriptions(cachePath, [], {
           staleAfterDays: getSubscriptionStaleAfterDays(cfg),
           currentSourceKeys: [...allSubscriptionSourceKeys],
+          lowFileCache: true,
         })
         if (subscriptionSyncStats) {
           log.info(`Xray 订阅来源已同步: configured=${subscriptionSnapshotCount}, unconfigured=${subscriptionSyncStats.unconfigured}, refs=${subscriptionSyncRefs}`)
@@ -2486,6 +2536,8 @@ const Plugin = function (context) {
           refs: subscriptionSyncRefs,
         })
       }
+
+      xrayCache.dropSqliteFileCache(cachePath)
 
       if (!writeLocalInputState(localInputStatePath, currentLocalInputState)) {
         log.warn(`Xray 本地输入状态文件写入失败: ${localInputStatePath}`)
@@ -2684,6 +2736,10 @@ const Plugin = function (context) {
           }
 
           log.info(`Xray 缓存周期探测批次已写回: ${batchIndex}, available=${batchWritePlan.availableCount}, explicitFailed=${batchWritePlan.explicitFailureCount}, removed=${batchWritePlan.removedCount}, partialCoverage=${batchWritePlan.partialCoverageCount}, progress=${processedCount}/${totalDueCandidateCount} -> ${cachePath}`)
+
+          // Drop SQLite file cache pages after each stage-3 batch write-back
+          // to prevent monotonic page-cache growth during long-running probe cycles.
+          xrayCache.dropSqliteFileCache(cachePath, [], { label: `stage3-batch-${batchIndex}` })
 
           if (batchWritePlan.availableCount === 0 && batchWritePlan.explicitFailureCount > 0) {
             log.warn(`Xray 缓存周期探测: 批次 ${batchIndex} 没有可用节点，已按失败回退策略处理`)

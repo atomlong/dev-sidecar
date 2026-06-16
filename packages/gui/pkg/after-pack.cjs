@@ -48,6 +48,7 @@ function writeNativeHelperStub (helperPath) {
 function ensureNativeRuntimeDependencies (resourcesDir) {
   const unpackedNodeModulesDir = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules')
   fs.mkdirSync(unpackedNodeModulesDir, { recursive: true })
+  copyRuntimePackage('@docmirror/fadvise-linux', unpackedNodeModulesDir)
   copyRuntimePackage('better-sqlite3', unpackedNodeModulesDir)
   copyRuntimePackage('bindings', unpackedNodeModulesDir)
   copyRuntimePackage('file-uri-to-path', unpackedNodeModulesDir)
