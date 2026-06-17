@@ -26,9 +26,9 @@ const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT = 100
 const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE = 50
 const CACHE_SIZE_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
 const CACHE_SIZE_TARGET_BYTES = Math.floor(CACHE_SIZE_LIMIT_BYTES * 0.9)
-const HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS = 10000
-const HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS = 25000
-const HOT_COLD_MIGRATION_STAGE3_BATCH_ROWS = 25000
+const HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS = 1000
+const HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS = 1000
+const HOT_COLD_MIGRATION_STAGE3_BATCH_ROWS = 1000
 const LARGE_SUBSCRIPTION_BYTES_THRESHOLD = 5 * 1024 * 1024
 const LARGE_SUBSCRIPTION_NODE_THRESHOLD = 50000
 const STAGE2_GC_HEAP_USED_THRESHOLD_BYTES = 96 * 1024 * 1024
@@ -401,6 +401,24 @@ async function runStage2GarbageCollection (log, reason, extra = {}, options = {}
   } catch {
     return false
   }
+}
+
+async function reclaimStageSqliteFileCache (log, reason, cachePath, extra = {}, options = {}) {
+  if (!cachePath) {
+    return false
+  }
+
+  xrayCache.dropSqliteFileCache(cachePath, [], {
+    logFadvise: (label, detail) => logStage2MemoryUsage(log, label, { ...detail, reason, ...extra }),
+  })
+
+  await runStage2GarbageCollection(log, reason, extra, {
+    force: options.forceGc === true,
+    logSkipped: options.logGcSkipped === true,
+  })
+
+  logStage2MemoryUsage(log, reason, extra)
+  return true
 }
 
 function summarizeProtocolCounts (protocolCounts) {
@@ -2211,6 +2229,12 @@ const Plugin = function (context) {
       maybeLogHotColdMigrationProgress(log, 'stage1', startupMigration)
       const stage1Retirement = maybeRetireLegacyNodesStorage(log, cachePath, 'stage1', startupMigration)
       maybeCompactRetiredSqliteCache(log, cachePath, 'stage1', stage1Retirement)
+      await reclaimStageSqliteFileCache(log, 'stage1-after-cache-bootstrap-reclaim', cachePath, {
+        migratedRows: startupMigration.migratedRows,
+        migrationPending: startupMigration.pending,
+      }, {
+        forceGc: true,
+      })
 
       // 1. Determine Port
       let port = cfg.localPort
@@ -2374,6 +2398,12 @@ const Plugin = function (context) {
       maybeLogHotColdMigrationProgress(log, 'stage2', stage2Migration)
       const stage2Retirement = maybeRetireLegacyNodesStorage(log, cachePath, 'stage2', stage2Migration)
       maybeCompactRetiredSqliteCache(log, cachePath, 'stage2', stage2Retirement)
+      await reclaimStageSqliteFileCache(log, 'stage2-after-migration-reclaim', cachePath, {
+        migratedRows: stage2Migration.migratedRows,
+        migrationPending: stage2Migration.pending,
+      }, {
+        forceGc: true,
+      })
 
       const manualNodes = collectNodesFromLinks(cfg.nodes)
       const subscriptionSyncDecision = getSubscriptionSyncDecision({ cachePath, cfg })
@@ -2404,6 +2434,13 @@ const Plugin = function (context) {
       const localCandidateNodes = []
       appendUniqueNodes(localCandidateNodes, candidateNodeSeen, configNodes)
       appendUniqueNodes(localCandidateNodes, candidateNodeSeen, manualNodes)
+      await reclaimStageSqliteFileCache(log, 'stage2-before-subscription-load-reclaim', cachePath, {
+        configNodes: configNodes.length,
+        manualNodes: manualNodes.length,
+        deduplicated: localCandidateNodes.length,
+      }, {
+        forceGc: true,
+      })
 
       let subscriptionNodeCount = 0
       let subscriptionSnapshotCount = 0
@@ -2622,6 +2659,10 @@ const Plugin = function (context) {
       maybeLogHotColdMigrationProgress(log, 'stage3', stage3Migration)
       const stage3Retirement = maybeRetireLegacyNodesStorage(log, cachePath, 'stage3', stage3Migration)
       maybeCompactRetiredSqliteCache(log, cachePath, 'stage3', stage3Retirement)
+      await reclaimStageSqliteFileCache(log, 'stage3-after-migration-reclaim', cachePath, {
+        migratedRows: stage3Migration.migratedRows,
+        migrationPending: stage3Migration.pending,
+      })
 
       const generation = ++refreshGeneration
       const roundStartedAt = Date.now()

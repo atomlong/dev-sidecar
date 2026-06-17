@@ -326,8 +326,6 @@ module.exports = {
   productName: 'dev-sidecar',
   artifactName: 'DevSidecar-${version}-${arch}.${ext}',
   asarUnpack: [
-    '**/node_modules/@docmirror/fadvise-linux/**/*',
-    '!**/node_modules/@docmirror/fadvise-linux/build/node_gyp_bins{,/**/*}',
     '**/node_modules/better-sqlite3/**/*',
     '!**/node_modules/better-sqlite3/build/node_gyp_bins{,/**/*}',
   ],
