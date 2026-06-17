@@ -6,7 +6,6 @@ const http = require('node:http')
 const net = require('node:net')
 const v8 = require('node:v8')
 const vm = require('node:vm')
-const { StringDecoder } = require('node:string_decoder')
 const pluginConfig = require('./config')
 const processApi = require('./process')
 const portFinder = require('./port-finder')
@@ -957,9 +956,10 @@ async function collectBootstrapCandidateEntries (entries, allowedCountries, allo
   }
 }
 
-function download (url, timeoutMs = 30000) {
+function openDownloadReadable (url, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const client = url.startsWith('https') ? https : http
+    let settled = false
     const request = client.get(url, (res) => {
       if (res.statusCode !== 200) {
         res.resume()
@@ -967,17 +967,11 @@ function download (url, timeoutMs = 30000) {
         return
       }
 
-      const decoder = new StringDecoder('utf8')
-      const chunks = []
-      res.on('data', (chunk) => {
-        chunks.push(decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
-      })
-      res.on('end', () => {
-        const tail = decoder.end()
-        if (tail) {
-          chunks.push(tail)
-        }
-        resolve(chunks.join(''))
+      settled = true
+      const contentLength = Number(res.headers && res.headers['content-length'])
+      resolve({
+        readable: res,
+        contentLength: Number.isFinite(contentLength) && contentLength >= 0 ? contentLength : 0,
       })
     })
 
@@ -986,9 +980,23 @@ function download (url, timeoutMs = 30000) {
     })
 
     request.on('error', (e) => {
-      reject(e)
+      if (!settled) {
+        reject(e)
+      }
     })
   })
+}
+
+async function * countReadableBytes (readable, onBytes) {
+  let bytes = 0
+  for await (const item of readable) {
+    const buffer = Buffer.isBuffer(item) ? item : Buffer.from(item)
+    bytes += buffer.length
+    if (typeof onBytes === 'function') {
+      await onBytes(bytes)
+    }
+    yield buffer
+  }
 }
 
 function formatSubscriptionUrlForLog (value) {
@@ -1342,33 +1350,45 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
             processed: subscriptionIndex - 1,
             total,
           })
-          let content = await download(subUrl)
-          const contentBytes = Buffer.byteLength(String(content || ''))
-          // Release download buffer early for large subscriptions so V8 can
-          // reclaim the string once the parser no longer needs it.
-          const shouldLogDetail = shouldLogLargeSubscriptionDetail({ bytes: contentBytes })
+          let activeReadable = null
+          const { readable, contentLength } = await openDownloadReadable(subUrl)
+          activeReadable = readable
+          let shouldLogDetail = shouldLogLargeSubscriptionDetail({ bytes: contentLength })
+          let largeSubscriptionBeforeParseLogged = false
           subscriptionSnapshot.largeSubscription = shouldLogDetail
-          if (shouldLogDetail) {
+          const logLargeSubscriptionBeforeParse = async (bytes, reason = 'large-subscription-before-parse') => {
+            if (largeSubscriptionBeforeParseLogged) {
+              return
+            }
+            largeSubscriptionBeforeParseLogged = true
+            shouldLogDetail = true
+            subscriptionSnapshot.largeSubscription = true
             await reclaimStage2SqliteMemory('large-subscription-before-parse-fadvise', {
               subscription: subscriptionLabel,
-              bytes: contentBytes,
+              bytes,
             }, {
               logAfterGc: false,
             })
             logStage2MemoryUsage(log, 'subscription-large-before-parse', {
               subscription: subscriptionLabel,
-              bytes: contentBytes,
+              bytes,
+              reason,
             })
             logStage2FileUsage(log, 'subscription-large-before-parse', stage2SeenCachePath, {
               subscription: subscriptionLabel,
-              bytes: contentBytes,
+              bytes,
+              reason,
             })
             await runStage2GarbageCollection(log, 'large-subscription-before-parse', {
               subscription: subscriptionLabel,
-              bytes: contentBytes,
+              bytes,
+              reason,
             }, {
               logAfter: true,
             })
+          }
+          if (shouldLogDetail) {
+            await logLargeSubscriptionBeforeParse(contentLength, 'content-length')
           }
           const origError = console.error
           const origWarn = console.warn
@@ -1376,7 +1396,12 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
           console.warn = () => {}
           try {
             let parsedChunkCount = 0
-            const parseSummary = await parser.parseInChunksAsync(content, {
+            const streamingReadable = countReadableBytes(activeReadable, async (bytes) => {
+              if (!shouldLogDetail && shouldLogLargeSubscriptionDetail({ bytes })) {
+                await logLargeSubscriptionBeforeParse(bytes, 'stream-bytes-threshold')
+              }
+            })
+            const parseSummary = await parser.parseReadableInChunksAsync(streamingReadable, {
               chunkSize: STAGE2_SUBSCRIPTION_PARSE_CHUNK_SIZE,
               yieldEveryChunks: 1,
               onChunk: async (chunkNodes) => {
@@ -1403,9 +1428,10 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
                 }
               },
             })
-            content = null
+            const contentBytes = Number(parseSummary.bytes) || contentLength || 0
+            activeReadable = null
             if (shouldLogDetail) {
-              await runStage2GarbageCollection(log, 'large-subscription-after-parse-content-release', {
+              await runStage2GarbageCollection(log, 'large-subscription-after-stream-parse', {
                 subscription: subscriptionLabel,
                 bytes: contentBytes,
                 acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
@@ -1436,7 +1462,7 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
             if (parsedNodeCount === 0) {
               log.warn(`订阅解析为空: ${subscriptionLabel}, bytes=${summary.bytes}, protocols=${protocolSummary}`)
             } else {
-              log.info(`订阅解析成功: ${subscriptionLabel}, nodes=${parsedNodeCount}, bytes=${summary.bytes}, protocols=${protocolSummary}`)
+              log.info(`订阅解析成功: ${subscriptionLabel}, nodes=${parsedNodeCount}, bytes=${summary.bytes}, mode=${parseSummary.streamMode || 'stream'}, protocols=${protocolSummary}`)
             }
             if (shouldLogPostParseDetail) {
               logStage2MemoryUsage(log, 'subscription-large-after-accept', {
@@ -1457,7 +1483,9 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
               })
             }
           } finally {
-            content = null
+            if (activeReadable && typeof activeReadable.destroy === 'function' && !activeReadable.destroyed) {
+              activeReadable.destroy()
+            }
             console.error = origError
             console.warn = origWarn
           }
