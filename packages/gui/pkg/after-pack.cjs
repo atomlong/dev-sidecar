@@ -2,27 +2,13 @@ const fs = require('node:fs')
 const path = require('node:path')
 const archiver = require('archiver')
 const pkg = require('../package.json')
+const { copyRuntimePackage } = require('../scripts/clean-native-artifacts')
 
 function resolvePackageDir (packageName) {
   const packageJsonPath = require.resolve(`${packageName}/package.json`, {
     paths: [path.join(__dirname, '..')],
   })
   return path.dirname(packageJsonPath)
-}
-
-function copyRuntimePackage (packageName, nodeModulesDir) {
-  const sourceDir = resolvePackageDir(packageName)
-  const targetDir = path.join(nodeModulesDir, ...packageName.split('/'))
-  fs.rmSync(targetDir, { recursive: true, force: true })
-  fs.mkdirSync(path.dirname(targetDir), { recursive: true })
-
-  fs.cpSync(sourceDir, targetDir, {
-    recursive: true,
-    dereference: true,
-  })
-
-  sanitizeNativeHelperArtifacts(targetDir)
-  console.log(`copied runtime package: ${packageName}`)
 }
 
 function sanitizeNativeHelperArtifacts (packageDir) {
@@ -48,10 +34,18 @@ function writeNativeHelperStub (helperPath) {
 function ensureNativeRuntimeDependencies (resourcesDir) {
   const unpackedNodeModulesDir = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules')
   fs.mkdirSync(unpackedNodeModulesDir, { recursive: true })
-  copyRuntimePackage('@docmirror/fadvise-linux', unpackedNodeModulesDir)
-  copyRuntimePackage('better-sqlite3', unpackedNodeModulesDir)
-  copyRuntimePackage('bindings', unpackedNodeModulesDir)
-  copyRuntimePackage('file-uri-to-path', unpackedNodeModulesDir)
+  sanitizeNativeHelperArtifacts(copyRuntimePackage('@docmirror/fadvise-linux', unpackedNodeModulesDir, {
+    sourceDir: path.resolve(__dirname, '../../fadvise-linux'),
+  }))
+  sanitizeNativeHelperArtifacts(copyRuntimePackage('better-sqlite3', unpackedNodeModulesDir, {
+    sourceDir: resolvePackageDir('better-sqlite3'),
+  }))
+  copyRuntimePackage('bindings', unpackedNodeModulesDir, {
+    sourceDir: resolvePackageDir('bindings'),
+  })
+  copyRuntimePackage('file-uri-to-path', unpackedNodeModulesDir, {
+    sourceDir: resolvePackageDir('file-uri-to-path'),
+  })
 }
 
 function writeAppUpdateYmlForLinux (appOutDir) {
