@@ -2347,6 +2347,13 @@ const Plugin = function (context) {
       const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
       const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isNodeSupportedByCurrentXray(entry.node))
       const bootstrapCandidates = bootstrapCandidateEntries.map(entry => entry.node).filter(node => parser.isNodeSupportedByCurrentXray(node))
+
+      // Drop SQLite file cache after reading 200 candidate blobs from the 700MB+
+      // cache file. The candidate data is now in memory; the file page cache
+      // (up to 350MB) must be released before the probe subprocess starts to
+      // avoid cgroup peak exceeding 500MB during the 40-second probe window.
+      xrayCache.dropSqliteFileCache(cachePath)
+
       log.info(`Xray 启动预检查: source=nodes-cache, stableFallbackLoaded=${fallbackStableSourceEntries.length}, stableFallbackFiltered=${fallbackStableEntries.length}, stableFallbackSupported=${supportedFallbackEntries.length}, bootstrapCandidates=${bootstrapCandidateEntries.length}, bootstrapSupported=${bootstrapCandidates.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}`)
 
       let bootstrapSelectedEntries = []
