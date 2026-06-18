@@ -2382,9 +2382,15 @@ function buildCompactV2FilterClauses (filters = {}) {
   return { clauses, params }
 }
 
+// delay=0 and delay=NULL represent "never successfully probed" nodes.
+// The old ORDER BY "delay ASC" treated delay=0 as the minimum, pushing
+// unprobed nodes to the front of LIMIT results and crowding out nodes
+// with real latency data. This wrapper pushes delay=0/NULL to the back.
+const PROBED_DELAY_SORT_PREFIX = 'CASE WHEN delay IS NULL OR delay = 0 THEN 1 ELSE 0 END ASC, '
+
 function getCompactV2OrderByClause (orderBy = 'default') {
   if (orderBy === 'refresh') {
-    return 'updated_at ASC, delay ASC'
+    return `${PROBED_DELAY_SORT_PREFIX}updated_at ASC, delay ASC`
   }
 
   if (orderBy === 'due') {
@@ -2399,16 +2405,16 @@ function getCompactV2OrderByClause (orderBy = 'default') {
     return 'node_id DESC'
   }
 
-  return 'stable DESC, delay ASC, updated_at DESC'
+  return `${PROBED_DELAY_SORT_PREFIX}stable DESC, delay ASC, updated_at DESC`
 }
 
 function getSqliteOrderByClause (orderBy = 'default') {
   if (orderBy === 'refresh') {
-    return `updated_at ASC, delay ASC`
+    return `${PROBED_DELAY_SORT_PREFIX}updated_at ASC, delay ASC`
   }
 
   if (orderBy === 'due') {
-    return `next_check_at ASC, stable DESC, delay ASC, updated_at ASC`
+    return `${PROBED_DELAY_SORT_PREFIX}next_check_at ASC, stable DESC, delay ASC, updated_at ASC`
   }
 
   if (orderBy === 'rowid') {
@@ -2419,7 +2425,7 @@ function getSqliteOrderByClause (orderBy = 'default') {
     return 'rowid DESC'
   }
 
-  return `stable DESC, delay ASC, updated_at DESC`
+  return `${PROBED_DELAY_SORT_PREFIX}stable DESC, delay ASC, updated_at DESC`
 }
 
 function normalizeSqliteQueryLimit (value) {

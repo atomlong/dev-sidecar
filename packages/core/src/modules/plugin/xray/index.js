@@ -2041,6 +2041,11 @@ const Plugin = function (context) {
   const injectedRules = []
   let api = null
   const transientProbeControllers = new Set()
+  let currentLivePort = 0
+  let currentLiveConfigPath = ''
+  let currentLiveConfigBakPath = ''
+  let currentBinPath = ''
+  let liveConfigHasProxyNodes = false
 
   function registerTransientProbeController (controller) {
     if (controller && typeof controller.stop === 'function') {
@@ -2069,6 +2074,76 @@ const Plugin = function (context) {
     if (cacheRefreshTimer) {
       clearTimeout(cacheRefreshTimer)
       cacheRefreshTimer = null
+    }
+  }
+
+  // After Stage3 probes find available nodes, regenerate the live Xray config
+  // if the current live config has no proxy outbounds (Direct/Block only).
+  // This lets a cold-start that initially produced Direct/Block recover
+  // automatically once Stage3 discovers usable nodes, without requiring
+  // a manual restart.
+  async function maybeRegenerateLiveConfigFromCache ({ binPath, cfg, xrayDir, cachePath, availableNodeKeys = [] }) {
+    if (liveConfigHasProxyNodes) {
+      return
+    }
+    if (!currentLiveConfigPath || !currentLivePort || !binPath) {
+      return
+    }
+
+    const startupNodeLimit = normalizePositiveInt(cfg.startupNodeLimit, pluginConfig.startupNodeLimit)
+    const allowedCountries = cfg.allowedCountries
+    const allowedOwners = cfg.allowedOwners
+    const maxDelayMs = normalizeNonNegativeInt(cfg.maxDelayMs, 0)
+
+    const stableFallbackQuery = buildCacheEntryQueryOptions({
+      stableOnly: true,
+      maxDelayMs,
+      limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
+    })
+    const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
+    const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
+    const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isNodeSupportedByCurrentXray(entry.node))
+
+    // Also try freshly probed available entries (not yet marked stable).
+    // Use a second query without stableOnly to pick up nodes that Stage3 just
+    // probed successfully (delay > 0) but haven't been promoted to stable yet.
+    const freshProbeQuery = buildCacheEntryQueryOptions({
+      maxDelayMs,
+      limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
+    })
+    const freshProbeSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, freshProbeQuery)
+    const freshProbeEntries = (await collectBootstrapCandidateEntries(freshProbeSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
+      .filter(entry => Number.isFinite(entry.delay) && entry.delay > 0)
+    const freshSupported = freshProbeEntries.filter(entry => parser.isNodeSupportedByCurrentXray(entry.node))
+
+    const candidateNodes = []
+    appendItems(candidateNodes, freshSupported.map(entry => entry.node))
+    appendItems(candidateNodes, supportedFallbackEntries.map(entry => entry.node))
+    const selectedNodes = xrayCache.deduplicateNodes(candidateNodes).slice(0, startupNodeLimit)
+
+    if (selectedNodes.length === 0) {
+      log.info(`Xray Stage3 后自动重生成: 仍无满足条件的可用节点 (freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}, maxDelayMs=${maxDelayMs}, availableNodeKeys=${availableNodeKeys.length})`)
+      return
+    }
+
+    const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, cfg.probeUrl, cfg.probeInterval, {
+      observatoryEnableConcurrency: true,
+    })
+    writeJsonFile(currentLiveConfigPath, liveConfig)
+    liveConfigHasProxyNodes = true
+    log.info(`Xray Stage3 后自动重生成 live config: proxyNodes=${selectedNodes.length}, freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length} -> ${currentLiveConfigPath}`)
+
+    try {
+      await processApi.restart(binPath, currentLiveConfigPath)
+      await api.injectRules(cfg.rules, currentLivePort)
+      if (server) {
+        await server.reload()
+      }
+      event.fire('status', { key: 'plugin.xray.enabled', value: true })
+      log.info('Xray Stage3 后自动重生成: live 进程已重启并注入规则')
+    } catch (error) {
+      log.warn('Xray Stage3 后自动重生成: live 进程重启失败:', error)
+      liveConfigHasProxyNodes = false
     }
   }
 
@@ -2216,6 +2291,10 @@ const Plugin = function (context) {
       const liveConfigPath = path.join(xrayDir, 'config.json')
       const liveConfigBakPath = path.join(xrayDir, 'config.json.bak')
       const cachePath = path.join(xrayDir, 'nodes_cache.sqlite')
+      currentLiveConfigPath = liveConfigPath
+      currentLiveConfigBakPath = liveConfigBakPath
+      currentBinPath = binPath
+      liveConfigHasProxyNodes = false
       const startupNodeLimit = normalizePositiveInt(cfg.startupNodeLimit, pluginConfig.startupNodeLimit)
       const allowedCountries = cfg.allowedCountries
       const allowedOwners = cfg.allowedOwners
@@ -2326,6 +2405,8 @@ const Plugin = function (context) {
         observatoryEnableConcurrency: true,
       })
       writeJsonFile(liveConfigPath, liveConfig)
+      currentLivePort = port
+      liveConfigHasProxyNodes = startupNodes.length > 0
       log.info(`Xray 配置文件已生成: ${liveConfigPath}`)
 
       // 3. Start live process.
@@ -2364,6 +2445,11 @@ const Plugin = function (context) {
         await server.reload()
       }
       await processApi.stop()
+      liveConfigHasProxyNodes = false
+      currentLivePort = 0
+      currentLiveConfigPath = ''
+      currentLiveConfigBakPath = ''
+      currentBinPath = ''
       event.fire('status', { key: 'plugin.xray.enabled', value: false })
       log.info('Xray 插件已关闭')
     },
@@ -2948,6 +3034,20 @@ const Plugin = function (context) {
           },
         })
         log.info(`Xray 阶段三轮次汇总已写入: ${summaryPath}`)
+
+        // If this round found available nodes and the current live config
+        // still has no proxy outbounds (cold-start Direct/Block only),
+        // try to regenerate the live config from the freshly probed cache.
+        if (availableCount > 0 && !liveConfigHasProxyNodes && generation === refreshGeneration) {
+          await maybeRegenerateLiveConfigFromCache({
+            binPath,
+            cfg,
+            xrayDir,
+            cachePath,
+            availableNodeKeys: [...roundAvailableNodeKeys],
+          })
+        }
+
         scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
       }
     },

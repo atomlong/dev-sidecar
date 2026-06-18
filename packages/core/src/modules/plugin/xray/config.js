@@ -13,8 +13,8 @@ module.exports = {
   subscriptionSyncLowWatermark: 0, // 阶段2：有效缓存数达到该阈值时跳过远端订阅抓取；0 表示始终抓取
   cacheRefreshEnabled: true, // 阶段3：是否启用周期性缓存探测与回填
   cacheRefreshInterval: 21600, // 阶段3：周期性重检缓存文件的间隔（秒），默认 6 小时
-  cacheBatchTimeout: 30, // 阶段3：每批 burst 探测等待上限（秒）
-  cacheRefreshBatchSize: 31, // 阶段3：固定每批探测节点数；默认 31
+  cacheBatchTimeout: 120, // 阶段3：每批 burst 探测等待上限（秒），配合 batchSize=128
+  cacheRefreshBatchSize: 128, // 阶段3：固定每批探测节点数；增大批次能提升探测吞吐，缩短缓存全覆盖时间
   cacheRefreshProbeSamples: 2, // 阶段3：每批 burst 探测样本数
   subscriptionStaleAfterDays: 30, // 订阅连续无可用节点且无节点引用后的数据库清理阈值（天）
   subscriptions: [], // 订阅地址列表
