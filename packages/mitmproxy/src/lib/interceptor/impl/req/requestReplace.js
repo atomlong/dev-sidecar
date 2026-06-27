@@ -1,3 +1,5 @@
+const URL = require('node:url')
+
 const REMOVE = '[remove]'
 
 function replaceVar (str, rOptions) {
@@ -43,6 +45,32 @@ function replaceRequestHeaders (rOptions, headers, log) {
   log.debug(`[DS-RequestReplace-Interceptor] 最终headers: \r\n${JSON.stringify(rOptions.headers, null, '\t')}`)
 }
 
+function replaceQuery (rOptions, query, req, log) {
+  const baseUrl = `${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}`
+  const url = new URL(rOptions.path, baseUrl)
+  const originalQuery = url.searchParams.toString()
+
+  for (const key in query) {
+    let value = query[key]
+    if (value === REMOVE) {
+      url.searchParams.delete(key)
+      log.debug(`[DS-RequestReplace-Interceptor] remove query '${key}'`)
+    } else {
+      value = replaceVar(value, rOptions)
+      url.searchParams.set(key, value)
+      log.debug(`[DS-RequestReplace-Interceptor] set query '${key}': '${value}'`)
+    }
+  }
+
+  const newPath = url.pathname + url.search
+  rOptions.path = newPath
+  if (req && req.url) {
+    req.url = newPath
+  }
+
+  log.debug(`[DS-RequestReplace-Interceptor] query: '${originalQuery}' -> '${url.searchParams.toString()}'`)
+}
+
 module.exports = {
   name: 'requestReplace',
   priority: 111,
@@ -57,6 +85,12 @@ module.exports = {
     if (requestReplaceConfig.headers) {
       replaceRequestHeaders(rOptions, requestReplaceConfig.headers, log)
       actions += `${actions ? ',' : ''}headers`
+    }
+
+    // 替换查询参数
+    if (requestReplaceConfig.query) {
+      replaceQuery(rOptions, requestReplaceConfig.query, req, log)
+      actions += `${actions ? ',' : ''}query`
     }
 
     // 替换下载文件请求的请求地址（此功能主要是为了方便拦截配置）
