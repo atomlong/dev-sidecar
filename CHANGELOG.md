@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [v2.1.5] - Unreleased
 
 ### Added
+- Added `query` support to the `requestReplace` interceptor, allowing intercept configs to set or remove URL query parameters (with `${hostname}`/`${path}` placeholder substitution), enabling per-host URL rewrites such as injecting the Docker Registry `service` parameter into `auth.docker.io` token requests.
 - Added targeted mitmproxy regression coverage for DNS-aware upgrade request handling.
 - Added automatic Xray SQLite cache migration from the legacy `nodes` layout to split `node_runtime` and `node_payload` storage.
 - Added one-time retirement metadata and post-retirement compaction for migrated Xray caches so existing installations can reclaim disk space without losing cached nodes.
