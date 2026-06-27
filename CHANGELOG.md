@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 - Added targeted mitmproxy regression coverage for DNS-aware upgrade request handling.
 - Added automatic Xray SQLite cache migration from the legacy `nodes` layout to split `node_runtime` and `node_payload` storage.
 - Added one-time retirement metadata and post-retirement compaction for migrated Xray caches so existing installations can reclaim disk space without losing cached nodes.
+- Added `startupSelectEnabled` to the Xray plugin config so operators can disable stage 1 startup node selection; when set to `false`, DevSidecar reuses the previous `~/.dev-sidecar/xray/config.json` as-is (including its already-selected proxy outbounds and inbound port) instead of probing and rewriting the live config on every restart.
+- Added `subscriptionSyncEnabled` to the Xray plugin config so operators can disable stage 2 subscription fetching and cache synchronization; when set to `false`, DevSidecar skips directly to stage 3 cache-only probing, mirroring the existing `cacheRefreshEnabled` switch pattern.
 
 ### Changed
 - Changed Xray cache writes and reads to treat the hot/cold SQLite schema as the authoritative store after migration, and to stop maintaining the legacy `nodes` table once retirement completes.

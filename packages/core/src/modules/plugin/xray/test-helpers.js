@@ -102,6 +102,12 @@ function getSubscriptionStaleAfterDays (cfg) {
 function isCacheRefreshEnabled (cfg) {
   return cfg ? cfg.cacheRefreshEnabled !== false : true
 }
+function isStartupSelectEnabled (cfg) {
+  return cfg ? cfg.startupSelectEnabled !== false : true
+}
+function isSubscriptionSyncEnabled (cfg) {
+  return cfg ? cfg.subscriptionSyncEnabled !== false : true
+}
 function getSubscriptionSyncDecision ({ cachePath, cfg }) {
   const lowWatermark = getSubscriptionSyncLowWatermark(cfg)
   if (lowWatermark <= 0) {
@@ -316,6 +322,8 @@ module.exports = {
   getSubscriptionStaleAfterDays,
   getSubscriptionSyncDecision,
   isCacheRefreshEnabled,
+  isStartupSelectEnabled,
+  isSubscriptionSyncEnabled,
   isLocalInputStateMatch,
   readLocalInputState,
   writeLocalInputState,
