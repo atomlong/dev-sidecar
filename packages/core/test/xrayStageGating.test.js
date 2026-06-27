@@ -21,6 +21,8 @@ const {
   getSubscriptionSyncDecision,
   isCacheRefreshEnabled,
   isLocalInputStateMatch,
+  isStartupSelectEnabled,
+  isSubscriptionSyncEnabled,
   readLocalInputState,
   writeLocalInputState,
 } = xrayTestHelpers
@@ -157,6 +159,20 @@ describe('xray stage gating', function () {
     assert.strictEqual(isCacheRefreshEnabled({}), true)
     assert.strictEqual(isCacheRefreshEnabled({ cacheRefreshEnabled: true }), true)
     assert.strictEqual(isCacheRefreshEnabled({ cacheRefreshEnabled: false }), false)
+  })
+
+  it('treats startup select and subscription sync as enabled by default and disabled only when explicitly false', () => {
+    assert.strictEqual(isStartupSelectEnabled({}), true)
+    assert.strictEqual(isStartupSelectEnabled({ startupSelectEnabled: true }), true)
+    assert.strictEqual(isStartupSelectEnabled({ startupSelectEnabled: false }), false)
+    assert.strictEqual(isStartupSelectEnabled(undefined), true)
+    assert.strictEqual(isStartupSelectEnabled(null), true)
+
+    assert.strictEqual(isSubscriptionSyncEnabled({}), true)
+    assert.strictEqual(isSubscriptionSyncEnabled({ subscriptionSyncEnabled: true }), true)
+    assert.strictEqual(isSubscriptionSyncEnabled({ subscriptionSyncEnabled: false }), false)
+    assert.strictEqual(isSubscriptionSyncEnabled(undefined), true)
+    assert.strictEqual(isSubscriptionSyncEnabled(null), true)
   })
 
   it('skips cache rewrite when the candidate set is unchanged and only applies incremental adds or removals', () => {

@@ -745,6 +745,14 @@ function isCacheRefreshEnabled (cfg) {
   return cfg ? cfg.cacheRefreshEnabled !== false : true
 }
 
+function isStartupSelectEnabled (cfg) {
+  return cfg ? cfg.startupSelectEnabled !== false : true
+}
+
+function isSubscriptionSyncEnabled (cfg) {
+  return cfg ? cfg.subscriptionSyncEnabled !== false : true
+}
+
 function getSubscriptionSyncDecision ({ cachePath, cfg }) {
   const lowWatermark = getSubscriptionSyncLowWatermark(cfg)
   if (lowWatermark <= 0) {
@@ -1109,6 +1117,35 @@ function cleanupProbeArtifacts (xrayDir) {
 function writeJsonFile (filePath, value) {
   ensureDir(path.dirname(filePath))
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2))
+}
+
+function readExistingXrayLiveConfig (configPath) {
+  if (!configPath || !fs.existsSync(configPath)) {
+    return null
+  }
+  try {
+    const raw = fs.readFileSync(configPath, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.outbounds)) {
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function extractInboundPortFromXrayConfig (config) {
+  if (!config || !Array.isArray(config.inbounds)) {
+    return null
+  }
+  for (const inbound of config.inbounds) {
+    const port = Number(inbound && inbound.port)
+    if (Number.isFinite(port) && port > 0) {
+      return port
+    }
+  }
+  return null
 }
 
 function backupFileIfExists (sourcePath, backupPath) {
@@ -2333,88 +2370,118 @@ const Plugin = function (context) {
 
       // 2. Stage 1 bootstrap: quickly verify a small set of previous cache nodes,
       // then fall back to last known stable entries if needed.
-      const bootstrapCandidateLimit = getBootstrapCandidateLimit(cfg)
-      const stableFallbackQuery = buildCacheEntryQueryOptions({
-        stableOnly: true,
-        maxDelayMs,
-        limit: bootstrapCandidateLimit,
-      })
-      const bootstrapCandidateQuery = buildCacheEntryQueryOptions({
-        limit: bootstrapCandidateLimit,
-      })
-      const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
-      const bootstrapCandidateEntries = xrayCache.readCacheEntriesForStartup(cachePath, bootstrapCandidateQuery)
-      const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
-      const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isNodeSupportedByCurrentXray(entry.node))
-      const bootstrapCandidates = bootstrapCandidateEntries.map(entry => entry.node).filter(node => parser.isNodeSupportedByCurrentXray(node))
+      // When startupSelectEnabled is false, skip the cache candidate query and
+      // burst probe, and reuse the previous config.json as-is (including its
+      // already-selected proxy nodes and inbound port). This avoids rewriting
+      // the live config on every restart when the operator is happy with the
+      // last selected node set.
+      const startupSelectEnabled = isStartupSelectEnabled(cfg)
+      let startupNodes = []
+      let reusedLiveConfig = false
 
-      // Drop SQLite file cache after reading 200 candidate blobs from the 700MB+
-      // cache file. The candidate data is now in memory; the file page cache
-      // (up to 350MB) must be released before the probe subprocess starts to
-      // avoid cgroup peak exceeding 500MB during the 40-second probe window.
-      xrayCache.dropSqliteFileCache(cachePath)
-
-      log.info(`Xray 启动预检查: source=nodes-cache, stableFallbackLoaded=${fallbackStableSourceEntries.length}, stableFallbackFiltered=${fallbackStableEntries.length}, stableFallbackSupported=${supportedFallbackEntries.length}, bootstrapCandidates=${bootstrapCandidateEntries.length}, bootstrapSupported=${bootstrapCandidates.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}`)
-
-      let bootstrapSelectedEntries = []
-
-      if (bootstrapCandidates.length > 0) {
-        try {
-          const bootstrapProbeResult = await probeNodesBatch({
-            binPath,
-            cfg,
-            xrayDir,
-            batchNodes: bootstrapCandidates,
-            timeoutMs: getBootstrapBatchTimeoutSeconds(cfg) * 1000,
-            probeSamples: getBootstrapProbeSamples(cfg),
-          })
-          const annotatedBootstrapEntries = await annotateProbeEntries(bootstrapProbeResult.entries, {
-            binPath,
-            xrayDir,
-            existingEntries: bootstrapCandidateEntries,
-            log,
-            useEgressMetadata: false,
-          })
-          const bootstrapByDelay = maxDelayMs > 0
-            ? annotatedBootstrapEntries.filter(entry => Number.isFinite(entry.delay) && entry.delay <= maxDelayMs)
-            : annotatedBootstrapEntries
-          const bootstrapByCountry = await filterEntriesByCountries(bootstrapByDelay, allowedCountries)
-          const bootstrapByOwner = await filterEntriesByOwners(bootstrapByCountry, allowedOwners)
-          bootstrapSelectedEntries = xrayCache.sortCacheEntries(bootstrapByOwner).slice(0, startupNodeLimit)
-          log.info(`Xray 启动前快速复检: source=nodes-cache, candidateLimit=${bootstrapCandidateLimit}, queried=${bootstrapCandidateEntries.length}, tested=${bootstrapCandidates.length}, available=${annotatedBootstrapEntries.length}, afterDelay=${bootstrapByDelay.length}, afterCountry=${bootstrapByCountry.length}, afterOwner=${bootstrapByOwner.length}, selected=${bootstrapSelectedEntries.length}`)
-        } catch (error) {
-          log.warn('Xray 启动前快速复检失败，回退到上次稳定缓存:', error)
+      if (!startupSelectEnabled) {
+        const reusedConfig = readExistingXrayLiveConfig(liveConfigPath)
+        if (reusedConfig) {
+          const reusedPort = extractInboundPortFromXrayConfig(reusedConfig)
+          if (Number.isFinite(reusedPort) && reusedPort > 0) {
+            port = reusedPort
+            globalConfig.get().server.setting.xrayPort = port
+          }
+          startupNodes = xrayCache.extractNodesFromXrayConfigFile(liveConfigPath)
+          reusedLiveConfig = startupNodes.length > 0
+          log.info(`Xray 第一阶段已跳过: startupSelectEnabled=false, 复用上次 config.json, reusedProxyNodes=${startupNodes.length}, port=${port}`)
+        } else {
+          log.info(`Xray 第一阶段已跳过: startupSelectEnabled=false, 但未找到可复用的 config.json，回退到正常筛选流程`)
         }
       }
 
-      const startupNodeCandidates = []
-      appendItems(startupNodeCandidates, bootstrapSelectedEntries.map(entry => entry.node))
-      appendItems(startupNodeCandidates, supportedFallbackEntries.map(entry => entry.node))
-      const startupNodes = xrayCache.deduplicateNodes(startupNodeCandidates).slice(0, startupNodeLimit)
+      if (!reusedLiveConfig) {
+        const bootstrapCandidateLimit = getBootstrapCandidateLimit(cfg)
+        const stableFallbackQuery = buildCacheEntryQueryOptions({
+          stableOnly: true,
+          maxDelayMs,
+          limit: bootstrapCandidateLimit,
+        })
+        const bootstrapCandidateQuery = buildCacheEntryQueryOptions({
+          limit: bootstrapCandidateLimit,
+        })
+        const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
+        const bootstrapCandidateEntries = xrayCache.readCacheEntriesForStartup(cachePath, bootstrapCandidateQuery)
+        const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
+        const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isNodeSupportedByCurrentXray(entry.node))
+        const bootstrapCandidates = bootstrapCandidateEntries.map(entry => entry.node).filter(node => parser.isNodeSupportedByCurrentXray(node))
 
-      log.info(`Xray 启动节点候选: source=nodes-cache, fallbackStable=${fallbackStableEntries.length}, fallbackSupported=${supportedFallbackEntries.length}, startupSelected=${startupNodes.length}`)
+        // Drop SQLite file cache after reading 200 candidate blobs from the 700MB+
+        // cache file. The candidate data is now in memory; the file page cache
+        // (up to 350MB) must be released before the probe subprocess starts to
+        // avoid cgroup peak exceeding 500MB during the 40-second probe window.
+        xrayCache.dropSqliteFileCache(cachePath)
 
-      if (startupNodes.length === 0) {
-        log.warn('Xray 警告: 未找到任何可用节点，将只启用 Direct/Block')
+        log.info(`Xray 启动预检查: source=nodes-cache, stableFallbackLoaded=${fallbackStableSourceEntries.length}, stableFallbackFiltered=${fallbackStableEntries.length}, stableFallbackSupported=${supportedFallbackEntries.length}, bootstrapCandidates=${bootstrapCandidateEntries.length}, bootstrapSupported=${bootstrapCandidates.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}`)
+
+        let bootstrapSelectedEntries = []
+
+        if (bootstrapCandidates.length > 0) {
+          try {
+            const bootstrapProbeResult = await probeNodesBatch({
+              binPath,
+              cfg,
+              xrayDir,
+              batchNodes: bootstrapCandidates,
+              timeoutMs: getBootstrapBatchTimeoutSeconds(cfg) * 1000,
+              probeSamples: getBootstrapProbeSamples(cfg),
+            })
+            const annotatedBootstrapEntries = await annotateProbeEntries(bootstrapProbeResult.entries, {
+              binPath,
+              xrayDir,
+              existingEntries: bootstrapCandidateEntries,
+              log,
+              useEgressMetadata: false,
+            })
+            const bootstrapByDelay = maxDelayMs > 0
+              ? annotatedBootstrapEntries.filter(entry => Number.isFinite(entry.delay) && entry.delay <= maxDelayMs)
+              : annotatedBootstrapEntries
+            const bootstrapByCountry = await filterEntriesByCountries(bootstrapByDelay, allowedCountries)
+            const bootstrapByOwner = await filterEntriesByOwners(bootstrapByCountry, allowedOwners)
+            bootstrapSelectedEntries = xrayCache.sortCacheEntries(bootstrapByOwner).slice(0, startupNodeLimit)
+            log.info(`Xray 启动前快速复检: source=nodes-cache, candidateLimit=${bootstrapCandidateLimit}, queried=${bootstrapCandidateEntries.length}, tested=${bootstrapCandidates.length}, available=${annotatedBootstrapEntries.length}, afterDelay=${bootstrapByDelay.length}, afterCountry=${bootstrapByCountry.length}, afterOwner=${bootstrapByOwner.length}, selected=${bootstrapSelectedEntries.length}`)
+          } catch (error) {
+            log.warn('Xray 启动前快速复检失败，回退到上次稳定缓存:', error)
+          }
+        }
+
+        const startupNodeCandidates = []
+        appendItems(startupNodeCandidates, bootstrapSelectedEntries.map(entry => entry.node))
+        appendItems(startupNodeCandidates, supportedFallbackEntries.map(entry => entry.node))
+        startupNodes = xrayCache.deduplicateNodes(startupNodeCandidates).slice(0, startupNodeLimit)
+
+        log.info(`Xray 启动节点候选: source=nodes-cache, fallbackStable=${fallbackStableEntries.length}, fallbackSupported=${supportedFallbackEntries.length}, startupSelected=${startupNodes.length}`)
+
+        if (startupNodes.length === 0) {
+          log.warn('Xray 警告: 未找到任何可用节点，将只启用 Direct/Block')
+        }
       }
 
       ensureDir(xrayDir)
 
-      try {
-        if (backupFileIfExists(liveConfigPath, liveConfigBakPath)) {
-          log.info(`Xray 旧配置已备份: ${liveConfigBakPath}`)
+      if (!reusedLiveConfig) {
+        try {
+          if (backupFileIfExists(liveConfigPath, liveConfigBakPath)) {
+            log.info(`Xray 旧配置已备份: ${liveConfigBakPath}`)
+          }
+        } catch (error) {
+          log.warn('Xray 旧配置备份失败:', error)
         }
-      } catch (error) {
-        log.warn('Xray 旧配置备份失败:', error)
+
+        const liveConfig = genConfig(port, startupNodes, cfg.rules, cfg.probeUrl, cfg.probeInterval, {
+          observatoryEnableConcurrency: true,
+        })
+        writeJsonFile(liveConfigPath, liveConfig)
+        log.info(`Xray 配置文件已生成: ${liveConfigPath}`)
       }
 
-      const liveConfig = genConfig(port, startupNodes, cfg.rules, cfg.probeUrl, cfg.probeInterval, {
-        observatoryEnableConcurrency: true,
-      })
-      writeJsonFile(liveConfigPath, liveConfig)
       currentLivePort = port
       liveConfigHasProxyNodes = startupNodes.length > 0
-      log.info(`Xray 配置文件已生成: ${liveConfigPath}`)
 
       // 3. Start live process.
       await api.stopBackgroundProbe()
@@ -2482,6 +2549,18 @@ const Plugin = function (context) {
 
     async refreshCacheFromSourcesOnce ({ binPath, cfg, xrayDir, liveConfigPath, liveConfigBakPath, cachePath }) {
       const generation = ++refreshGeneration
+
+      if (!isSubscriptionSyncEnabled(cfg)) {
+        log.info('Xray 第二阶段已禁用: subscriptionSyncEnabled=false, 跳过订阅抓取与缓存同步，直接进入第三阶段')
+        if (generation === refreshGeneration) {
+          if (!isCacheRefreshEnabled(cfg)) {
+            log.info('Xray 缓存周期探测已禁用，跳过第三阶段')
+            return
+          }
+          await api.refreshCacheFromCacheOnly({ binPath, cfg, xrayDir, cachePath })
+        }
+        return
+      }
 
       const stage2Migration = xrayCache.migrateHotColdSchema(cachePath, {
         batchLimit: HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS,
