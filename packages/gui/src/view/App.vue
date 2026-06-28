@@ -22,7 +22,6 @@ export default {
       config: undefined,
       configReadyPromise: null,
       selectedKeys: [],
-      openKeys: ['/plugin'],
       menus: [],
       hideSearchBar: true,
       searchBarIsFocused: false,
@@ -114,6 +113,14 @@ export default {
     const appConfig = (this.config && this.config.app) || (this.$global && this.$global.config && this.$global.config.app) || {}
     const initialThemeMode = appConfig.theme || 'dark'
     this.cleanupTheme = initTheme(initialThemeMode)
+
+    // 将暗色模式类名同步到 body，确保 Teleport 渲染到 body 的组件
+    // （Select 下拉面板、Modal、Drawer、Message 等）也能应用暗色主题
+    if (theme === 'dark') {
+      document.body.classList.add('theme-dark')
+    } else {
+      document.body.classList.remove('theme-dark')
+    }
 
     // 将暗色模式类名同步到 body，确保 Teleport 渲染到 body 的组件
     // （Select 下拉面板、Modal、Drawer、Message 等）也能应用暗色主题
