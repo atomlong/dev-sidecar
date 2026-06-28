@@ -489,4 +489,83 @@ describe('xray cache ordering', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
   })
+
+  // eslint-disable-next-line no-undef
+  it('cleanupOutdatedToSizeLimit evicts oldest-due nodes to shrink below target', () => {
+    if (!sqliteAvailable) {
+      return
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-cache-'))
+    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
+
+    try {
+      // Insert 300 nodes with a large node_json payload so the DB exceeds the target.
+      // Stagger next_check_at: node 0 oldest, node 299 newest.
+      // Cleanup by next_check_at ASC should evict the oldest-due nodes first.
+      const bigPayload = JSON.stringify({ padding: 'x'.repeat(4096) })
+      xrayCache.writeCache(cachePath, Array.from({ length: 300 }, (_, index) => ({
+        node: {
+          protocol: 'socks',
+          settings: { servers: [{ address: `10.0.0.${index + 1}`, port: 8000 + index }] },
+          _big: bigPayload,
+        },
+        stable: false,
+        delay: 100 + index,
+        source: 'source-sync',
+        // older index => older next_check_at => evicted first
+        updatedAt: `2026-05-${10 + Math.floor(index / 30)}T00:00:00.000+08:00`,
+        nextCheckAt: `2026-05-${10 + Math.floor(index / 30)}T00:00:00.000+08:00`,
+      })))
+
+      const sizeBefore = xrayCache.getSqliteCacheSizeBytes(cachePath)
+      assert.ok(sizeBefore > 0, 'cache should have non-zero size before cleanup')
+
+      // Target half of current size to force real eviction.
+      const targetBytes = Math.floor(sizeBefore / 2)
+      const result = xrayCache.cleanupOutdatedToSizeLimit(cachePath, targetBytes)
+      assert.ok(result, 'cleanup should return a result object')
+      assert.strictEqual(typeof result.deletedNodes, 'number')
+      assert.ok(result.deletedNodes > 0, `should have evicted nodes, got deletedNodes=${result.deletedNodes}`)
+      assert.ok(result.sizeAfter <= targetBytes, `sizeAfter=${result.sizeAfter} should be <= target=${targetBytes}`)
+      assert.ok(result.sizeAfter < result.sizeBefore, 'size should shrink')
+
+      // Verify surviving node count decreased by deletedNodes.
+      const remaining = xrayCache.readCacheEntries(cachePath)
+      assert.ok(remaining.length < 300, `remaining=${remaining.length} should be less than 300`)
+      assert.strictEqual(remaining.length, 300 - result.deletedNodes)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  // eslint-disable-next-line no-undef
+  it('cleanupOutdatedToSizeLimit reports deletedTombstones and deletedNodes separately', () => {
+    if (!sqliteAvailable) {
+      return
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-cache-'))
+    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
+
+    try {
+      xrayCache.writeCache(cachePath, Array.from({ length: 50 }, (_, index) => ({
+        node: createNode(`10.0.0.${index + 1}`, 8000 + index),
+        stable: false,
+        delay: 100 + index,
+        source: 'source-sync',
+        updatedAt: '2026-05-10T00:00:00.000+08:00',
+        nextCheckAt: '2026-05-10T00:00:00.000+08:00',
+      })))
+
+      // No tombstones, no oversize: cleanup should be a no-op returning zero counts.
+      const result = xrayCache.cleanupOutdatedToSizeLimit(cachePath, 1024 * 1024 * 1024)
+      assert.ok(result)
+      assert.strictEqual(result.deletedTombstones, 0)
+      assert.strictEqual(result.deletedNodes, 0)
+      assert.strictEqual(result.deleted, 0)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
 })

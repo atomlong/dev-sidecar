@@ -2830,33 +2830,75 @@ function cleanupOutdatedToSizeLimit (cacheFilePath, targetBytes) {
     if (!Number.isFinite(normalizedTargetBytes) || normalizedTargetBytes <= 0) {
       return {
         deleted: 0,
+        deletedTombstones: 0,
+        deletedNodes: 0,
         sizeBefore: getSqliteDatabaseSizeBytes(db),
         sizeAfter: getSqliteDatabaseSizeBytes(db),
       }
     }
 
-    const selectOldest = db.prepare('SELECT hash FROM outdated ORDER BY outdated_at ASC LIMIT 1024')
-    const remove = db.prepare('DELETE FROM outdated WHERE hash = ?')
-    const deleteBatch = db.transaction((hashes) => {
+    const hasNodeRuntimeV2 = hasTable(db, 'node_runtime_v2')
+
+    // Step 1: clear outdated tombstones (cheap, preserves fingerprints for Stage2 skip)
+    const selectOldestTombstone = db.prepare('SELECT hash FROM outdated ORDER BY outdated_at ASC LIMIT 1024')
+    const removeTombstone = db.prepare('DELETE FROM outdated WHERE hash = ?')
+    const deleteTombstoneBatch = db.transaction((hashes) => {
       for (const hash of hashes) {
-        remove.run(hash)
+        removeTombstone.run(hash)
       }
     })
 
     const sizeBefore = getSqliteDatabaseSizeBytes(db)
-    let deleted = 0
+    let deletedTombstones = 0
     while (getSqliteDatabaseSizeBytes(db) > normalizedTargetBytes) {
-      const hashes = selectOldest.all().map(row => row && row.hash).filter(Boolean)
+      const hashes = selectOldestTombstone.all().map(row => row && row.hash).filter(Boolean)
       if (hashes.length === 0) {
         break
       }
-      deleteBatch(hashes)
-      deleted += hashes.length
+      deleteTombstoneBatch(hashes)
+      deletedTombstones += hashes.length
       maybeRunIncrementalVacuum(db)
     }
 
+    // Step 2: if still over target, evict oldest-due nodes (next_check_at ASC = least recently probed)
+    // Deletes full node rows: refs + runtime + identity + payload. Lossless at fingerprint level:
+    // if Stage2 re-fetches the same node, it will be re-inserted fresh.
+    let deletedNodes = 0
+    if (hasNodeRuntimeV2 && getSqliteDatabaseSizeBytes(db) > normalizedTargetBytes) {
+      const selectOldestNodeIds = db.prepare(`
+        SELECT node_id
+        FROM node_runtime_v2
+        WHERE node_id IS NOT NULL
+        ORDER BY
+          CASE WHEN next_check_at IS NULL THEN 0 ELSE 1 END,
+          next_check_at ASC,
+          node_id ASC
+        LIMIT 512
+      `)
+      const deleteNodeById = db.transaction((nodeIds) => {
+        for (const nodeId of nodeIds) {
+          db.prepare('DELETE FROM subscription_node_refs_v2 WHERE node_id = ?').run(nodeId)
+          db.prepare('DELETE FROM node_runtime_v2 WHERE node_id = ?').run(nodeId)
+          db.prepare('DELETE FROM node_identity_v2 WHERE node_id = ?').run(nodeId)
+          db.prepare('DELETE FROM nodes_v2 WHERE node_id = ?').run(nodeId)
+        }
+      })
+
+      while (getSqliteDatabaseSizeBytes(db) > normalizedTargetBytes) {
+        const nodeIds = selectOldestNodeIds.all().map(row => row && row.node_id).filter(id => Number.isInteger(id))
+        if (nodeIds.length === 0) {
+          break
+        }
+        deleteNodeById(nodeIds)
+        deletedNodes += nodeIds.length
+        maybeRunIncrementalVacuum(db)
+      }
+    }
+
     return {
-      deleted,
+      deleted: deletedTombstones + deletedNodes,
+      deletedTombstones,
+      deletedNodes,
       sizeBefore,
       sizeAfter: getSqliteDatabaseSizeBytes(db),
     }

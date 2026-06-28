@@ -24,7 +24,7 @@ const STAGE2_SUBSCRIPTION_PARSE_CHUNK_SIZE = 50
 const STAGE2_SUBSCRIPTION_PARSE_GC_CHUNKS = 1
 const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT = 100
 const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE = 50
-const CACHE_SIZE_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
+const CACHE_SIZE_LIMIT_BYTES = 1 * 1024 * 1024 * 1024
 const CACHE_SIZE_TARGET_BYTES = Math.floor(CACHE_SIZE_LIMIT_BYTES * 0.9)
 const HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS = 1000
 const HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS = 1000
@@ -2633,7 +2633,7 @@ const Plugin = function (context) {
       if (cacheSizeBeforeStage2 >= CACHE_SIZE_LIMIT_BYTES) {
         const cleanupResult = xrayCache.cleanupOutdatedToSizeLimit(cachePath, CACHE_SIZE_TARGET_BYTES)
         if (cleanupResult) {
-          log.warn(`Xray 节点缓存过大，已尝试清理 outdated tombstone: deleted=${cleanupResult.deleted}, sizeBefore=${cleanupResult.sizeBefore}, sizeAfter=${cleanupResult.sizeAfter}, limit=${CACHE_SIZE_LIMIT_BYTES}`)
+          log.warn(`Xray 节点缓存过大，已清理过期节点: tombstones=${cleanupResult.deletedTombstones}, nodes=${cleanupResult.deletedNodes}, sizeBefore=${cleanupResult.sizeBefore}, sizeAfter=${cleanupResult.sizeAfter}, limit=${CACHE_SIZE_LIMIT_BYTES}`)
         }
       }
 
@@ -3005,6 +3005,15 @@ const Plugin = function (context) {
           }
 
           log.info(`Xray 缓存周期探测批次已写回: ${batchIndex}, available=${batchWritePlan.availableCount}, explicitFailed=${batchWritePlan.explicitFailureCount}, removed=${batchWritePlan.removedCount}, partialCoverage=${batchWritePlan.partialCoverageCount}, progress=${processedCount}/${totalDueCandidateCount} -> ${cachePath}`)
+
+          // Sample heap/cgroup memory every 50 batches to track Stage3 memory growth over time.
+          if (batchIndex % 50 === 0) {
+            logStage2MemoryUsage(log, `stage3-batch-${batchIndex}`, {
+              progress: `${processedCount}/${totalDueCandidateCount}`,
+              availableRound: availableCount,
+              removedRound: removedCount,
+            })
+          }
 
           // Drop SQLite file cache pages after each stage-3 batch write-back
           // to prevent monotonic page-cache growth during long-running probe cycles.
