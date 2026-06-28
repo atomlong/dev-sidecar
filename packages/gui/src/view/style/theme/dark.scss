@@ -445,4 +445,76 @@
       }
     }
   }
+
+  /* 首页：主开关按钮暗色模式 */
+  .page_index .main-switch-wrapper .big-button > button:not(.is-active) {
+    border-color: #555;
+    background-color: $dark-btn;
+    &:hover {
+      border-color: #40a9ff;
+    }
+  }
+  .page_index .main-switch-wrapper .big-button > button.is-active {
+    background-color: #1890ff;
+    border-color: #1890ff;
+    box-shadow: 0 0 12px rgba(24, 144, 255, 0.4);
+    &:hover {
+      background-color: #40a9ff;
+      border-color: #40a9ff;
+    }
+  }
+  /* 首页：开关状态标签 */
+  .page_index .main-switch-wrapper .switch-status-label {
+    color: #999;
+  }
+  /* 恢复出厂设置弹窗中的标签 */
+  .restore-factory-settings span {
+    background-color: $dark-input;
+    color: $dark-text;
+  }
+
+  /* 表格、描述列表（网络检测等页面） */
+  .ant-table {
+    background-color: $dark-bg;
+    color: $dark-text;
+  }
+  .ant-table-thead > tr > th {
+    background-color: $dark-bg-highlight;
+    color: $dark-text;
+    border-bottom-color: $dark-bd;
+  }
+  .ant-table-tbody > tr > td {
+    border-bottom-color: $dark-bd;
+  }
+  .ant-table-tbody > tr:hover > td {
+    background-color: $dark-bg-highlight !important;
+  }
+  .ant-descriptions-bordered {
+    .ant-descriptions-item-label,
+    .ant-descriptions-item-content {
+      background-color: $dark-bg;
+      border-color: $dark-bd;
+    }
+    .ant-descriptions-item-label {
+      background-color: $dark-bg-highlight;
+    }
+  }
+
+  /* 折叠面板 */
+  .ant-collapse {
+    background-color: $dark-bg;
+    border-color: $dark-bd;
+    > .ant-collapse-item {
+      border-bottom-color: $dark-bd;
+      > .ant-collapse-header {
+        background-color: $dark-bg-highlight;
+        color: $dark-text;
+      }
+      > .ant-collapse-content {
+        background-color: $dark-bg;
+        color: $dark-text;
+        border-top-color: $dark-bd;
+      }
+    }
+  }
 }
