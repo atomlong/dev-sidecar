@@ -1024,13 +1024,19 @@ function hasCompactV2Data (db) {
   if (!db || !hasTable(db, 'node_runtime_v2')) {
     return false
   }
-  // After payload separation, nodes_v2 lives in the attached payload DB
+  // After payload separation, nodes_v2 lives in the attached payload DB.
+  // If payload is not attached (skipPayloadAttach mode), skip the nodes_v2
+  // check — runtime-only queries don't need it.
   if (isPayloadSeparated(db)) {
     try {
-      const row = db.prepare("SELECT 1 AS ok FROM payload.sqlite_master WHERE type='table' AND name='nodes_v2' LIMIT 1").get()
-      if (!row || row.ok !== 1) {
-        return false
+      const attached = db.prepare("SELECT 1 FROM pragma_database_list WHERE name = 'payload' LIMIT 1").get()
+      if (attached) {
+        const row = db.prepare("SELECT 1 AS ok FROM payload.sqlite_master WHERE type='table' AND name='nodes_v2' LIMIT 1").get()
+        if (!row || row.ok !== 1) {
+          return false
+        }
       }
+      // payload not attached — that's OK for runtime-only queries
     } catch {
       return false
     }
@@ -1166,18 +1172,25 @@ function openSqliteCache (cacheFilePath, options = {}) {
     // This keeps the hot (runtime) and cold (payload) data in separate files
     // so that Stage3's high-frequency runtime scans do not accumulate page
     // cache for the large payload file.
+    //
+    // skipPayloadAttach: when true, do NOT attach the payload DB. Used by
+    // runtime-only queries (readCacheRowIds, countCacheEntries) that never
+    // touch nodes_v2 / node_identity_v2, to avoid loading payload file pages
+    // into kernel page cache.
     let payloadAttached = false
-    try {
-      const payloadPath = getPayloadDbPath(cacheFilePath)
-      if (fs.existsSync(payloadPath)) {
-        const attached = db.prepare("SELECT 1 FROM pragma_database_list WHERE name = 'payload' LIMIT 1").get()
-        if (!attached) {
-          db.exec(`ATTACH DATABASE '${payloadPath.replace(/'/g, "''")}' AS payload`)
+    if (options.skipPayloadAttach !== true) {
+      try {
+        const payloadPath = getPayloadDbPath(cacheFilePath)
+        if (fs.existsSync(payloadPath)) {
+          const attached = db.prepare("SELECT 1 FROM pragma_database_list WHERE name = 'payload' LIMIT 1").get()
+          if (!attached) {
+            db.exec(`ATTACH DATABASE '${payloadPath.replace(/'/g, "''")}' AS payload`)
+          }
+          payloadAttached = true
         }
-        payloadAttached = true
+      } catch {
+        // payload attach failure is non-fatal; will be reported later if needed
       }
-    } catch {
-      // payload attach failure is non-fatal; will be reported later if needed
     }
 
     createSqliteSchema(db)
@@ -2612,7 +2625,7 @@ function readSqliteCacheRowIds (cacheFilePath, options = {}) {
 
   let db = null
   try {
-    db = openSqliteCache(cacheFilePath)
+    db = openSqliteCache(cacheFilePath, { skipPayloadAttach: true })
     if (!db) {
       return []
     }
@@ -2806,7 +2819,7 @@ function countSqliteCacheEntries (cacheFilePath, filters = {}) {
 
   let db = null
   try {
-    db = openSqliteCache(cacheFilePath)
+    db = openSqliteCache(cacheFilePath, { skipPayloadAttach: true })
     if (!db) {
       return 0
     }
