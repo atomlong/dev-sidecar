@@ -56,9 +56,6 @@ app.commandLine.appendSwitch('disable-features', [
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDevelopment = process.env.NODE_ENV !== 'production'
-const staticPath = isDevelopment
-  ? path.resolve('public')
-  : app.getAppPath()
 
 let _powerMonitor = powerMonitor
 
