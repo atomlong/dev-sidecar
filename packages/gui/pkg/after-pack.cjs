@@ -166,6 +166,45 @@ function pruneLocales (resourcesDir, platform) {
   console.log(`Removed ${removed} unused locale files, saved ${(savedBytes / 1024 / 1024).toFixed(1)} MB`)
 }
 
+/**
+ * 删除 Electron 自带的语言包，只保留中文和英文
+ * 可减少约 15-20MB
+ */
+function pruneLocales (resourcesDir, platform) {
+  let localesDir
+  if (platform === 'mac') {
+    // macOS: Contents/Resources/locales/
+    localesDir = path.join(resourcesDir, 'locales')
+  } else {
+    // Windows/Linux: resources/app.asar.unpacked 的 locales 可能在 framework 中
+    // Electron 的 locales 通常在 app 同级目录
+    localesDir = path.join(path.dirname(resourcesDir), 'locales')
+  }
+
+  if (!fs.existsSync(localesDir)) {
+    // try alternative: inside resources
+    localesDir = path.join(resourcesDir, 'locales')
+    if (!fs.existsSync(localesDir)) {
+      console.log('locales dir not found at:', localesDir)
+      return
+    }
+  }
+
+  const keep = new Set(['en-US.pak', 'en.pak', 'en-US', 'en', 'zh-CN.pak', 'zh-CN', 'zh-TW.pak', 'zh-TW'])
+  const files = fs.readdirSync(localesDir)
+  let removed = 0
+  let savedBytes = 0
+  for (const file of files) {
+    if (keep.has(file)) continue
+    const filePath = path.join(localesDir, file)
+    const stat = fs.statSync(filePath)
+    savedBytes += stat.size
+    fs.unlinkSync(filePath)
+    removed++
+  }
+  console.log(`Removed ${removed} unused locale files, saved ${(savedBytes / 1024 / 1024).toFixed(1)} MB`)
+}
+
 function writeAppUpdateYmlForLinux (appOutDir) {
   const publishUrl = process.env.VUE_APP_PUBLISH_URL
   const publishProvider = process.env.VUE_APP_PUBLISH_PROVIDER
