@@ -88,7 +88,7 @@ async function startup ({ mitmproxyPath }) {
       log.error('代理服务启动失败：', err)
     }
   }
-  if (conf.proxy.enabled) {
+  if (conf.proxy.enabled && !status.proxy.enabled) {
     try {
       await proxy.start()
     } catch (err) {
@@ -98,7 +98,7 @@ async function startup ({ mitmproxyPath }) {
   try {
     const plugins = []
     for (const key in plugin) {
-      if (conf.plugin[key].enabled) {
+      if (conf.plugin[key].enabled && !status.plugin[key]?.enabled) {
         const start = async () => {
           try {
             await plugin[key].start()

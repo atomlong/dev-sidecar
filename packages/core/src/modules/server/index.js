@@ -114,6 +114,7 @@ const serverApi = {
     server = {
       id: serverProcess.pid,
       process: serverProcess,
+      port: serverConfig.port,
       close () {
         serverProcess.send({ type: 'action', event: { key: 'close' } })
       },
