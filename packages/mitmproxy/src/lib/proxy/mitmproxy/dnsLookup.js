@@ -3,15 +3,9 @@ const net = require('node:net')
 const log = require('../../../utils/util.log.server')
 const speedTest = require('../../speed')
 
-function setDnsLookupHeader (res, value) {
-  if (!res) {
-    return
-  }
-  try {
-    res.setHeader('DS-DNS-Lookup', value)
-  } catch (error) {
-    log.error('setHeader error: DS-DNS-Lookup =', value, ', error:', error)
-  }
+// HTTP/2 头值只允许 ASCII 可见字符，需过滤中文等非 ASCII 字符
+function safeHeaderValue (value) {
+  return String(value).replace(/[^\x20-\x7E]/g, '')
 }
 
 function isValidIpAddress (ip) {
@@ -27,6 +21,7 @@ function respondLookup (callback, ip, family, all) {
     callback(null, [{ address: ip, family }])
     return
   }
+
   callback(null, ip, family)
 }
 
@@ -68,7 +63,10 @@ module.exports = {
         if (aliveIpObj && isValidIpAddress(aliveIpObj.host)) {
           const addressFamily = getAddressFamily(aliveIpObj.host)
           log.info(`----- ${action}: ${hostname}, use alive ip from dns '${aliveIpObj.dns}': ${aliveIpObj.host}${target} -----`)
-          setDnsLookupHeader(res, `IpTester: ${aliveIpObj.host} ${aliveIpObj.dns === '预设IP' ? 'PreSet' : aliveIpObj.dns}`)
+          if (res) {
+            const dnsLabel = aliveIpObj.dns === '预设IP' ? 'PreSet' : safeHeaderValue(aliveIpObj.dns)
+            res.setHeader('DS-DNS-Lookup', `IpTester: ${aliveIpObj.host} ${dnsLabel}`)
+          }
           respondLookup(callback, aliveIpObj.host, addressFamily, all)
           return
         } else {
@@ -87,7 +85,10 @@ module.exports = {
             isDnsIntercept.ip = ip
           }
           log.info(`----- ${action}: ${hostname}, use ip from dns '${dns.dnsName}': ${ip}(family: ${addressFamily})${target} -----`)
-          setDnsLookupHeader(res, `DNS: ${ip} (IPv${addressFamily}) ${dns.dnsName === '预设IP' ? 'PreSet' : dns.dnsName}`)
+          if (res) {
+            const dnsLabel = dns.dnsName === '预设IP' ? 'PreSet' : safeHeaderValue(dns.dnsName)
+            res.setHeader('DS-DNS-Lookup', `DNS: ${ip} (IPv${addressFamily}) ${dnsLabel}`)
+          }
           respondLookup(callback, ip, addressFamily, all)
         } else {
           // 使用默认dns
