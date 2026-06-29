@@ -78,6 +78,10 @@ const localArch = process.arch === 'ia32' ? 'ia32' : process.arch === 'arm64' ? 
 const isCI = !!process.env.CI
 const localArch = process.arch === 'ia32' ? 'ia32' : process.arch === 'arm64' ? 'arm64' : 'x64'
 
+// 本地开发自动检测当前平台和架构，CI 构建全部架构
+const isCI = !!process.env.CI
+const localArch = process.arch === 'ia32' ? 'ia32' : process.arch === 'arm64' ? 'arm64' : 'x64'
+
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
   appId: 'dev-sidecar',
