@@ -6397,7 +6397,7 @@ packages:
       accept: 3.1.3
       cors: 2.8.6
       debug: 3.2.7
-      dns-packet: 4.2.0
+      dns-packet: 5.6.1
       dns-socket: 3.0.0
       extend: 3.0.2
       lru-cache: 4.1.5
