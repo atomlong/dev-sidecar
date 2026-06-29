@@ -8246,7 +8246,7 @@ packages:
       mkdirp: 1.0.4
       pngjs: 6.0.0
       svg2png: 4.1.1
-      uuid: 14.0.1
+      uuid: 8.3.2
     transitivePeerDependencies:
       - supports-color
     dev: true
@@ -11271,7 +11271,7 @@ packages:
       safe-buffer: 5.2.1
       tough-cookie: 4.1.4
       tunnel-agent: 0.6.0
-      uuid: 14.0.1
+      uuid: 3.4.0
 
   /require-directory@2.1.1:
     resolution: {integrity: sha512-fGxEI7+wsG9xrvdjsrlmL22OMTTiHRwAMroiEeMgq8gzoLC/PQr7RsRDSTLUg/bZAZtF+TVIkHc6/4RIKrui+Q==}
@@ -11881,7 +11881,7 @@ packages:
     resolution: {integrity: sha512-GJgLTZ7vYb/JtPSSZ10hsOYIvEYsjbNU+zPdIHcUaWVNUEPivzxku31865sSSud0Da0W4lEeOPlmw93zLQchuQ==}
     dependencies:
       faye-websocket: 0.11.4
-      uuid: 14.0.1
+      uuid: 8.3.2
       websocket-driver: 0.7.4
     dev: true
 
