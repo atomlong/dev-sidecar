@@ -117,50 +117,6 @@ function getStage2SeenDbPath (cacheFilePath) {
   return sqlitePath ? `${sqlitePath}.stage2-seen.sqlite` : ''
 }
 
-function getPayloadDbPath (cacheFilePath) {
-  const sqlitePath = getSqliteCachePath(cacheFilePath)
-  const parsed = path.parse(sqlitePath)
-  return path.join(parsed.dir, 'nodes_payload.sqlite')
-}
-
-function isPayloadSeparated (db) {
-  return getCacheMetaValue(db, 'payload_separated') === '1'
-}
-
-function attachPayloadDb (db, cacheFilePath) {
-  if (!db) {
-    return false
-  }
-  const payloadPath = getPayloadDbPath(cacheFilePath)
-  if (!payloadPath || !fs.existsSync(payloadPath)) {
-    return false
-  }
-  try {
-    // Check if already attached
-    const attached = db.prepare("SELECT 1 FROM pragma_database_list WHERE name = 'payload' LIMIT 1").get()
-    if (attached) {
-      return true
-    }
-    db.exec(`ATTACH DATABASE '${payloadPath.replace(/'/g, "''")}' AS payload`)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * Returns the qualified table name for nodes_v2, prefixed with 'payload.'
- * when payload separation is active, so that SQL references resolve to the
- * attached payload DB instead of the main DB.
- */
-function nodesV2Table (db) {
-  return isPayloadSeparated(db) ? 'payload.nodes_v2' : 'nodes_v2'
-}
-
-function nodeIdentityV2Table (db) {
-  return isPayloadSeparated(db) ? 'payload.node_identity_v2' : 'node_identity_v2'
-}
-
 function getStage2DiagnosticPaths (cacheFilePath) {
   const sqlitePath = getSqliteCachePath(cacheFilePath)
   const stage2SeenPath = getStage2SeenDbPath(cacheFilePath)
@@ -686,13 +642,8 @@ function createHotColdSchema (db) {
 
 function createCompactV2Schema (db) {
   db.exec(buildCompactSubscriptionTableSchemaSql())
-  // When payload is separated, nodes_v2 / node_identity_v2 live in the
-  // attached payload DB, not the main DB.
-  const payloadSeparated = isPayloadSeparated(db)
-  if (!payloadSeparated) {
-    db.exec(buildCompactNodeTableSchemaSql())
-    db.exec(buildCompactNodeIdentityTableSchemaSql())
-  }
+  db.exec(buildCompactNodeTableSchemaSql())
+  db.exec(buildCompactNodeIdentityTableSchemaSql())
   db.exec(buildCompactNodeRuntimeTableSchemaSql())
   db.exec(buildCompactSubscriptionRefsTableSchemaSql())
   db.exec(`
@@ -1024,26 +975,7 @@ function hasHotColdData (db) {
 }
 
 function hasCompactV2Data (db) {
-  if (!db || !hasTable(db, 'node_runtime_v2')) {
-    return false
-  }
-  // After payload separation, nodes_v2 lives in the attached payload DB.
-  // If payload is not attached (skipPayloadAttach mode), skip the nodes_v2
-  // check — runtime-only queries don't need it.
-  if (isPayloadSeparated(db)) {
-    try {
-      const attached = db.prepare("SELECT 1 FROM pragma_database_list WHERE name = 'payload' LIMIT 1").get()
-      if (attached) {
-        const row = db.prepare("SELECT 1 AS ok FROM payload.sqlite_master WHERE type='table' AND name='nodes_v2' LIMIT 1").get()
-        if (!row || row.ok !== 1) {
-          return false
-        }
-      }
-      // payload not attached — that's OK for runtime-only queries
-    } catch {
-      return false
-    }
-  } else if (!hasTable(db, 'nodes_v2')) {
+  if (!db || !hasTable(db, 'nodes_v2') || !hasTable(db, 'node_runtime_v2')) {
     return false
   }
   try {
@@ -1167,45 +1099,9 @@ function openSqliteCache (cacheFilePath, options = {}) {
       db.pragma(`wal_autocheckpoint = ${SQLITE_WAL_AUTO_CHECKPOINT_PAGES}`)
       db.pragma(`journal_size_limit = ${SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES}`)
     }
-    // If payload separation has been done (one-time migration script), attach
-    // the payload DB BEFORE createSqliteSchema so that createCompactV2Schema
-    // knows to skip creating nodes_v2 / node_identity_v2 in the main DB.
-    // All SQL references to nodes_v2 / node_identity_v2 will then resolve to
-    // payload.nodes_v2 / payload.node_identity_v2 automatically.
-    // This keeps the hot (runtime) and cold (payload) data in separate files
-    // so that Stage3's high-frequency runtime scans do not accumulate page
-    // cache for the large payload file.
-    //
-    // skipPayloadAttach: when true, do NOT attach the payload DB. Used by
-    // runtime-only queries (readCacheRowIds, countCacheEntries) that never
-    // touch nodes_v2 / node_identity_v2, to avoid loading payload file pages
-    // into kernel page cache.
-    let payloadAttached = false
-    if (options.skipPayloadAttach !== true) {
-      try {
-        const payloadPath = getPayloadDbPath(cacheFilePath)
-        if (fs.existsSync(payloadPath)) {
-          const attached = db.prepare("SELECT 1 FROM pragma_database_list WHERE name = 'payload' LIMIT 1").get()
-          if (!attached) {
-            db.exec(`ATTACH DATABASE '${payloadPath.replace(/'/g, "''")}' AS payload`)
-          }
-          payloadAttached = true
-        }
-      } catch {
-        // payload attach failure is non-fatal; will be reported later if needed
-      }
-    }
-
     createSqliteSchema(db)
     migrateLegacyFullJsonFingerprints(db, { lowFileCache: options.lowFileCache === true })
     migrateNodesToHotColdSchema(db)
-
-    if (payloadAttached && !isPayloadSeparated(db)) {
-      // Payload DB exists but cache_meta flag not set yet — this can happen
-      // for a brand-new payload DB that hasn't been marked. Set it now.
-      setCacheMetaValue(db, 'payload_separated', '1')
-    }
-
     return db
   } catch (error) {
     if (db) {
@@ -1254,11 +1150,10 @@ function readCompactV2CacheRows (db, options = {}) {
   const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
   const limit = normalizeSqliteQueryLimit(options.limit)
   const offset = normalizeSqliteQueryOffset(options.offset)
-  const nodesTable = nodesV2Table(db)
   let sql = `
     SELECT r.node_id, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
     FROM node_runtime_v2 r
-    JOIN ${nodesTable} n ON n.node_id = r.node_id
+    JOIN nodes_v2 n ON n.node_id = r.node_id
     ${whereClause}
     ORDER BY ${getCompactV2OrderByClause(options.orderBy).replace(/\bupdated_at\b/g, 'r.updated_at').replace(/\bnext_check_at\b/g, 'r.next_check_at').replace(/\bstable\b/g, 'r.stable').replace(/\bdelay\b/g, 'r.delay').replace(/\bcountry\b/g, 'r.country').replace(/\bnode_id\b/g, 'r.node_id')}
   `
@@ -1324,11 +1219,10 @@ function readCompactV2CacheEntriesByRowIds (db, rowIds) {
   }
 
   const placeholders = uniqueRowIds.map(() => '?').join(', ')
-  const nodesTable = nodesV2Table(db)
   const rows = db.prepare(`
     SELECT r.node_id AS rowid, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
     FROM node_runtime_v2 r
-    JOIN ${nodesTable} n ON n.node_id = r.node_id
+    JOIN nodes_v2 n ON n.node_id = r.node_id
     WHERE r.node_id IN (${placeholders})
   `).all(...uniqueRowIds)
 
@@ -2160,12 +2054,10 @@ function serializeCacheEntryForCompactV2 (entry) {
 }
 
 function allocateCompactV2CollisionSuffix (db, identity) {
-  const nodesTable = nodesV2Table(db)
-  const identityTable = nodeIdentityV2Table(db)
   const rows = db.prepare(`
     SELECT n.collision_suffix, i.fingerprint_sha256, i.node_key_sha256
-    FROM ${nodesTable} n
-    JOIN ${identityTable} i ON i.node_id = n.node_id
+    FROM nodes_v2 n
+    JOIN node_identity_v2 i ON i.node_id = n.node_id
     WHERE n.fingerprint_hash16 = ? OR n.node_key_hash16 = ?
     ORDER BY n.collision_suffix ASC
   `).all(identity.fingerprintHash16, identity.nodeKeyHash16)
@@ -2193,11 +2085,9 @@ function upsertCompactV2CacheEntry (db, compactEntry) {
     return null
   }
 
-  const nodesTable = nodesV2Table(db)
-  const identityTable = nodeIdentityV2Table(db)
   const existing = db.prepare(`
     SELECT node_id
-    FROM ${identityTable}
+    FROM node_identity_v2
     WHERE fingerprint_sha256 = ? OR node_key_sha256 = ?
     LIMIT 1
   `).get(compactEntry.fingerprintSha256, compactEntry.nodeKeySha256)
@@ -2207,19 +2097,19 @@ function upsertCompactV2CacheEntry (db, compactEntry) {
   if (!nodeId) {
     collisionSuffix = allocateCompactV2CollisionSuffix(db, compactEntry)
     const result = db.prepare(`
-      INSERT INTO ${nodesTable} (fingerprint_hash16, node_key_hash16, collision_suffix, node_json_compressed)
+      INSERT INTO nodes_v2 (fingerprint_hash16, node_key_hash16, collision_suffix, node_json_compressed)
       VALUES (?, ?, ?, ?)
     `).run(compactEntry.fingerprintHash16, compactEntry.nodeKeyHash16, collisionSuffix, compactEntry.nodeJsonCompressed)
     nodeId = result.lastInsertRowid
     db.prepare(`
-      INSERT INTO ${identityTable} (node_id, fingerprint_sha256, node_key_sha256)
+      INSERT INTO node_identity_v2 (node_id, fingerprint_sha256, node_key_sha256)
       VALUES (?, ?, ?)
     `).run(nodeId, compactEntry.fingerprintSha256, compactEntry.nodeKeySha256)
   } else {
-    const row = db.prepare(`SELECT collision_suffix FROM ${nodesTable} WHERE node_id = ?`).get(nodeId)
+    const row = db.prepare('SELECT collision_suffix FROM nodes_v2 WHERE node_id = ?').get(nodeId)
     collisionSuffix = row ? Number(row.collision_suffix) || 0 : 0
     db.prepare(`
-      UPDATE ${nodesTable}
+      UPDATE nodes_v2
       SET fingerprint_hash16 = ?, node_key_hash16 = ?, collision_suffix = ?, node_json_compressed = ?
       WHERE node_id = ?
     `).run(compactEntry.fingerprintHash16, compactEntry.nodeKeyHash16, collisionSuffix, compactEntry.nodeJsonCompressed, nodeId)
@@ -2266,8 +2156,7 @@ function getCompactV2NodeIdByNodeKey (db, nodeKey) {
     return null
   }
   const nodeKeySha256 = createSha256Digest(normalizedNodeKey)
-  const identityTable = nodeIdentityV2Table(db)
-  const row = db.prepare(`SELECT node_id FROM ${identityTable} WHERE node_key_sha256 = ? LIMIT 1`).get(nodeKeySha256)
+  const row = db.prepare('SELECT node_id FROM node_identity_v2 WHERE node_key_sha256 = ? LIMIT 1').get(nodeKeySha256)
   return row && row.node_id ? row.node_id : null
 }
 
@@ -2276,23 +2165,21 @@ function deleteCompactV2CacheEntryByCanonicalFingerprint (db, canonicalFingerpri
   if (!db || !identity) {
     return false
   }
-  const identityTable = nodeIdentityV2Table(db)
-  const nodesTable = nodesV2Table(db)
   const row = identity.nodeKeySha256
     ? db.prepare(`
       SELECT node_id
-      FROM ${identityTable}
+      FROM node_identity_v2
       WHERE fingerprint_sha256 = ? OR node_key_sha256 = ?
       LIMIT 1
     `).get(identity.fingerprintSha256, identity.nodeKeySha256)
-    : db.prepare(`SELECT node_id FROM ${identityTable} WHERE fingerprint_sha256 = ? LIMIT 1`).get(identity.fingerprintSha256)
+    : db.prepare('SELECT node_id FROM node_identity_v2 WHERE fingerprint_sha256 = ? LIMIT 1').get(identity.fingerprintSha256)
   if (!row || !row.node_id) {
     return false
   }
   db.prepare('DELETE FROM subscription_node_refs_v2 WHERE node_id = ?').run(row.node_id)
   db.prepare('DELETE FROM node_runtime_v2 WHERE node_id = ?').run(row.node_id)
-  db.prepare(`DELETE FROM ${identityTable} WHERE node_id = ?`).run(row.node_id)
-  db.prepare(`DELETE FROM ${nodesTable} WHERE node_id = ?`).run(row.node_id)
+  db.prepare('DELETE FROM node_identity_v2 WHERE node_id = ?').run(row.node_id)
+  db.prepare('DELETE FROM nodes_v2 WHERE node_id = ?').run(row.node_id)
   return true
 }
 
@@ -2628,7 +2515,7 @@ function readSqliteCacheRowIds (cacheFilePath, options = {}) {
 
   let db = null
   try {
-    db = openSqliteCache(cacheFilePath, { skipPayloadAttach: true })
+    db = openSqliteCache(cacheFilePath)
     if (!db) {
       return []
     }
@@ -2822,7 +2709,7 @@ function countSqliteCacheEntries (cacheFilePath, filters = {}) {
 
   let db = null
   try {
-    db = openSqliteCache(cacheFilePath, { skipPayloadAttach: true })
+    db = openSqliteCache(cacheFilePath)
     if (!db) {
       return 0
     }
@@ -2921,25 +2808,7 @@ function getSqliteCacheSizeBytes (cacheFilePath) {
     if (!db) {
       return 0
     }
-    let total = getSqliteDatabaseSizeBytes(db)
-    // When payload is separated, also count the payload DB size
-    const payloadPath = getPayloadDbPath(cacheFilePath)
-    if (payloadPath && fs.existsSync(payloadPath)) {
-      try {
-        const payloadRow = db.prepare('SELECT page_count * page_size AS bytes FROM pragma_page_count("payload"), pragma_page_size("payload")').get()
-        if (payloadRow && Number.isFinite(payloadRow.bytes)) {
-          total += Number(payloadRow.bytes)
-        }
-      } catch {
-        // payload not attached or query failed — fall back to file size
-        try {
-          total += fs.statSync(payloadPath).size
-        } catch {
-          // ignore
-        }
-      }
-    }
-    return total
+    return getSqliteDatabaseSizeBytes(db)
   } catch {
     return 0
   } finally {
@@ -3007,13 +2876,11 @@ function cleanupOutdatedToSizeLimit (cacheFilePath, targetBytes) {
         LIMIT 512
       `)
       const deleteNodeById = db.transaction((nodeIds) => {
-        const identityTable = nodeIdentityV2Table(db)
-        const nodesTable = nodesV2Table(db)
         for (const nodeId of nodeIds) {
           db.prepare('DELETE FROM subscription_node_refs_v2 WHERE node_id = ?').run(nodeId)
           db.prepare('DELETE FROM node_runtime_v2 WHERE node_id = ?').run(nodeId)
-          db.prepare(`DELETE FROM ${identityTable} WHERE node_id = ?`).run(nodeId)
-          db.prepare(`DELETE FROM ${nodesTable} WHERE node_id = ?`).run(nodeId)
+          db.prepare('DELETE FROM node_identity_v2 WHERE node_id = ?').run(nodeId)
+          db.prepare('DELETE FROM nodes_v2 WHERE node_id = ?').run(nodeId)
         }
       })
 
@@ -3143,8 +3010,8 @@ function writeSqliteCacheEntries (cacheFilePath, entries) {
       }
       db.prepare('DELETE FROM subscription_node_refs_v2').run()
       db.prepare('DELETE FROM node_runtime_v2').run()
-      db.prepare(`DELETE FROM ${nodeIdentityV2Table(db)}`).run()
-      db.prepare(`DELETE FROM ${nodesV2Table(db)}`).run()
+      db.prepare('DELETE FROM node_identity_v2').run()
+      db.prepare('DELETE FROM nodes_v2').run()
       for (const item of items) {
         const serialized = serializeCacheEntryForSqlite(item)
         if (serialized) {
