@@ -1,9 +1,16 @@
+const fs = require('node:fs')
 const Shell = require('../shell')
 
 const execute = Shell.execute
 
 const executor = {
   async windows (exec, { certPath }) {
+    if (!certPath) {
+      throw new Error('证书路径为空，无法安装根证书。请确认证书文件已生成。')
+    }
+    if (!fs.existsSync(certPath)) {
+      throw new Error(`证书文件不存在: ${certPath}`)
+    }
     const cmds = [`start "" "${certPath}"`]
     await exec(cmds, { type: 'cmd' })
     return true
@@ -14,6 +21,12 @@ const executor = {
     return true
   },
   async mac (exec, { certPath }) {
+    if (!certPath) {
+      throw new Error('证书路径为空，无法安装根证书。请确认证书文件已生成。')
+    }
+    if (!fs.existsSync(certPath)) {
+      throw new Error(`证书文件不存在: ${certPath}`)
+    }
     const cmds = [`open "${certPath}"`]
     await exec(cmds, { type: 'cmd' })
     return true
