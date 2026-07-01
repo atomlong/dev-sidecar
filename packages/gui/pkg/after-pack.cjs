@@ -1,6 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const archiver = require('archiver')
+const { Arch } = require('builder-util')
 const pkg = require('../package.json')
 const { copyRuntimePackage } = require('../scripts/clean-native-artifacts')
 
@@ -115,8 +116,30 @@ exports.default = async function (context) {
     resourcesDir = path.join(context.appOutDir, './resources')
     platform = 'win'
   }
-  ensureNativeRuntimeDependencies(targetPath)
-  const partUpdateFile = `update-${systemType}-${pkg.version}.zip`
+
+  ensureNativeRuntimeDependencies(resourcesDir)
+
+  // 清理无用语言包
+  pruneLocales(resourcesDir, platform)
+
+  // 删除 core 包里冗余的 exe（已在 extra/ 中通过 extraResources 提供）
+  const duplicateExes = [
+    'EnableLoopback.exe',
+    'sysproxy.exe',
+  ]
+  for (const exe of duplicateExes) {
+    const dupPath = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules', '@docmirror', 'dev-sidecar', 'src', 'shell', 'scripts', 'extra-path', exe)
+    if (fs.existsSync(dupPath)) {
+      fs.unlinkSync(dupPath)
+      console.log(`Removed duplicate exe: ${dupPath}`)
+    }
+  }
+
+  // 打包 update 用的 ZIP（按架构分离，原生模块架构相关）
+  // context.arch is the numeric Arch enum (ia32=0, x64=1, armv7l=2, arm64=3)
+  // Use Arch[context.arch] to get the string name; use != null to avoid ia32 (0) being falsy
+  const arch = context.arch != null ? Arch[context.arch] : 'x64'
+  const partUpdateFile = `update-${platform}-${arch}-${pkg.version}.zip`
   const outputPath = path.join(context.outDir, partUpdateFile)
 
   await new Promise((resolve, reject) => {
