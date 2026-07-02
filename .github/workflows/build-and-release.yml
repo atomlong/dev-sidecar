@@ -16,6 +16,7 @@ jobs:
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      VUE_APP_PUBLISH_PROVIDER: generic
     strategy:
       fail-fast: false
       matrix:
@@ -158,6 +159,8 @@ jobs:
 
       - name: "npm run electron:build (Windows/macOS)"
         if: ${{ matrix.os != 'ubuntu' }}
+        env:
+          VUE_APP_PUBLISH_URL: https://github.com/docmirror/dev-sidecar/releases/download/v${{ steps.package-info.outputs.version }}
         run: |
           echo "======================================================================";
           echo "cd packages/gui";
@@ -416,7 +419,7 @@ jobs:
         with:
           path: packages/gui/dist_electron/latest.yml
           name: "latest.yml"
-          if-no-files-found: warn
+          if-no-files-found: error
       - name: "Upload blockmap (Win x64)"
         uses: actions/upload-artifact@v4.4.0
         if: ${{ matrix.os == 'windows' }}
@@ -444,7 +447,7 @@ jobs:
         with:
           path: packages/gui/dist_electron/latest-mac.yml
           name: "latest-mac.yml"
-          if-no-files-found: warn
+          if-no-files-found: error
       - name: "Upload blockmap (macOS x64)"
         uses: actions/upload-artifact@v4.4.0
         if: ${{ matrix.os == 'macos' }}
@@ -479,7 +482,7 @@ jobs:
         with:
           path: packages/gui/dist_electron/latest-linux.yml
           name: "latest-linux.yml"
-          if-no-files-found: warn
+          if-no-files-found: error
       # endregion Upload auto-update metadata files
 
   # job 2
