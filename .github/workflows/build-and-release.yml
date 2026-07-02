@@ -419,7 +419,7 @@ jobs:
         with:
           path: packages/gui/dist_electron/latest.yml
           name: "latest.yml"
-          if-no-files-found: warn
+          if-no-files-found: error
       - name: "Upload blockmap (Win x64)"
         uses: actions/upload-artifact@v4.4.0
         if: ${{ matrix.os == 'windows' }}
@@ -447,7 +447,7 @@ jobs:
         with:
           path: packages/gui/dist_electron/latest-mac.yml
           name: "latest-mac.yml"
-          if-no-files-found: warn
+          if-no-files-found: error
       - name: "Upload blockmap (macOS x64)"
         uses: actions/upload-artifact@v4.4.0
         if: ${{ matrix.os == 'macos' }}
@@ -482,7 +482,7 @@ jobs:
         with:
           path: packages/gui/dist_electron/latest-linux.yml
           name: "latest-linux.yml"
-          if-no-files-found: warn
+          if-no-files-found: error
       # endregion Upload auto-update metadata files
 
   # job 2
