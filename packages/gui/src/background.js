@@ -444,10 +444,17 @@ try {
       app.quit()
     }, 1000)
   } else {
-    app.on('before-quit', async () => {
+    app.on('before-quit', async (event) => {
       log.info('before-quit')
       if (process.platform === 'darwin') {
         quit('before quit')
+      } else if (!forceClose) {
+        // On Linux/Windows, ensure plugins are properly closed before exit.
+        // The original code only called quit() on macOS, leaving Xray probe
+        // subprocesses as orphans on Linux when systemd sends SIGTERM.
+        // Use preventDefault + forceClose guard to avoid recursive quit().
+        event.preventDefault()
+        await quit('before quit')
       }
     })
     app.on('will-quit', () => {

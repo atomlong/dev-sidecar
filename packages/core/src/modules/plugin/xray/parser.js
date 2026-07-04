@@ -534,6 +534,10 @@ function isParsedNodeValid (p) {
       if (!/^[A-Za-z0-9_-]+={0,2}$/.test(reality.publicKey) || getBase64DecodedByteLength(reality.publicKey) !== 32) {
         isValid = false
       }
+      const shortId = typeof reality.shortId === 'string' ? reality.shortId.trim() : ''
+      if (isValid && shortId && !/^(?:[0-9a-fA-F]{2}){1,8}$/.test(shortId)) {
+        isValid = false
+      }
     }
   }
 
@@ -1357,6 +1361,7 @@ function parseSocksProxy (link) {
 
 module.exports = {
   sanitizeNodeForCurrentXray,
+  isParsedNodeValid,
   isNodeSupportedByCurrentXray,
   parseInChunks,
   parseInChunksAsync,

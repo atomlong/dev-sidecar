@@ -664,6 +664,15 @@ function migrateNodesToHotColdSchema (db, options = {}) {
     return 0
   }
 
+  // If node_runtime was retired (compact v2 migration complete), the legacy
+  // nodes table may still exist as an empty leftover but node_runtime is gone.
+  // Attempting the NOT EXISTS subquery against a missing node_runtime table
+  // would throw and cause openSqliteCache to return null, breaking all cache
+  // reads. Skip migration when node_runtime does not exist.
+  if (!hasTable(db, 'node_runtime')) {
+    return 0
+  }
+
   const batchLimit = Math.max(1, Number(options.limit) || 5000)
 
   const rows = db.prepare(`
@@ -3903,6 +3912,41 @@ function dropSqliteFileCache (cacheFilePath, extraPaths = [], options = {}) {
   return applied
 }
 
+// Proactively reclaim cgroup memory by writing to memory.reclaim (Linux 5.19+).
+// Unlike posix_fadvise(DONTNEED) which only hints the kernel, memory.reclaim
+// forces synchronous reclaim of both file-backed and anonymous pages (via swap).
+// This is critical for cold-boot scenarios where Stage1 reads a 700MB+ SQLite DB,
+// pulling ~200MB of file pages into the cgroup cache that fadvise fails to drop
+// promptly. memory.reclaim requires write access to the cgroup's memory.reclaim
+// file; on systemd services this is root-only by default, so the call falls back
+// to `sudo` when the service user lacks direct write permission.
+function reclaimCgroupMemory (bytes, options = {}) {
+  if (process.platform !== 'linux') {
+    return false
+  }
+  const cgroupPath = options.cgroupPath || '/sys/fs/cgroup/system.slice/dev-sidecar.service'
+  const reclaimFile = `${cgroupPath}/memory.reclaim`
+  if (!fs.existsSync(reclaimFile)) {
+    return false
+  }
+  const amount = typeof bytes === 'number' && bytes > 0
+    ? `${Math.ceil(bytes / (1024 * 1024))}M`
+    : '100M'
+  try {
+    // Try direct write first (works if cgroup is delegated or user is root)
+    fs.writeFileSync(reclaimFile, amount)
+    return true
+  } catch {
+    // Fall back to sudo (service user with NOPASSWD sudo)
+    try {
+      require('node:child_process').execSync(`sudo -n sh -c 'echo "${amount}" > ${reclaimFile}'`, { timeout: 5000 })
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
 function updateSubscriptionAvailability (cacheFilePath, options = {}) {
   let db = null
   try {
@@ -4237,6 +4281,7 @@ module.exports = {
   readOutdatedHashSet,
   upsertOutdated,
   dropSqliteFileCache,
+  reclaimCgroupMemory,
   getStage2SeenDbPath,
   updateSubscriptionAvailability,
   writeCacheUpdates,
