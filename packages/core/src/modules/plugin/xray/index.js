@@ -412,6 +412,28 @@ async function reclaimStageSqliteFileCache (log, reason, cachePath, extra = {}, 
     logFadvise: (label, detail) => logStage2MemoryUsage(log, label, { ...detail, reason, ...extra }),
   })
 
+  // posix_fadvise(DONTNEED) only hints the kernel and often fails to reclaim
+  // file pages promptly, especially on cold boot where a 700MB+ SQLite DB scan
+  // pulls ~200MB of pages into the cgroup cache. memory.reclaim (Linux 5.19+)
+  // forces synchronous reclaim of both file-backed and anonymous pages, which
+  // is the only reliable way to drop the cold-boot file-cache spike before it
+  // stacks with anon pages and pushes cgroup peak above the target.
+  if (process.platform === 'linux') {
+    const cgroupFile = '/sys/fs/cgroup/system.slice/dev-sidecar.service/memory.current'
+    try {
+      const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
+      if (Number.isFinite(currentBytes) && currentBytes > 200 * 1024 * 1024) {
+        const reclaimTarget = Math.min(currentBytes - 150 * 1024 * 1024, 200 * 1024 * 1024)
+        if (reclaimTarget > 0) {
+          const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
+          logStage2MemoryUsage(log, `${reason}-cgroup-reclaim`, { ...extra, reclaimed, reclaimTargetMb: Math.round(reclaimTarget / (1024 * 1024)) })
+        }
+      }
+    } catch {
+      // best-effort: memory.reclaim is optional
+    }
+  }
+
   await runStage2GarbageCollection(log, reason, extra, {
     force: options.forceGc === true,
     logSkipped: options.logGcSkipped === true,
@@ -730,7 +752,20 @@ function getBootstrapCandidateLimit (cfg) {
 }
 
 function getCacheRefreshBatchSize (cfg) {
-  return normalizePositiveInt(cfg.cacheRefreshBatchSize, pluginConfig.cacheRefreshBatchSize)
+  return resolveStage3BatchLevel(cfg).batchSize
+}
+
+// Resolve the stage3 batch level (1-5) to its { batchSize, maxOldSpaceSizeMB,
+// stage3GcThresholdMB } tuple. Falls back to the default level when the user
+// value is missing or out of range.
+function resolveStage3BatchLevel (cfg) {
+  const table = pluginConfig.STAGE3_BATCH_LEVEL_TABLE
+  const defaultLevel = pluginConfig.STAGE3_BATCH_LEVEL_DEFAULT
+  const rawLevel = Number.parseInt(cfg && cfg.cacheRefreshBatchLevel, 10)
+  const level = Number.isInteger(rawLevel) && rawLevel >= 1 && rawLevel <= 5
+    ? rawLevel
+    : defaultLevel
+  return table[level] || table[defaultLevel]
 }
 
 function getSubscriptionSyncLowWatermark (cfg) {
@@ -1697,7 +1732,7 @@ function selectStage3RefreshCandidates (entriesWithRowIds, batchSize) {
     }
   }
 
-  const normalizedBatchSize = Math.max(1, normalizePositiveInt(batchSize, pluginConfig.cacheRefreshBatchSize))
+  const normalizedBatchSize = Math.max(1, normalizePositiveInt(batchSize, pluginConfig.STAGE3_BATCH_LEVEL_TABLE[pluginConfig.STAGE3_BATCH_LEVEL_DEFAULT].batchSize))
   const roundBudget = Math.min(normalizedEntries.length, normalizedBatchSize * CACHE_REFRESH_ROUND_BUDGET_MULTIPLIER)
   const hot = []
   const fresh = []
@@ -1881,9 +1916,8 @@ async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeou
     }
   }
 
-  const rangeMap = await geoip.loadGeoipCountryRanges()
   const [country, owner] = await Promise.all([
-    geoip.resolveAddressCountry(exitAddress, rangeMap),
+    geoip.resolveAddressCountry(exitAddress),
     geoip.resolveAddressOwner(exitAddress),
   ])
   return {
@@ -2047,7 +2081,7 @@ function syncCandidateNodesToCache (cachePath, candidateNodes, options = {}) {
   }
 
   for (const node of candidateNodes || []) {
-    if (!parser.isNodeSupportedByCurrentXray(node)) {
+    if (!parser.isParsedNodeValid(node)) {
       continue
     }
     supportedCount += 1
@@ -2139,7 +2173,7 @@ const Plugin = function (context) {
     })
     const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
     const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
-    const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isNodeSupportedByCurrentXray(entry.node))
+    const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isParsedNodeValid(entry.node))
 
     // Also try freshly probed available entries (not yet marked stable).
     // Use a second query without stableOnly to pick up nodes that Stage3 just
@@ -2151,7 +2185,7 @@ const Plugin = function (context) {
     const freshProbeSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, freshProbeQuery)
     const freshProbeEntries = (await collectBootstrapCandidateEntries(freshProbeSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
       .filter(entry => Number.isFinite(entry.delay) && entry.delay > 0)
-    const freshSupported = freshProbeEntries.filter(entry => parser.isNodeSupportedByCurrentXray(entry.node))
+    const freshSupported = freshProbeEntries.filter(entry => parser.isParsedNodeValid(entry.node))
 
     const candidateNodes = []
     appendItems(candidateNodes, freshSupported.map(entry => entry.node))
@@ -2408,14 +2442,31 @@ const Plugin = function (context) {
         const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
         const bootstrapCandidateEntries = xrayCache.readCacheEntriesForStartup(cachePath, bootstrapCandidateQuery)
         const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
-        const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isNodeSupportedByCurrentXray(entry.node))
-        const bootstrapCandidates = bootstrapCandidateEntries.map(entry => entry.node).filter(node => parser.isNodeSupportedByCurrentXray(node))
+        const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isParsedNodeValid(entry.node))
+        const bootstrapCandidates = bootstrapCandidateEntries.map(entry => entry.node).filter(node => parser.isParsedNodeValid(node))
 
         // Drop SQLite file cache after reading 200 candidate blobs from the 700MB+
         // cache file. The candidate data is now in memory; the file page cache
-        // (up to 350MB) must be released before the probe subprocess starts to
-        // avoid cgroup peak exceeding 500MB during the 40-second probe window.
+        // (up to 200MB on cold boot) must be released before the probe subprocess
+        // starts to avoid cgroup peak exceeding 300MB during the 40-second probe
+        // window. fadvise alone is insufficient on cold boot, so also trigger
+        // memory.reclaim for synchronous kernel reclaim of file pages.
         xrayCache.dropSqliteFileCache(cachePath)
+        if (process.platform === 'linux') {
+          const cgroupFile = '/sys/fs/cgroup/system.slice/dev-sidecar.service/memory.current'
+          try {
+            const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
+            if (Number.isFinite(currentBytes) && currentBytes > 150 * 1024 * 1024) {
+              const reclaimTarget = Math.min(currentBytes - 100 * 1024 * 1024, 200 * 1024 * 1024)
+              if (reclaimTarget > 0) {
+                const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
+                logStage2MemoryUsage(log, 'stage1-after-startup-read-reclaim', { reclaimed, reclaimTargetMb: Math.round(reclaimTarget / (1024 * 1024)) })
+              }
+            }
+          } catch {
+            // best-effort: memory.reclaim is optional
+          }
+        }
 
         log.info(`Xray 启动预检查: source=nodes-cache, stableFallbackLoaded=${fallbackStableSourceEntries.length}, stableFallbackFiltered=${fallbackStableEntries.length}, stableFallbackSupported=${supportedFallbackEntries.length}, bootstrapCandidates=${bootstrapCandidateEntries.length}, bootstrapSupported=${bootstrapCandidates.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}`)
 
@@ -2842,7 +2893,9 @@ const Plugin = function (context) {
       const cacheBatchTimeout = getCacheBatchTimeoutSeconds(cfg) * 1000
 
       const dueBefore = xrayCache.formatLocalTimestamp(new Date(roundStartedAt))
-      const batchSize = getCacheRefreshBatchSize(cfg)
+      const stage3BatchLevel = resolveStage3BatchLevel(cfg)
+      const batchSize = stage3BatchLevel.batchSize
+      const stage3GcThresholdBytes = stage3BatchLevel.stage3GcThresholdMB * 1024 * 1024
       const totalDueCandidateCount = xrayCache.countCacheEntries(cachePath, { dueBefore })
       const maxDueRowIds = xrayCache.readCacheRowIds(cachePath, {
         orderBy: 'rowid_desc',
@@ -2910,8 +2963,19 @@ const Plugin = function (context) {
         }
         lastScannedRowId = targetBatchRowIds[targetBatchRowIds.length - 1]
         const targetBatch = xrayCache.readCacheEntriesForRefreshByRowIds(cachePath, targetBatchRowIds)
-        const candidateNodes = targetBatch.map(entry => entry.node)
+        const validTargetBatch = targetBatch.filter(entry => parser.isParsedNodeValid(entry.node))
+        const invalidTargetBatch = targetBatch.length - validTargetBatch.length
+        const candidateNodes = validTargetBatch.map(entry => entry.node)
         const nextBatchIndex = batchIndex + 1
+
+        if (invalidTargetBatch > 0) {
+          log.warn(`Xray 缓存周期探测: 批次 ${nextBatchIndex} 跳过 ${invalidTargetBatch} 个非法缓存节点`)
+          if (xrayCache.writeCacheUpdates(cachePath, validTargetBatch, targetBatch.map(entry => entry.node), {
+            lowFileCache: true,
+          })) {
+            log.info(`Xray 缓存周期探测: 批次 ${nextBatchIndex} 已从缓存移除 ${invalidTargetBatch} 个非法节点`)
+          }
+        }
 
         if (candidateNodes.length === 0) {
           batchIndex = nextBatchIndex
@@ -2941,6 +3005,14 @@ const Plugin = function (context) {
             probeSamples: getCacheRefreshProbeSamples(cfg),
           })
 
+          // TEMP DIAGNOSTIC: log probe result sizes to find the 74MB heap spike source
+          {
+            const probeMem = process.memoryUsage()
+            const entriesJsonSize = batchProbeResult.entries ? JSON.stringify(batchProbeResult.entries).length : 0
+            const observedJsonSize = batchProbeResult.observedFingerprints ? JSON.stringify(batchProbeResult.observedFingerprints).length : 0
+            log.info(`[TEMP-DIAG] batch=${nextBatchIndex} entries=${batchProbeResult.entries?.length || 0} entriesJson=${(entriesJsonSize/1024).toFixed(1)}KB observed=${batchProbeResult.observedFingerprints?.length || 0} observedJson=${(observedJsonSize/1024).toFixed(1)}KB heapUsed=${(probeMem.heapUsed/1024/1024).toFixed(1)}MB`)
+          }
+
           if (generation !== refreshGeneration) {
             return
           }
@@ -2948,13 +3020,19 @@ const Plugin = function (context) {
           const annotatedEntries = await annotateProbeEntries(batchProbeResult.entries, {
             binPath,
             xrayDir,
-            existingEntries: targetBatch,
+            existingEntries: validTargetBatch,
             log,
             probeLifecycle: {
               registerController: registerTransientProbeController,
               unregisterController: unregisterTransientProbeController,
             },
           })
+
+          // TEMP DIAGNOSTIC: log memory after annotateProbeEntries
+          {
+            const memAfterAnnotate = process.memoryUsage()
+            log.info(`[TEMP-DIAG] batch=${nextBatchIndex} afterAnnotate entries=${annotatedEntries.length} heapUsed=${(memAfterAnnotate.heapUsed/1024/1024).toFixed(1)}MB external=${(memAfterAnnotate.external/1024/1024).toFixed(1)}MB`)
+          }
           if (annotatedEntries.length === 0 && batchProbeResult.observedFingerprints.length === 0) {
             const networkStatusAfterEmptyResult = await ensureLocalNetworkAvailabilityForRefresh({
               generation,
@@ -2972,12 +3050,19 @@ const Plugin = function (context) {
 
           const batchWritePlan = applyStage3ProbeResults({
             cachePath,
-            targetBatch,
+            targetBatch: validTargetBatch,
             annotatedEntries,
             observedFingerprints: batchProbeResult.observedFingerprints,
             cacheRefreshIntervalMs: cacheRefreshInterval,
             now: Date.now(),
           })
+
+          // TEMP DIAGNOSTIC: log memory after applyStage3ProbeResults, before writeCacheUpdates
+          {
+            const memBeforeWrite = process.memoryUsage()
+            const updatedJsonSize = JSON.stringify(batchWritePlan.updatedEntries).length
+            log.info(`[TEMP-DIAG] batch=${nextBatchIndex} beforeWrite updated=${batchWritePlan.updatedEntries.length} updatedJson=${(updatedJsonSize/1024).toFixed(1)}KB avail=${batchWritePlan.availableCount} heapUsed=${(memBeforeWrite.heapUsed/1024/1024).toFixed(1)}MB external=${(memBeforeWrite.external/1024/1024).toFixed(1)}MB`)
+          }
 
           let stage3WriteSucceeded = xrayCache.writeCacheUpdates(cachePath, batchWritePlan.updatedEntries, candidateNodes)
           if (!stage3WriteSucceeded) {
@@ -2985,6 +3070,12 @@ const Plugin = function (context) {
             stage3WriteSucceeded = xrayCache.writeCacheUpdates(cachePath, batchWritePlan.updatedEntries, candidateNodes, {
               lowFileCache: true,
             })
+          }
+
+          // TEMP DIAGNOSTIC: log memory after writeCacheUpdates
+          {
+            const memAfterWrite = process.memoryUsage()
+            log.info(`[TEMP-DIAG] batch=${nextBatchIndex} afterWrite avail=${batchWritePlan.availableCount} heapUsed=${(memAfterWrite.heapUsed/1024/1024).toFixed(1)}MB heapTotal=${(memAfterWrite.heapTotal/1024/1024).toFixed(1)}MB external=${(memAfterWrite.external/1024/1024).toFixed(1)}MB`)
           }
           if (!stage3WriteSucceeded) {
             log.error(`Xray 缓存周期探测批次写回失败，已跳过本批持久化以避免整库回退重读: batch=${nextBatchIndex}, cachePath=${cachePath}`)
@@ -3006,8 +3097,25 @@ const Plugin = function (context) {
 
           log.info(`Xray 缓存周期探测批次已写回: ${batchIndex}, available=${batchWritePlan.availableCount}, explicitFailed=${batchWritePlan.explicitFailureCount}, removed=${batchWritePlan.removedCount}, partialCoverage=${batchWritePlan.partialCoverageCount}, progress=${processedCount}/${totalDueCandidateCount} -> ${cachePath}`)
 
-          // Sample heap/cgroup memory every 50 batches to track Stage3 memory growth over time.
-          if (batchIndex % 50 === 0) {
+          // Sample heap/cgroup memory every 10 batches to track Stage3 memory growth over time.
+          if (batchIndex % 10 === 0) {
+            // Stage3 batch loop never called runStage2GarbageCollection, so V8
+            // old-space pages expanded by a single large parse (e.g. the first
+            // batch that finds available nodes) were never returned to the OS,
+            // leaving heapUsed pegged at ~90 MB for the entire multi-hour run.
+            // The trigger threshold is pinned per cacheRefreshBatchLevel (see
+            // STAGE3_BATCH_LEVEL_TABLE in config.js) so it stays in sync with
+            // the V8 old-space cap set in server/index.js.
+            const memSample = process.memoryUsage()
+            if (memSample.heapUsed >= stage3GcThresholdBytes) {
+              await runStage2GarbageCollection(log, `stage3-batch-${batchIndex}-high-heap`, {
+                progress: `${processedCount}/${totalDueCandidateCount}`,
+                availableRound: availableCount,
+                removedRound: removedCount,
+              }, {
+                logAfter: true,
+              })
+            }
             logStage2MemoryUsage(log, `stage3-batch-${batchIndex}`, {
               progress: `${processedCount}/${totalDueCandidateCount}`,
               availableRound: availableCount,
@@ -3018,6 +3126,25 @@ const Plugin = function (context) {
           // Drop SQLite file cache pages after each stage-3 batch write-back
           // to prevent monotonic page-cache growth during long-running probe cycles.
           xrayCache.dropSqliteFileCache(cachePath, [], { label: `stage3-batch-${batchIndex}` })
+
+          // Trigger cgroup memory.reclaim after every batch once memory.current
+          // crosses the guardrail. Waiting until batch 10 is too late on this
+          // service: the cgroup can already hit MemoryHigh around batch 7.
+          if (process.platform === 'linux') {
+            const cgroupFile = '/sys/fs/cgroup/system.slice/dev-sidecar.service/memory.current'
+            try {
+              const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
+              if (Number.isFinite(currentBytes) && currentBytes > 170 * 1024 * 1024) {
+                const reclaimTarget = Math.min(currentBytes - 120 * 1024 * 1024, 150 * 1024 * 1024)
+                if (reclaimTarget > 0) {
+                  xrayCache.reclaimCgroupMemory(reclaimTarget)
+                  log.info(`Xray 缓存周期探测批次回收 cgroup 文件缓存: batch=${batchIndex}, currentMB=${(currentBytes / 1024 / 1024).toFixed(1)}, reclaimMB=${(reclaimTarget / 1024 / 1024).toFixed(1)}`)
+                }
+              }
+            } catch {
+              // best-effort: memory.reclaim is optional
+            }
+          }
 
           if (batchWritePlan.availableCount === 0 && batchWritePlan.explicitFailureCount > 0) {
             log.warn(`Xray 缓存周期探测: 批次 ${batchIndex} 没有可用节点，已按失败回退策略处理`)
@@ -3206,6 +3333,7 @@ module.exports = {
     applyStage3ProbeResults,
     classifyRefreshPriority,
     getFailureBackoffMs,
+    isParsedNodeValid: parser.isParsedNodeValid,
     selectStage3RefreshCandidates,
     toLocalTimestampAfterMs,
   },

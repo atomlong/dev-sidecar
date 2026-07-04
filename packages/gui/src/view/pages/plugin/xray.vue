@@ -21,7 +21,7 @@ export default {
       cacheRefreshEnabled: true,
       cacheRefreshInterval: 21600,
       cacheBatchTimeout: 30,
-      cacheRefreshBatchSize: 31,
+      cacheRefreshBatchLevel: 2,
       cacheRefreshProbeSamples: 2,
       rules: [],
     }
@@ -46,7 +46,7 @@ export default {
       this.cacheRefreshEnabled = this.config.plugin.xray.cacheRefreshEnabled !== false
       this.cacheRefreshInterval = this.config.plugin.xray.cacheRefreshInterval ?? 21600
       this.cacheBatchTimeout = this.config.plugin.xray.cacheBatchTimeout ?? 30
-      this.cacheRefreshBatchSize = this.config.plugin.xray.cacheRefreshBatchSize ?? 31
+      this.cacheRefreshBatchLevel = this.config.plugin.xray.cacheRefreshBatchLevel ?? 2
       this.cacheRefreshProbeSamples = this.config.plugin.xray.cacheRefreshProbeSamples ?? 2
       // Deep copy rules
       this.rules = JSON.parse(JSON.stringify(this.config.plugin.xray.rules || []))
@@ -89,9 +89,10 @@ export default {
       this.config.plugin.xray.cacheBatchTimeout = Number.isFinite(Number(this.cacheBatchTimeout)) && Number(this.cacheBatchTimeout) >= 15
         ? Math.floor(Number(this.cacheBatchTimeout))
         : 30
-      this.config.plugin.xray.cacheRefreshBatchSize = Number.isFinite(Number(this.cacheRefreshBatchSize)) && Number(this.cacheRefreshBatchSize) >= 1
-        ? Math.floor(Number(this.cacheRefreshBatchSize))
-        : 31
+      this.config.plugin.xray.cacheRefreshBatchLevel = Number.isFinite(Number(this.cacheRefreshBatchLevel)) && Number(this.cacheRefreshBatchLevel) >= 1 && Number(this.cacheRefreshBatchLevel) <= 5
+        ? Math.floor(Number(this.cacheRefreshBatchLevel))
+        : 2
+      delete this.config.plugin.xray.cacheRefreshBatchSize
       delete this.config.plugin.xray.cacheRefreshAdaptiveBatching
       delete this.config.plugin.xray.cacheRefreshMinBatchSize
       delete this.config.plugin.xray.cacheRefreshMaxBatchSize
@@ -213,9 +214,9 @@ export default {
           <span style="margin-left: 10px; color: #999;">(仅第三阶段使用；每批需要多少个样本才算完成，默认 2)</span>
         </a-form-item>
 
-        <a-form-item label="缓存批次大小" :label-col="labelCol" :wrapper-col="wrapperCol">
-          <a-input-number v-model="cacheRefreshBatchSize" :min="1" :max="2000" :disabled="!cacheRefreshEnabled" />
-          <span style="margin-left: 10px; color: #999;">(仅第三阶段使用；每批探测多少个缓存节点，默认 31。过大的批次会把 burst observatory 压成整批失败)</span>
+        <a-form-item label="缓存批次等级" :label-col="labelCol" :wrapper-col="wrapperCol">
+          <a-input-number v-model="cacheRefreshBatchLevel" :min="1" :max="5" :disabled="!cacheRefreshEnabled" />
+          <span style="margin-left: 10px; color: #999;">(仅第三阶段使用；等级 1-5 对应每批 64/128/256/512/1024 个节点，默认等级 2。等级越高吞吐越大但内存占用越高，V8 堆上限与 GC 阈值按等级自动调整)</span>
         </a-form-item>
 
         <a-form-item label="订阅链接" :label-col="labelCol" :wrapper-col="wrapperCol">

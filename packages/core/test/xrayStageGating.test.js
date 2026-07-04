@@ -902,6 +902,58 @@ describe('xray stage gating', function () {
     }
   })
 
+  it('filters invalid reality shortId nodes before startup candidate selection', () => {
+    if (!sqliteAvailable) {
+      return
+    }
+
+    const invalidRealityNode = {
+      protocol: 'vless',
+      settings: {
+        vnext: [{
+          address: 'example.com',
+          port: 443,
+          users: [{ id: '11111111-1111-1111-1111-111111111111' }],
+        }],
+      },
+      streamSettings: {
+        network: 'tcp',
+        security: 'reality',
+        realitySettings: {
+          serverName: 'example.com',
+          publicKey: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY',
+          shortId: '2cfb5a0ae8ab0cb063260',
+        },
+      },
+    }
+
+    assert.strictEqual(xrayIndex.__test.isParsedNodeValid(invalidRealityNode), false)
+  })
+
+  it('filters odd-length reality shortId nodes before startup candidate selection', () => {
+    const invalidRealityNode = {
+      protocol: 'vless',
+      settings: {
+        vnext: [{
+          address: 'example.com',
+          port: 443,
+          users: [{ id: '11111111-1111-1111-1111-111111111111' }],
+        }],
+      },
+      streamSettings: {
+        network: 'tcp',
+        security: 'reality',
+        realitySettings: {
+          serverName: 'example.com',
+          publicKey: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY',
+          shortId: '612d8fa72',
+        },
+      },
+    }
+
+    assert.strictEqual(xrayIndex.__test.isParsedNodeValid(invalidRealityNode), false)
+  })
+
   it('simulates a stage2 tombstone skip followed by stage3 success writeback', () => {
     if (!sqliteAvailable) {
       return

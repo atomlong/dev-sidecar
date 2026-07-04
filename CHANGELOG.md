@@ -15,10 +15,15 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Changed Xray cache writes and reads to treat the hot/cold SQLite schema as the authoritative store after migration, and to stop maintaining the legacy `nodes` table once retirement completes.
 - Changed stage 2 large-subscription synchronization to flush accepted-node batches less frequently, reducing real Linux service peak memory from roughly 1.1 GB to about 550 MB in the current baseline verification.
+- Changed `CACHE_SIZE_LIMIT_BYTES` from 3 GB to 1 GB so that `cleanupOutdatedToSizeLimit` triggers sooner and evicts real nodes (not just outdated tombstones) by `next_check_at ASC` when the SQLite cache grows beyond the 0.9× target threshold.
+- Changed `maxLogFileSize` default behavior so operators can set a smaller log rotation size (e.g. 50 MB) in `config.json` to prevent `server.log` page cache from inflating the cgroup memory peak on long-running Linux deployments.
+- Changed systemd service configuration to include `KillMode=control-group`, `TimeoutStopSec=10`, and `MemoryHigh=350M` so that restart cleanly kills all child processes (including Xray probe subprocesses) and the kernel proactively reclaims file-backed page cache (including mmap'd Electron binary pages) when cgroup memory exceeds the soft limit.
 
 ### Fixed
 - Fixed WebSocket and other HTTP upgrade requests to reuse the normal DNS resolution path, restoring Copilot Web chat message sending when those requests pass through DevSidecar.
 - Fixed migrated Xray caches falling back to legacy-row assumptions after retirement, which could otherwise break empty-cache and follow-up refresh behavior.
+- Fixed Electron `before-quit` handler only calling plugin cleanup (`quit()`) on macOS, leaving Xray probe subprocesses and the main Xray process as orphans on Linux when the service receives SIGTERM during `systemctl restart`. The Linux/Windows path now calls `quit()` with `event.preventDefault()` and a `forceClose` guard so the async plugin shutdown (`DevSidecar.api.shutdown()`) runs to completion before `app.quit()` re-enters `before-quit`, avoiding the recursive `quit()` call that the naïve "always call `quit()`" approach would trigger.
+- Fixed `cleanupOutdatedToSizeLimit` only clearing the `outdated` tombstone table without evicting actual node rows, making the 1 GB cache size limit ineffective.
 
 ## [v2.1.4] - 2026-05-20
 
