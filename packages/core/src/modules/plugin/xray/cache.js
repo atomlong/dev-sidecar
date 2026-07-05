@@ -640,6 +640,9 @@ function createHotColdSchema (db) {
   `)
 }
 
+const CACHE_META_COMPACT_V2_DELAY_INDEX_BUILT = 'compact_v2_delay_index_built'
+const CACHE_META_PROBED_NODE_IDS = 'probed_node_ids'
+
 function createCompactV2Schema (db) {
   db.exec(buildCompactSubscriptionTableSchemaSql())
   db.exec(buildCompactNodeTableSchemaSql())
@@ -651,8 +654,126 @@ function createCompactV2Schema (db) {
     ON node_runtime_v2(next_check_at, node_id)
     WHERE next_check_at IS NOT NULL;
   `)
+  // The delay partial index is NOT created here to avoid a full-table SCAN
+  // during cold boot openSqliteCache(). It is built lazily by
+  // ensureCompactV2DelayIndex() during Stage2/Stage3 maintenance when memory
+  // pressure is lower. See ensureCompactV2DelayIndex for details.
   setCacheMetaValue(db, 'compact_cache_v2_schema_version', String(COMPACT_CACHE_V2_SCHEMA_VERSION))
   setCacheMetaValue(db, 'compact_cache_v2_hash_bytes', String(COMPACT_CACHE_V2_HASH_BYTES))
+}
+
+// Build the delay partial index on node_runtime_v2 if it does not exist yet.
+// This index covers only rows with a real probe delay (> 0), which are the
+// only rows that can satisfy the bootstrap startup query's ORDER BY delay ASC.
+// With ~1.6M total rows but only ~99 probed rows, the index is tiny. Building
+// it requires one full-table SCAN (no sort, no large temp memory) but is done
+// here during Stage2/Stage3 maintenance, not during cold boot, so the file
+// cache pages it touches are already warm or get reclaimed afterwards.
+function ensureCompactV2DelayIndex (db) {
+  if (!db || !hasTable(db, 'node_runtime_v2')) {
+    return false
+  }
+  if (getCacheMetaValue(db, CACHE_META_COMPACT_V2_DELAY_INDEX_BUILT) === '1') {
+    return false
+  }
+  try {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_runtime_delay_v2
+      ON node_runtime_v2(delay, stable DESC, updated_at DESC, node_id)
+      WHERE delay IS NOT NULL AND delay > 0;
+    `)
+    setCacheMetaValue(db, CACHE_META_COMPACT_V2_DELAY_INDEX_BUILT, '1')
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Collect node_ids of all probed rows (delay IS NOT NULL AND delay > 0) and
+// store them as a comma-separated string in cache_meta. This is called after
+// Stage3 completes a probe round. Bootstrap startup then reads this list and
+// queries with WHERE node_id IN (...) — a primary-key lookup that avoids
+// scanning the full ~1.6M row table.
+function updateProbedNodeIds (db) {
+  if (!db || !hasTable(db, 'node_runtime_v2')) {
+    return 0
+  }
+  try {
+    const rows = db.prepare(`
+      SELECT node_id
+      FROM node_runtime_v2
+      WHERE delay IS NOT NULL AND delay > 0
+      ORDER BY delay ASC, stable DESC, updated_at DESC
+    `).all()
+    const nodeIds = rows
+      .map(row => Number(row && row.node_id))
+      .filter(id => Number.isInteger(id) && id > 0)
+    setCacheMetaValue(db, CACHE_META_PROBED_NODE_IDS, nodeIds.join(','))
+    return nodeIds.length
+  } catch {
+    return 0
+  }
+}
+
+// Read the probed node_id list from cache_meta. Returns an array of integers.
+function readProbedNodeIds (db) {
+  if (!db) {
+    return []
+  }
+  const raw = getCacheMetaValue(db, CACHE_META_PROBED_NODE_IDS)
+  if (!raw) {
+    return []
+  }
+  return raw.split(',')
+    .map(s => Number(s.trim()))
+    .filter(id => Number.isInteger(id) && id > 0)
+}
+
+// Path-based wrapper for updateProbedNodeIds. Called from Stage3 after a
+// probe round completes.
+function updateProbedNodeIdsAtPath (cacheFilePath) {
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  if (!fs.existsSync(sqlitePath)) {
+    return 0
+  }
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: true })
+    if (!db) {
+      return 0
+    }
+    return updateProbedNodeIds(db)
+  } catch {
+    return 0
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
+// Path-based wrapper for ensureCompactV2DelayIndex. Opens the cache, builds
+// the delay partial index if not yet built, then closes. Called from Stage2
+// maintenance after subscription sync completes.
+function ensureCompactV2DelayIndexAtPath (cacheFilePath) {
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  if (!fs.existsSync(sqlitePath)) {
+    return false
+  }
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: true })
+    if (!db) {
+      return false
+    }
+    return ensureCompactV2DelayIndex(db)
+  } catch {
+    return false
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
 }
 
 function migrateNodesToHotColdSchema (db, options = {}) {
@@ -1424,6 +1545,20 @@ function readSqliteCacheEntriesForStartup (cacheFilePath, options = {}) {
     return []
   }
 
+  const diagnosticHook = typeof options.diagnosticHook === 'function'
+    ? options.diagnosticHook
+    : null
+  const emitDiagnostic = (phase, extra = {}) => {
+    if (!diagnosticHook) {
+      return
+    }
+    try {
+      diagnosticHook(phase, extra)
+    } catch {
+      // ignore diagnostic hook failures
+    }
+  }
+
   let db = null
   try {
     db = openSqliteCache(cacheFilePath)
@@ -1432,22 +1567,71 @@ function readSqliteCacheEntriesForStartup (cacheFilePath, options = {}) {
     }
 
     if (hasCompactV2Data(db)) {
-      const rowIds = readCompactV2CacheRowIds(db, options)
-        .map(row => Number(row && row.rowid))
-        .filter(rowId => Number.isInteger(rowId) && rowId > 0)
-      return readCompactV2CacheEntriesByRowIds(db, rowIds)
+      // Bootstrap startup reads probed node_ids from cache_meta and uses
+      // WHERE node_id IN (...) — a primary-key lookup that avoids scanning
+      // the full ~1.6M row table. If cache_meta is empty (first run or
+      // before Stage3 has run), returns empty — bootstrap will start with
+      // no candidates and Stage2/Stage3 will populate cache_meta for the
+      // next startup.
+      const probedNodeIds = readProbedNodeIds(db)
+      if (probedNodeIds.length === 0) {
+        emitDiagnostic('startup-compact-v2-empty-probed-node-ids', {
+          limit: options.limit,
+        })
+        return []
+      }
+
+      emitDiagnostic('startup-compact-v2-fast-before-lookup', {
+        probedNodeIdCount: probedNodeIds.length,
+        limit: options.limit,
+      })
+      const limit = normalizeSqliteQueryLimit(options.limit)
+      const candidateIds = limit != null && limit > 0
+        ? probedNodeIds.slice(0, limit)
+        : probedNodeIds
+      const entries = readCompactV2CacheEntriesByRowIds(db, candidateIds)
+      emitDiagnostic('startup-compact-v2-fast-after-lookup', {
+        probedNodeIdCount: probedNodeIds.length,
+        candidateCount: candidateIds.length,
+        entryCount: entries.length,
+      })
+      return entries
     }
 
     if (hasHotColdData(db)) {
+      emitDiagnostic('startup-hot-cold-before-rowids', {
+        limit: options.limit,
+        orderBy: options.orderBy || null,
+      })
       const rowIds = readSqliteCacheRowIdsFromHotCold(db, options)
         .map(row => Number(row && row.rowid))
         .filter(rowId => Number.isInteger(rowId) && rowId > 0)
+      emitDiagnostic('startup-hot-cold-after-rowids', {
+        rowIdCount: rowIds.length,
+      })
       if (rowIds.length === 0) {
         return []
       }
 
+      emitDiagnostic('startup-hot-cold-before-runtime', {
+        rowIdCount: rowIds.length,
+      })
       const runtimeRows = readSqliteCacheRuntimeRowsByRowIdsFromHotCold(db, rowIds)
-      return hydrateHotColdRuntimeRowsWithPayload(db, runtimeRows, rowIds)
+      emitDiagnostic('startup-hot-cold-after-runtime', {
+        rowIdCount: rowIds.length,
+        runtimeRowCount: runtimeRows.length,
+      })
+      emitDiagnostic('startup-hot-cold-before-payload', {
+        rowIdCount: rowIds.length,
+        runtimeRowCount: runtimeRows.length,
+      })
+      const entries = hydrateHotColdRuntimeRowsWithPayload(db, runtimeRows, rowIds)
+      emitDiagnostic('startup-hot-cold-after-payload', {
+        rowIdCount: rowIds.length,
+        runtimeRowCount: runtimeRows.length,
+        entryCount: entries.length,
+      })
+      return entries
     }
 
     const { clauses, params } = buildSqliteFilterClauses(options)
@@ -1474,8 +1658,21 @@ function readSqliteCacheEntriesForStartup (cacheFilePath, options = {}) {
       queryParams.push(offset)
     }
 
+    emitDiagnostic('startup-legacy-before-query', {
+      limit,
+      offset,
+      orderBy: options.orderBy || null,
+    })
     const rows = db.prepare(sql).all(...queryParams)
-    return rows.map(deserializeSqliteCacheEntry).filter(Boolean)
+    emitDiagnostic('startup-legacy-after-query', {
+      rowCount: rows.length,
+    })
+    const entries = rows.map(deserializeSqliteCacheEntry).filter(Boolean)
+    emitDiagnostic('startup-legacy-after-deserialize', {
+      rowCount: rows.length,
+      entryCount: entries.length,
+    })
+    return entries
   } catch {
     return []
   } finally {
@@ -2280,6 +2477,11 @@ function buildSqliteFilterClauses (filters = {}) {
     params.push(maxDelayMs)
   }
 
+  if (filters.probedOnly === true) {
+    clauses.push('delay IS NOT NULL')
+    clauses.push('delay > 0')
+  }
+
   const countryInclude = normalizeFilterValues(filters.countryInclude, normalizeCountryCode)
   const countryExclude = normalizeFilterValues(filters.countryExclude, normalizeCountryCode)
   if (countryInclude.length > 0) {
@@ -2341,6 +2543,21 @@ function buildCompactV2FilterClauses (filters = {}) {
     clauses.push('delay IS NOT NULL')
     clauses.push('delay <= ?')
     params.push(maxDelayMs)
+  }
+
+  // probedOnly: only include rows that have a real probe delay (> 0).
+  // This filters out the ~1.6M unprobed rows (delay NULL or 0) before the
+  // ORDER BY, so the sort only touches the ~99 probed rows instead of the
+  // full table. This is semantically equivalent for the bootstrap startup
+  // query because its ORDER BY already pushes delay=0/NULL rows to the back
+  // via CASE WHEN delay IS NULL OR delay = 0 THEN 1 ELSE 0 END ASC, and
+  // LIMIT 100 means those rows would never be selected when >= 100 probed
+  // rows exist. When fewer than 100 probed rows exist, the result is the
+  // same set of probed rows plus whatever the caller gets from the fallback
+  // stable query path.
+  if (filters.probedOnly === true) {
+    clauses.push('delay IS NOT NULL')
+    clauses.push('delay > 0')
   }
 
   const countryInclude = normalizeFilterValues(filters.countryInclude, normalizeCountryCode)
@@ -4265,6 +4482,10 @@ module.exports = {
   retireLegacyNodesStorage,
   retireCompactV2LegacyStorage,
   compactRetiredSqliteCache,
+  ensureCompactV2DelayIndex,
+  ensureCompactV2DelayIndexAtPath,
+  updateProbedNodeIds,
+  updateProbedNodeIdsAtPath,
   readSubscriptionAvailabilitySummary,
   readCacheNodes,
   buildCacheEntriesFromObservatory,
