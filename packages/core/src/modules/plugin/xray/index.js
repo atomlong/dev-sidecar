@@ -479,7 +479,7 @@ function normalizeOwnerFilterKeyword (value) {
   return String(value || '').trim().toLowerCase()
 }
 
-function buildCacheEntryQueryOptions ({ allowedCountries, allowedOwners, stableOnly = false, maxDelayMs = 0, limit = null, offset = 0, orderBy = 'default' } = {}) {
+function buildCacheEntryQueryOptions ({ allowedCountries, allowedOwners, stableOnly = false, maxDelayMs = 0, limit = null, offset = 0, orderBy = 'default', probedOnly = false } = {}) {
   const countryFilters = geoip.parseCountryFilters(allowedCountries)
   const ownerFilters = parseOwnerFilters(allowedOwners)
 
@@ -489,6 +489,7 @@ function buildCacheEntryQueryOptions ({ allowedCountries, allowedOwners, stableO
     limit,
     offset,
     orderBy,
+    probedOnly,
     countryInclude: countryFilters.include,
     countryExclude: countryFilters.exclude,
     ownerInclude: ownerFilters.include,
@@ -2371,20 +2372,14 @@ const Plugin = function (context) {
       const allowedOwners = cfg.allowedOwners
       const maxDelayMs = normalizeNonNegativeInt(cfg.maxDelayMs, 0)
 
-      const startupMigration = xrayCache.migrateHotColdSchema(cachePath, {
-        batchLimit: HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS,
-        maxRows: HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS,
-        lowFileCache: true,
-      })
-      maybeLogHotColdMigrationProgress(log, 'stage1', startupMigration)
-      const stage1Retirement = maybeRetireLegacyNodesStorage(log, cachePath, 'stage1', startupMigration)
-      maybeCompactRetiredSqliteCache(log, cachePath, 'stage1', stage1Retirement)
-      await reclaimStageSqliteFileCache(log, 'stage1-after-cache-bootstrap-reclaim', cachePath, {
-        migratedRows: startupMigration.migratedRows,
-        migrationPending: startupMigration.pending,
-      }, {
-        forceGc: true,
-      })
+      // Stage1 cache maintenance (migration/retire/compact/reclaim) has been
+      // removed from the startup path. The database schema is still checked
+      // and migrated automatically inside openSqliteCache() on every open,
+      // so removing the explicit Stage1 migration call is safe — it only
+      // removes the redundant batch migration that was already complete
+      // (migratedRows=0) on every startup. This avoids an extra
+      // openSqliteCache() call that reads the 765MB database file into
+      // cgroup file cache during cold boot.
 
       // 1. Determine Port
       let port = cfg.localPort
@@ -2438,12 +2433,46 @@ const Plugin = function (context) {
         })
         const bootstrapCandidateQuery = buildCacheEntryQueryOptions({
           limit: bootstrapCandidateLimit,
+          probedOnly: true,
         })
-        const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
-        const bootstrapCandidateEntries = xrayCache.readCacheEntriesForStartup(cachePath, bootstrapCandidateQuery)
+        logStage2MemoryUsage(log, 'stage1-before-startup-read', {
+          bootstrapCandidateLimit,
+          startupNodeLimit,
+        })
+        const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
+          ...stableFallbackQuery,
+          diagnosticHook: (phase, detail) => logStage2MemoryUsage(log, `stage1-stable-${phase}`, {
+            bootstrapCandidateLimit,
+            startupNodeLimit,
+            ...detail,
+          }),
+        })
+        const bootstrapCandidateEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
+          ...bootstrapCandidateQuery,
+          diagnosticHook: (phase, detail) => logStage2MemoryUsage(log, `stage1-bootstrap-${phase}`, {
+            bootstrapCandidateLimit,
+            startupNodeLimit,
+            ...detail,
+          }),
+        })
+        logStage2MemoryUsage(log, 'stage1-after-startup-read', {
+          bootstrapCandidateLimit,
+          startupNodeLimit,
+          stableFallbackLoaded: fallbackStableSourceEntries.length,
+          bootstrapCandidatesLoaded: bootstrapCandidateEntries.length,
+        })
         const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
         const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isParsedNodeValid(entry.node))
         const bootstrapCandidates = bootstrapCandidateEntries.map(entry => entry.node).filter(node => parser.isParsedNodeValid(node))
+        logStage2MemoryUsage(log, 'stage1-after-startup-filter', {
+          bootstrapCandidateLimit,
+          startupNodeLimit,
+          stableFallbackLoaded: fallbackStableSourceEntries.length,
+          stableFallbackFiltered: fallbackStableEntries.length,
+          stableFallbackSupported: supportedFallbackEntries.length,
+          bootstrapCandidatesLoaded: bootstrapCandidateEntries.length,
+          bootstrapSupported: bootstrapCandidates.length,
+        })
 
         // Drop SQLite file cache after reading 200 candidate blobs from the 700MB+
         // cache file. The candidate data is now in memory; the file page cache
@@ -2853,6 +2882,21 @@ const Plugin = function (context) {
         })
       }
 
+      // Build the delay partial index after Stage2 writes are complete but
+      // before the file cache reclaim. This avoids building it during cold
+      // boot (Stage1) where it pushed memory.peak above 350MB. By the time we
+      // get here, Stage2 writes have warmed the relevant pages and the
+      // subsequent dropSqliteFileCache + reclaim will clean up any file cache
+      // the index build touched.
+      try {
+        const built = xrayCache.ensureCompactV2DelayIndexAtPath(cachePath)
+        if (built) {
+          log.info('Xray compact-v2 delay partial index built during Stage2 maintenance')
+        }
+      } catch (indexError) {
+        log.warn(`Xray compact-v2 delay index build failed: ${indexError && indexError.message}`)
+      }
+
       xrayCache.dropSqliteFileCache(cachePath)
 
       if (!writeLocalInputState(localInputStatePath, currentLocalInputState)) {
@@ -3222,6 +3266,22 @@ const Plugin = function (context) {
         if (availabilityResult && availabilityResult.deleted.length > 0) {
           log.info(`Xray stale 订阅元数据已删除: ${availabilityResult.deleted.length} 个`)
         }
+
+        // Update the probed node_id list in cache_meta so the next bootstrap
+        // startup can use WHERE node_id IN (...) instead of a full-table SCAN.
+        // This is the key optimization that keeps bootstrap memory under 300MB:
+        // with ~1.6M rows but only ~99 probed, the SCAN reads 765MB of file
+        // pages into cgroup file cache. The probed node_id list lets bootstrap
+        // do a primary-key lookup instead. Updated once per Stage3 round.
+        try {
+          const probedCount = xrayCache.updateProbedNodeIdsAtPath(cachePath)
+          if (probedCount > 0) {
+            log.info(`Xray 启动缓存已更新: probedNodeIds=${probedCount}`)
+          }
+        } catch (probedError) {
+          log.warn(`Xray 启动缓存更新失败: ${probedError && probedError.message}`)
+        }
+
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
         const nextRefreshAt = new Date(Date.now() + nextDelay).toISOString()
         const summaryPath = writeStage3RoundSummary({

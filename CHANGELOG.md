@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - Added one-time retirement metadata and post-retirement compaction for migrated Xray caches so existing installations can reclaim disk space without losing cached nodes.
 - Added `startupSelectEnabled` to the Xray plugin config so operators can disable stage 1 startup node selection; when set to `false`, DevSidecar reuses the previous `~/.dev-sidecar/xray/config.json` as-is (including its already-selected proxy outbounds and inbound port) instead of probing and rewriting the live config on every restart.
 - Added `subscriptionSyncEnabled` to the Xray plugin config so operators can disable stage 2 subscription fetching and cache synchronization; when set to `false`, DevSidecar skips directly to stage 3 cache-only probing, mirroring the existing `cacheRefreshEnabled` switch pattern.
+- Added compact-v2 startup cache metadata in `cache_meta`, including the persisted `probed_node_ids` list and detailed startup-read diagnostics so stage 3 can prepare the next cold boot without introducing another cache database.
 
 ### Changed
 - Changed Xray cache writes and reads to treat the hot/cold SQLite schema as the authoritative store after migration, and to stop maintaining the legacy `nodes` table once retirement completes.
@@ -18,12 +19,15 @@ All notable changes to this project will be documented in this file.
 - Changed `CACHE_SIZE_LIMIT_BYTES` from 3 GB to 1 GB so that `cleanupOutdatedToSizeLimit` triggers sooner and evicts real nodes (not just outdated tombstones) by `next_check_at ASC` when the SQLite cache grows beyond the 0.9× target threshold.
 - Changed `maxLogFileSize` default behavior so operators can set a smaller log rotation size (e.g. 50 MB) in `config.json` to prevent `server.log` page cache from inflating the cgroup memory peak on long-running Linux deployments.
 - Changed systemd service configuration to include `KillMode=control-group`, `TimeoutStopSec=10`, and `MemoryHigh=350M` so that restart cleanly kills all child processes (including Xray probe subprocesses) and the kernel proactively reclaims file-backed page cache (including mmap'd Electron binary pages) when cgroup memory exceeds the soft limit.
+- Changed stage 1 compact-v2 startup selection to load candidate nodes through `cache_meta.probed_node_ids` primary-key lookups instead of scanning the full `node_runtime_v2` table during cold boot, and moved the optional `delay > 0` partial-index build to stage 2 maintenance where later file-cache reclaim can clean it up.
+- Changed stage 1 startup flow to skip the old explicit cache migration/retire/compact/reclaim pass and rely on the automatic schema checks already performed when opening the SQLite cache.
 
 ### Fixed
 - Fixed WebSocket and other HTTP upgrade requests to reuse the normal DNS resolution path, restoring Copilot Web chat message sending when those requests pass through DevSidecar.
 - Fixed migrated Xray caches falling back to legacy-row assumptions after retirement, which could otherwise break empty-cache and follow-up refresh behavior.
 - Fixed Electron `before-quit` handler only calling plugin cleanup (`quit()`) on macOS, leaving Xray probe subprocesses and the main Xray process as orphans on Linux when the service receives SIGTERM during `systemctl restart`. The Linux/Windows path now calls `quit()` with `event.preventDefault()` and a `forceClose` guard so the async plugin shutdown (`DevSidecar.api.shutdown()`) runs to completion before `app.quit()` re-enters `before-quit`, avoiding the recursive `quit()` call that the naïve "always call `quit()`" approach would trigger.
 - Fixed `cleanupOutdatedToSizeLimit` only clearing the `outdated` tombstone table without evicting actual node rows, making the 1 GB cache size limit ineffective.
+- Fixed compact-v2 bootstrap startup falling back to full-table scans when the startup cache was already available, which had been repopulating Linux cgroup file cache and pushing cold-boot peak memory back above the intended range.
 
 ## [v2.1.4] - 2026-05-20
 
