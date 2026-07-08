@@ -16,6 +16,7 @@ const testHelpers = require('./test-helpers')
 const networkGuard = require('./network_guard')
 const probe = require('./probe')
 const geoip = require('./geoip')
+const cgroupUtil = require('./util.cgroup')
 const { getXrayExePath } = require('../../../shell/scripts/extra-path/index')
 
 const STAGE2_CACHE_SYNC_CHUNK_SIZE = 2000
@@ -108,98 +109,11 @@ function collectUniqueNodeKeys (nodes) {
   return nodeKeys
 }
 
-function formatMemoryUsageMb (value) {
-  const numeric = Number(value)
-  if (!Number.isFinite(numeric) || numeric < 0) {
-    return 'n/a'
-  }
-  return `${(numeric / (1024 * 1024)).toFixed(1)}MB`
-}
-
-function readFirstLine (filePath) {
-  try {
-    return fs.readFileSync(filePath, 'utf8').trim().split('\n')[0] || ''
-  } catch (error) {
-    return ''
-  }
-}
-
-function getCurrentProcessCgroupPath () {
-  const cgroupText = readFirstLine('/proc/self/cgroup')
-  if (!cgroupText) {
-    return ''
-  }
-
-  const parts = cgroupText.split(':')
-  const relativePath = parts.length >= 3 ? parts.slice(2).join(':') : ''
-  if (!relativePath) {
-    return ''
-  }
-
-  return path.join('/sys/fs/cgroup', relativePath)
-}
-
-function readCgroupMemoryValue (cgroupPath, fileName) {
-  if (!cgroupPath) {
-    return null
-  }
-
-  const raw = readFirstLine(path.join(cgroupPath, fileName))
-  const value = Number(raw)
-  return Number.isFinite(value) ? value : null
-}
-
-function readCgroupMemoryStat (cgroupPath) {
-  const result = {}
-  if (!cgroupPath) {
-    return result
-  }
-
-  let statText = ''
-  try {
-    statText = fs.readFileSync(path.join(cgroupPath, 'memory.stat'), 'utf8')
-  } catch (error) {
-    return result
-  }
-
-  for (const line of statText.split('\n')) {
-    const [key, rawValue] = line.trim().split(/\s+/)
-    if (!key || rawValue == null) {
-      continue
-    }
-    const value = Number(rawValue)
-    if (Number.isFinite(value)) {
-      result[key] = value
-    }
-  }
-
-  return result
-}
-
-function getCgroupMemoryUsage () {
-  const cgroupPath = getCurrentProcessCgroupPath()
-  if (!cgroupPath) {
-    return null
-  }
-
-  const current = readCgroupMemoryValue(cgroupPath, 'memory.current')
-  const peak = readCgroupMemoryValue(cgroupPath, 'memory.peak')
-  if (current == null && peak == null) {
-    return null
-  }
-
-  const stat = readCgroupMemoryStat(cgroupPath)
-  return {
-    current,
-    peak,
-    anon: stat.anon,
-    file: stat.file,
-    kernel: stat.kernel,
-    fileDirty: stat.file_dirty,
-    inactiveFile: stat.inactive_file,
-    activeFile: stat.active_file,
-  }
-}
+const {
+  formatMemoryUsageMb,
+  getCurrentProcessCgroupPath,
+  getCgroupMemoryUsage,
+} = cgroupUtil
 
 // TEMP DEBUG: remove after stage2 memory investigation is complete.
 function logStage2MemoryUsage (log, label, extra = {}) {
@@ -233,6 +147,47 @@ function logStage2MemoryUsage (log, label, extra = {}) {
     console.error(message)
   } catch (error) {
     // ignore temporary debug output failures
+  }
+}
+
+function logStage1CgroupProcesses (log, label) {
+  const cgroupPath = getCurrentProcessCgroupPath()
+  if (!cgroupPath) {
+    return
+  }
+
+  try {
+    const pids = fs.readFileSync(path.join(cgroupPath, 'cgroup.procs'), 'utf8')
+      .split(/\s+/)
+      .map(value => Number.parseInt(value, 10))
+      .filter(Number.isInteger)
+    const processes = pids.map(pid => {
+      try {
+        const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8')
+        const rssMatch = status.match(/^VmRSS:\s+(\d+)\s+kB$/m)
+        const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+          .split('\0')
+          .filter(Boolean)
+          .join(' ')
+        return {
+          pid,
+          rssKb: rssMatch ? Number.parseInt(rssMatch[1], 10) : 0,
+          command: cmdline || `[${pid}]`,
+        }
+      } catch {
+        return null
+      }
+    })
+      .filter(Boolean)
+      .sort((left, right) => right.rssKb - left.rssKb)
+
+    const message = `[TEMP][stage1-processes] ${label}: ${processes.map(item => `pid=${item.pid},rss=${formatMemoryUsageMb(item.rssKb * 1024)},cmd=${item.command}`).join('; ') || 'none'}`
+    if (log && typeof log.info === 'function') {
+      log.info(message)
+    }
+    console.error(message)
+  } catch {
+    // ignore temporary cgroup process diagnostic failures
   }
 }
 
@@ -419,7 +374,8 @@ async function reclaimStageSqliteFileCache (log, reason, cachePath, extra = {}, 
   // is the only reliable way to drop the cold-boot file-cache spike before it
   // stacks with anon pages and pushes cgroup peak above the target.
   if (process.platform === 'linux') {
-    const cgroupFile = '/sys/fs/cgroup/system.slice/dev-sidecar.service/memory.current'
+    const cgroupPath = getCurrentProcessCgroupPath()
+    const cgroupFile = cgroupPath ? path.join(cgroupPath, 'memory.current') : ''
     try {
       const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
       if (Number.isFinite(currentBytes) && currentBytes > 200 * 1024 * 1024) {
@@ -2345,12 +2301,17 @@ const Plugin = function (context) {
 
   api = {
     async start () {
+      logStage2MemoryUsage(log, 'stage1-plugin-start-entry')
+      logStage1CgroupProcesses(log, 'stage1-plugin-start-entry')
       const cfg = globalConfig.get().plugin.xray
       if (!cfg || !cfg.enabled) {
         return
       }
 
       const binPath = getXrayExePath()
+      logStage2MemoryUsage(log, 'stage1-after-config-and-bin-path', {
+        binExists: fs.existsSync(binPath),
+      })
       if (!fs.existsSync(binPath)) {
         log.error(`Xray 启动失败: 未找到内置 Xray 可执行文件 (${binPath})`)
         throw new Error('Xray binary not found')
@@ -2360,6 +2321,7 @@ const Plugin = function (context) {
       const xrayDir = path.join(userBasePath, 'xray')
       currentXrayDir = xrayDir
       cleanupStaleProbeArtifacts()
+      logStage2MemoryUsage(log, 'stage1-after-stale-probe-cleanup')
       const liveConfigPath = path.join(xrayDir, 'config.json')
       const liveConfigBakPath = path.join(xrayDir, 'config.json.bak')
       const cachePath = path.join(xrayDir, 'nodes_cache.sqlite')
@@ -2371,6 +2333,9 @@ const Plugin = function (context) {
       const allowedCountries = cfg.allowedCountries
       const allowedOwners = cfg.allowedOwners
       const maxDelayMs = normalizeNonNegativeInt(cfg.maxDelayMs, 0)
+      logStage2MemoryUsage(log, 'stage1-after-path-and-config-init', {
+        startupNodeLimit,
+      })
 
       // Stage1 cache maintenance (migration/retire/compact/reclaim) has been
       // removed from the startup path. The database schema is still checked
@@ -2396,6 +2361,8 @@ const Plugin = function (context) {
       }
 
       globalConfig.get().server.setting.xrayPort = port
+      logStage2MemoryUsage(log, 'stage1-after-port-selection', { port })
+      logStage1CgroupProcesses(log, 'stage1-after-port-selection')
 
       // 2. Stage 1 bootstrap: quickly verify a small set of previous cache nodes,
       // then fall back to last known stable entries if needed.
@@ -2482,8 +2449,10 @@ const Plugin = function (context) {
         // memory.reclaim for synchronous kernel reclaim of file pages.
         xrayCache.dropSqliteFileCache(cachePath)
         if (process.platform === 'linux') {
-          const cgroupFile = '/sys/fs/cgroup/system.slice/dev-sidecar.service/memory.current'
+          const cgroupPath = getCurrentProcessCgroupPath()
+          const cgroupFile = cgroupPath ? path.join(cgroupPath, 'memory.current') : ''
           try {
+            logStage2MemoryUsage(log, 'stage1-before-reclaim-check', { cgroupPath, cgroupFileEmpty: !cgroupFile })
             const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
             if (Number.isFinite(currentBytes) && currentBytes > 150 * 1024 * 1024) {
               const reclaimTarget = Math.min(currentBytes - 100 * 1024 * 1024, 200 * 1024 * 1024)
@@ -2491,9 +2460,11 @@ const Plugin = function (context) {
                 const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
                 logStage2MemoryUsage(log, 'stage1-after-startup-read-reclaim', { reclaimed, reclaimTargetMb: Math.round(reclaimTarget / (1024 * 1024)) })
               }
+            } else {
+              logStage2MemoryUsage(log, 'stage1-reclaim-skipped', { currentBytes })
             }
-          } catch {
-            // best-effort: memory.reclaim is optional
+          } catch (reclaimError) {
+            logStage2MemoryUsage(log, 'stage1-reclaim-error', { error: reclaimError && reclaimError.message })
           }
         }
 
@@ -2656,6 +2627,14 @@ const Plugin = function (context) {
       }, {
         forceGc: true,
       })
+
+      // Stage2 cache maintenance (migration/retire/compact/reclaim) has been
+      // removed. The database schema is still checked and migrated
+      // automatically inside openSqliteCache() on every open, so removing the
+      // explicit migration call is safe — it only removes the redundant batch
+      // migration that was already complete (migratedRows=0) on every Stage2
+      // run. This avoids an extra openSqliteCache() call that reads the 765MB
+      // database file into cgroup file cache during Stage2.
 
       const manualNodes = collectNodesFromLinks(cfg.nodes)
       const subscriptionSyncDecision = getSubscriptionSyncDecision({ cachePath, cfg })
@@ -2918,18 +2897,15 @@ const Plugin = function (context) {
         return
       }
 
-      const stage3Migration = xrayCache.migrateHotColdSchema(cachePath, {
-        batchLimit: HOT_COLD_MIGRATION_STAGE3_BATCH_ROWS,
-        maxRows: HOT_COLD_MIGRATION_STAGE3_BATCH_ROWS,
-        lowFileCache: true,
-      })
-      maybeLogHotColdMigrationProgress(log, 'stage3', stage3Migration)
-      const stage3Retirement = maybeRetireLegacyNodesStorage(log, cachePath, 'stage3', stage3Migration)
-      maybeCompactRetiredSqliteCache(log, cachePath, 'stage3', stage3Retirement)
-      await reclaimStageSqliteFileCache(log, 'stage3-after-migration-reclaim', cachePath, {
-        migratedRows: stage3Migration.migratedRows,
-        migrationPending: stage3Migration.pending,
-      })
+      // Stage3 cache maintenance (migration/retire/compact/reclaim) has been
+      // removed from the per-round entry path. The database schema is still
+      // checked and migrated automatically inside openSqliteCache() on every
+      // open, so removing the explicit migration call is safe — it only
+      // removes the redundant batch migration that was already complete
+      // (migratedRows=0) on every round. This avoids an extra openSqliteCache()
+      // call that reads the 765MB database file into cgroup file cache at the
+      // start of every Stage3 round, which was pushing memory.peak above 300MB
+      // before any guardrail could fire.
 
       const generation = ++refreshGeneration
       const roundStartedAt = Date.now()
@@ -3038,6 +3014,32 @@ const Plugin = function (context) {
         }
 
         log.info(`Xray 缓存周期探测批次: ${nextBatchIndex}, progress=${processedCount}/${totalDueCandidateCount}, batchSize=${candidateNodes.length}`)
+
+        // Reclaim before starting the probe subprocess. Reclaiming only after
+        // write-back is too late: the transient probe process can stack on top
+        // of SQLite file cache and raise memory.peak before the post-batch
+        // guardrail runs.
+        if (process.platform === 'linux') {
+          xrayCache.dropSqliteFileCache(cachePath, [], { label: `stage3-before-probe-${nextBatchIndex}` })
+          try {
+            const cgroupPath = getCurrentProcessCgroupPath()
+            const cgroupFile = cgroupPath ? path.join(cgroupPath, 'memory.current') : ''
+            const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
+            if (Number.isFinite(currentBytes) && currentBytes > 120 * 1024 * 1024) {
+              const reclaimTarget = Math.min(currentBytes - 100 * 1024 * 1024, 120 * 1024 * 1024)
+              if (reclaimTarget > 0) {
+                const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
+                logStage2MemoryUsage(log, 'stage3-before-probe-reclaim', {
+                  batch: nextBatchIndex,
+                  reclaimed,
+                  reclaimTargetMb: Math.round(reclaimTarget / (1024 * 1024)),
+                })
+              }
+            }
+          } catch {
+            // best-effort: memory.reclaim is optional
+          }
+        }
 
         try {
           const batchProbeResult = await probeNodesBatch({
@@ -3175,7 +3177,8 @@ const Plugin = function (context) {
           // crosses the guardrail. Waiting until batch 10 is too late on this
           // service: the cgroup can already hit MemoryHigh around batch 7.
           if (process.platform === 'linux') {
-            const cgroupFile = '/sys/fs/cgroup/system.slice/dev-sidecar.service/memory.current'
+            const cgroupPath = getCurrentProcessCgroupPath()
+            const cgroupFile = cgroupPath ? path.join(cgroupPath, 'memory.current') : ''
             try {
               const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
               if (Number.isFinite(currentBytes) && currentBytes > 170 * 1024 * 1024) {
@@ -3254,15 +3257,30 @@ const Plugin = function (context) {
       }
 
       log.info(`Xray 缓存文件已刷新: 本轮检测 ${processedCount}/${totalDueCandidateCount} 个到期节点，成功批次 ${successBatchCount}/${batchIndex}，本轮探测成功 ${availableCount} 个，显式失败 ${explicitFailureCount} 个，删除 ${removedCount} 个 -> ${cachePath}`)
+      logStage2MemoryUsage(log, 'stage3-round-finalize-entry', {
+        processedCount,
+        availableCount,
+        roundAvailableNodeKeyCount: roundAvailableNodeKeys.size,
+      })
 
       if (generation === refreshGeneration) {
         const roundStatus = processedCount >= totalDueCandidateCount && successBatchCount === plannedBatchCount ? 'completed' : 'partial'
+        logStage2MemoryUsage(log, 'stage3-before-subscription-availability', {
+          roundStatus,
+          roundAvailableNodeKeyCount: roundAvailableNodeKeys.size,
+        })
         const availabilityResult = roundStatus === 'completed'
           ? xrayCache.updateSubscriptionAvailability(cachePath, {
               staleAfterDays: getSubscriptionStaleAfterDays(cfg),
               availableNodeKeys: [...roundAvailableNodeKeys],
+              diagnosticHook: (phase, detail) => logStage2MemoryUsage(log, `stage3-subscription-availability-${phase}`, detail),
             })
           : null
+        logStage2MemoryUsage(log, 'stage3-after-subscription-availability', {
+          roundStatus,
+          subscriptionSummaryCount: availabilityResult && availabilityResult.summary ? availabilityResult.summary.length : 0,
+          deletedSubscriptionCount: availabilityResult && availabilityResult.deleted ? availabilityResult.deleted.length : 0,
+        })
         if (availabilityResult && availabilityResult.deleted.length > 0) {
           log.info(`Xray stale 订阅元数据已删除: ${availabilityResult.deleted.length} 个`)
         }
@@ -3274,7 +3292,11 @@ const Plugin = function (context) {
         // pages into cgroup file cache. The probed node_id list lets bootstrap
         // do a primary-key lookup instead. Updated once per Stage3 round.
         try {
-          const probedCount = xrayCache.updateProbedNodeIdsAtPath(cachePath)
+          logStage2MemoryUsage(log, 'stage3-before-probed-node-ids-update')
+          const probedCount = xrayCache.updateProbedNodeIdsAtPath(cachePath, phase => {
+            logStage2MemoryUsage(log, `stage3-probed-node-ids-${phase}`)
+          })
+          logStage2MemoryUsage(log, 'stage3-after-probed-node-ids-update', { probedCount })
           if (probedCount > 0) {
             log.info(`Xray 启动缓存已更新: probedNodeIds=${probedCount}`)
           }
@@ -3284,6 +3306,10 @@ const Plugin = function (context) {
 
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
         const nextRefreshAt = new Date(Date.now() + nextDelay).toISOString()
+        logStage2MemoryUsage(log, 'stage3-before-round-summary', {
+          hasAvailabilityResult: Boolean(availabilityResult),
+          roundAvailableNodeKeyCount: roundAvailableNodeKeys.size,
+        })
         const summaryPath = writeStage3RoundSummary({
           xrayDir,
           summary: {
@@ -3315,12 +3341,14 @@ const Plugin = function (context) {
               }),
           },
         })
+        logStage2MemoryUsage(log, 'stage3-after-round-summary')
         log.info(`Xray 阶段三轮次汇总已写入: ${summaryPath}`)
 
         // If this round found available nodes and the current live config
         // still has no proxy outbounds (cold-start Direct/Block only),
         // try to regenerate the live config from the freshly probed cache.
         if (availableCount > 0 && !liveConfigHasProxyNodes && generation === refreshGeneration) {
+          logStage2MemoryUsage(log, 'stage3-before-live-config-regenerate')
           await maybeRegenerateLiveConfigFromCache({
             binPath,
             cfg,
@@ -3328,9 +3356,17 @@ const Plugin = function (context) {
             cachePath,
             availableNodeKeys: [...roundAvailableNodeKeys],
           })
+          logStage2MemoryUsage(log, 'stage3-after-live-config-regenerate')
         }
 
+        logStage2MemoryUsage(log, 'stage3-before-next-round-schedule', { nextDelay })
         scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
+        logStage2MemoryUsage(log, 'stage3-after-next-round-schedule', { nextDelay })
+        await reclaimStageSqliteFileCache(log, 'stage3-after-round-finalize-reclaim', cachePath, {
+          nextDelay,
+        }, {
+          forceGc: true,
+        })
       }
     },
 

@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
 - Added `startupSelectEnabled` to the Xray plugin config so operators can disable stage 1 startup node selection; when set to `false`, DevSidecar reuses the previous `~/.dev-sidecar/xray/config.json` as-is (including its already-selected proxy outbounds and inbound port) instead of probing and rewriting the live config on every restart.
 - Added `subscriptionSyncEnabled` to the Xray plugin config so operators can disable stage 2 subscription fetching and cache synchronization; when set to `false`, DevSidecar skips directly to stage 3 cache-only probing, mirroring the existing `cacheRefreshEnabled` switch pattern.
 - Added compact-v2 startup cache metadata in `cache_meta`, including the persisted `probed_node_ids` list and detailed startup-read diagnostics so stage 3 can prepare the next cold boot without introducing another cache database.
+- Added a shared `util.cgroup.js` module for Linux cgroup memory diagnostics and reclaim, replacing duplicated `getCurrentProcessCgroupPath` definitions across `expose.js`, `cache.js`, and `index.js`.
+- Added startup-entry `memory.reclaim` (100 MB) before the mitmproxy server starts, dropping cold-boot cgroup file cache from ~199 MB to ~103 MB so the Xray plugin entry point stays below 300 MB.
+- Added per-batch `memory.reclaim` before each Stage 3 probe subprocess start, preventing the transient Xray probe process from stacking on top of SQLite file cache and pushing `memory.peak` above 300 MB.
+- Added `stage3-after-round-finalize-reclaim` to drop SQLite file cache immediately after a complete Stage 3 round, preventing the ~195 MB residual file cache from stacking onto the next round's initialization.
 
 ### Changed
 - Changed Xray cache writes and reads to treat the hot/cold SQLite schema as the authoritative store after migration, and to stop maintaining the legacy `nodes` table once retirement completes.
@@ -21,6 +25,9 @@ All notable changes to this project will be documented in this file.
 - Changed systemd service configuration to include `KillMode=control-group`, `TimeoutStopSec=10`, and `MemoryHigh=350M` so that restart cleanly kills all child processes (including Xray probe subprocesses) and the kernel proactively reclaims file-backed page cache (including mmap'd Electron binary pages) when cgroup memory exceeds the soft limit.
 - Changed stage 1 compact-v2 startup selection to load candidate nodes through `cache_meta.probed_node_ids` primary-key lookups instead of scanning the full `node_runtime_v2` table during cold boot, and moved the optional `delay > 0` partial-index build to stage 2 maintenance where later file-cache reclaim can clean it up.
 - Changed stage 1 startup flow to skip the old explicit cache migration/retire/compact/reclaim pass and rely on the automatic schema checks already performed when opening the SQLite cache.
+- Changed stage 2 and stage 3 to remove the explicit `migrateHotColdSchema`/`retire`/`compact`/`reclaim` sequence that was redundantly opening the 765 MB SQLite database every round with `migratedRows=0`, pushing cgroup file cache above 300 MB before any guardrail could fire.
+- Changed `updateSubscriptionAvailability` to compute the subscription availability summary in a single pass without joining the 1.6M-row `node_runtime_v2` table, and to reuse the in-memory summary rows after the transaction instead of re-running the full summary query a second time.
+- Changed all `memory.current` / `memory.reclaim` access to resolve the cgroup path dynamically from `/proc/self/cgroup` via `util.cgroup.js`, replacing the hardcoded `dev-sidecar.service` path that would break on non-standard service names.
 
 ### Fixed
 - Fixed WebSocket and other HTTP upgrade requests to reuse the normal DNS resolution path, restoring Copilot Web chat message sending when those requests pass through DevSidecar.
@@ -28,6 +35,7 @@ All notable changes to this project will be documented in this file.
 - Fixed Electron `before-quit` handler only calling plugin cleanup (`quit()`) on macOS, leaving Xray probe subprocesses and the main Xray process as orphans on Linux when the service receives SIGTERM during `systemctl restart`. The Linux/Windows path now calls `quit()` with `event.preventDefault()` and a `forceClose` guard so the async plugin shutdown (`DevSidecar.api.shutdown()`) runs to completion before `app.quit()` re-enters `before-quit`, avoiding the recursive `quit()` call that the naïve "always call `quit()`" approach would trigger.
 - Fixed `cleanupOutdatedToSizeLimit` only clearing the `outdated` tombstone table without evicting actual node rows, making the 1 GB cache size limit ineffective.
 - Fixed compact-v2 bootstrap startup falling back to full-table scans when the startup cache was already available, which had been repopulating Linux cgroup file cache and pushing cold-boot peak memory back above the intended range.
+- Fixed `reclaimCgroupMemory` in `cache.js` calling `getCurrentProcessCgroupPath` without defining it, causing all cgroup `memory.reclaim` calls (Stage 1 startup reclaim, Stage 3 pre-probe reclaim, Stage 3 post-batch reclaim, round-finalize reclaim) to silently fail with `ReferenceError` and allowing the Linux service memory peak to reach 350 MB during both cold boot and long-running Stage 3 rounds.
 
 ## [v2.1.4] - 2026-05-20
 

@@ -3,6 +3,7 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const zlib = require('node:zlib')
 const parser = require('./parser')
+const { getCurrentProcessCgroupPath } = require('./util.cgroup')
 
 let betterSqlite3 = null
 let betterSqlite3LoadAttempted = false
@@ -17,6 +18,7 @@ const SQLITE_INCREMENTAL_VACUUM_STEP_PAGES = 2048
 const SQLITE_INCREMENTAL_VACUUM_MIN_INTERVAL_MS = 10 * 60 * 1000
 const SQLITE_WAL_AUTO_CHECKPOINT_PAGES = 4096
 const SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024
+const SQLITE_IN_CLAUSE_CHUNK_SIZE = 500
 const CACHE_META_LEGACY_NODES_RETIRED = 'legacy_nodes_retired'
 const CACHE_META_POST_RETIRE_COMPACTED = 'post_retire_compacted'
 const CACHE_META_COMPACT_V2_STORAGE_RETIRED = 'compact_v2_storage_retired'
@@ -728,18 +730,28 @@ function readProbedNodeIds (db) {
 
 // Path-based wrapper for updateProbedNodeIds. Called from Stage3 after a
 // probe round completes.
-function updateProbedNodeIdsAtPath (cacheFilePath) {
+function updateProbedNodeIdsAtPath (cacheFilePath, diagnosticHook = null) {
   const sqlitePath = getSqliteCachePath(cacheFilePath)
   if (!fs.existsSync(sqlitePath)) {
     return 0
   }
   let db = null
+  const emitDiagnostic = phase => {
+    if (typeof diagnosticHook === 'function') {
+      diagnosticHook(phase)
+    }
+  }
   try {
+    emitDiagnostic('before-open')
     db = openSqliteCache(cacheFilePath, { lowFileCache: true })
+    emitDiagnostic('after-open')
     if (!db) {
       return 0
     }
-    return updateProbedNodeIds(db)
+    emitDiagnostic('before-query')
+    const count = updateProbedNodeIds(db)
+    emitDiagnostic('after-query')
+    return count
   } catch {
     return 0
   } finally {
@@ -3931,10 +3943,9 @@ function readSubscriptionAvailabilitySummary (cacheFilePath, options = {}) {
           s.zero_available_since AS zeroAvailableSince,
           s.stale_after_days AS staleAfterDays,
           COUNT(r.node_id) AS stage2NodeCount,
-          SUM(CASE WHEN n.node_id IS NOT NULL THEN 1 ELSE 0 END) AS retainedNodeCount
+          COUNT(r.node_id) AS retainedNodeCount
         FROM subscriptions_v2 s
         LEFT JOIN subscription_node_refs_v2 r ON r.subscription_id = s.subscription_id
-        LEFT JOIN node_runtime_v2 n ON n.node_id = r.node_id
         GROUP BY s.source_key
         ORDER BY s.configured DESC, s.sort_order ASC
       `).all().map(row => ({
@@ -3951,14 +3962,24 @@ function readSubscriptionAvailabilitySummary (cacheFilePath, options = {}) {
       }))
 
       if (availableNodeIds.size > 0) {
-        for (const row of rows) {
-          const refs = db.prepare(`
-            SELECT r.node_id
+        const availableIds = [...availableNodeIds]
+        const countBySourceKey = new Map()
+        for (let offset = 0; offset < availableIds.length; offset += SQLITE_IN_CLAUSE_CHUNK_SIZE) {
+          const chunk = availableIds.slice(offset, offset + SQLITE_IN_CLAUSE_CHUNK_SIZE)
+          const placeholders = chunk.map(() => '?').join(', ')
+          const counts = db.prepare(`
+            SELECT s.source_key AS sourceKey, COUNT(*) AS availableNodeCount
             FROM subscription_node_refs_v2 r
             JOIN subscriptions_v2 s ON s.subscription_id = r.subscription_id
-            WHERE s.source_key = ?
-          `).all(row.sourceKey)
-          row.availableNodeCount = refs.reduce((count, ref) => count + (availableNodeIds.has(Number(ref.node_id)) ? 1 : 0), 0)
+            WHERE r.node_id IN (${placeholders})
+            GROUP BY s.source_key
+          `).all(...chunk)
+          for (const count of counts) {
+            countBySourceKey.set(count.sourceKey, (countBySourceKey.get(count.sourceKey) || 0) + (Number(count.availableNodeCount) || 0))
+          }
+        }
+        for (const row of rows) {
+          row.availableNodeCount = countBySourceKey.get(row.sourceKey) || 0
         }
       }
 
@@ -4138,7 +4159,10 @@ function reclaimCgroupMemory (bytes, options = {}) {
   if (process.platform !== 'linux') {
     return false
   }
-  const cgroupPath = options.cgroupPath || '/sys/fs/cgroup/system.slice/dev-sidecar.service'
+  const cgroupPath = options.cgroupPath || getCurrentProcessCgroupPath()
+  if (!cgroupPath) {
+    return false
+  }
   const reclaimFile = `${cgroupPath}/memory.reclaim`
   if (!fs.existsSync(reclaimFile)) {
     return false
@@ -4163,8 +4187,16 @@ function reclaimCgroupMemory (bytes, options = {}) {
 
 function updateSubscriptionAvailability (cacheFilePath, options = {}) {
   let db = null
+  const diagnosticHook = typeof options.diagnosticHook === 'function' ? options.diagnosticHook : null
+  const emitDiagnostic = (phase, detail = {}) => {
+    if (diagnosticHook) {
+      diagnosticHook(phase, detail)
+    }
+  }
   try {
+    emitDiagnostic('before-open')
     db = openSqliteCache(cacheFilePath)
+    emitDiagnostic('after-open')
     if (!db) {
       return null
     }
@@ -4172,9 +4204,11 @@ function updateSubscriptionAvailability (cacheFilePath, options = {}) {
     const now = options.now || formatLocalTimestamp()
     const nowEpoch = toEpochSeconds(now) || Math.floor(Date.now() / 1000)
     const staleAfterDays = Math.max(1, Number(options.staleAfterDays) || 30)
+    emitDiagnostic('before-initial-summary')
     const rows = readSubscriptionAvailabilitySummary(cacheFilePath, {
       availableNodeKeys: options.availableNodeKeys,
     })
+    emitDiagnostic('after-initial-summary', { rowCount: rows.length })
     const compactV2Retired = isCompactV2StorageRetired(db) || !hasTable(db, 'subscriptions')
     if (compactV2Retired) {
       const updateAvailableV2 = db.prepare('UPDATE subscriptions_v2 SET last_available_at = ?, zero_available_since = NULL, stale_after_days = ?, updated_at = ? WHERE source_key = ?')
@@ -4190,10 +4224,15 @@ function updateSubscriptionAvailability (cacheFilePath, options = {}) {
         for (const row of rows) {
           if (row.availableNodeCount > 0) {
             updateAvailableV2.run(nowEpoch, staleAfterDays, nowEpoch, row.sourceKey)
+            row.lastAvailableAt = nowEpoch
+            row.zeroAvailableSince = null
+            row.staleAfterDays = staleAfterDays
             continue
           }
 
           updateZeroV2.run(nowEpoch, staleAfterDays, nowEpoch, row.sourceKey)
+          row.zeroAvailableSince = row.zeroAvailableSince || nowEpoch
+          row.staleAfterDays = staleAfterDays
           const zeroSince = row.zeroAvailableSince || now
           const zeroSinceTime = new Date(zeroSince).getTime()
           const nowTime = new Date(now).getTime()
@@ -4205,11 +4244,12 @@ function updateSubscriptionAvailability (cacheFilePath, options = {}) {
           }
         }
       })
+      emitDiagnostic('before-apply')
       applyV2()
+      emitDiagnostic('after-apply')
 
-      const summary = readSubscriptionAvailabilitySummary(cacheFilePath, {
-        availableNodeKeys: options.availableNodeKeys,
-      })
+      const deletedSet = new Set(deleted)
+      const summary = rows.filter(row => !deletedSet.has(row.sourceKey))
       return { summary, deleted }
     }
 
@@ -4223,10 +4263,15 @@ function updateSubscriptionAvailability (cacheFilePath, options = {}) {
       for (const row of rows) {
         if (row.availableNodeCount > 0) {
           updateAvailable.run(now, staleAfterDays, now, row.sourceKey)
+          row.lastAvailableAt = now
+          row.zeroAvailableSince = null
+          row.staleAfterDays = staleAfterDays
           continue
         }
 
         updateZero.run(now, staleAfterDays, now, row.sourceKey)
+        row.zeroAvailableSince = row.zeroAvailableSince || now
+        row.staleAfterDays = staleAfterDays
         const zeroSince = row.zeroAvailableSince || now
         const zeroSinceTime = new Date(zeroSince).getTime()
         const nowTime = new Date(now).getTime()
@@ -4238,11 +4283,12 @@ function updateSubscriptionAvailability (cacheFilePath, options = {}) {
         }
       }
     })
+    emitDiagnostic('before-apply')
     apply()
+    emitDiagnostic('after-apply')
 
-    const summary = readSubscriptionAvailabilitySummary(cacheFilePath, {
-      availableNodeKeys: options.availableNodeKeys,
-    })
+    const deletedSet = new Set(deleted)
+    const summary = rows.filter(row => !deletedSet.has(row.sourceKey))
     return { summary, deleted }
   } catch {
     return null
