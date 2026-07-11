@@ -23,6 +23,7 @@
     "electron:icons-black": "electron-icon-builder --input=./public/logo/win-black.png --output=build/black --flatten"
   },
   "dependencies": {
+    "@docmirror/fadvise-linux": "workspace:*",
     "@docmirror/dev-sidecar": "workspace:*",
     "@docmirror/mitmproxy": "workspace:*",
     "@starknt/shutdown-handler-napi": "^0.0.3",
@@ -48,9 +49,6 @@
     "vue": "^3.5.33",
     "vue-router": "^4.6.4",
     "vue3-json-editor": "^1.1.5"
-  },
-  "optionalDependencies": {
-    "@docmirror/fadvise-linux": "workspace:*"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",
