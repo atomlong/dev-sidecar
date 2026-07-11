@@ -10,7 +10,7 @@
   "license": "MPL-2.0",
   "homepage": "https://github.com/docmirror/dev-sidecar",
   "scripts": {
-    "preelectron:build": "cross-env CXXFLAGS=-std=c++17 CL=/std:c++17 electron-builder install-app-deps && node scripts/clean-native-artifacts.js",
+    "preelectron:build": "node scripts/hide-fadvise-linux-nonlinux.js && cross-env CXXFLAGS=-std=c++17 CL=/std:c++17 electron-builder install-app-deps && node scripts/clean-native-artifacts.js",
     "postelectron:build": "node scripts/rebuild-core-native.js",
     "serve": "vue-cli-service serve",
     "build": "vue-cli-service build",
