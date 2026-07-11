@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.1.5] - Unreleased
+## [v2.1.5] - 2026-07-11
 
 ### Added
 - Added `query` support to the `requestReplace` interceptor, allowing intercept configs to set or remove URL query parameters (with `${hostname}`/`${path}` placeholder substitution), enabling per-host URL rewrites such as injecting the Docker Registry `service` parameter into `auth.docker.io` token requests.
