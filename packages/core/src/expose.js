@@ -11,29 +11,6 @@ const { getCurrentProcessCgroupPath } = require('./modules/plugin/xray/util.cgro
 
 const server = modules.server
 
-function logStartupMemory (label) {
-  if (process.platform !== 'linux') {
-    return
-  }
-
-  try {
-    const cgroupPath = getCurrentProcessCgroupPath()
-    if (!cgroupPath) {
-      return
-    }
-    const current = Number.parseInt(fs.readFileSync(`${cgroupPath}/memory.current`, 'utf8').trim(), 10)
-    const peak = Number.parseInt(fs.readFileSync(`${cgroupPath}/memory.peak`, 'utf8').trim(), 10)
-    const stat = Object.fromEntries(fs.readFileSync(`${cgroupPath}/memory.stat`, 'utf8')
-      .trim()
-      .split('\n')
-      .map(line => line.split(/\s+/, 2)))
-    const mb = value => `${(Number(value || 0) / (1024 * 1024)).toFixed(1)}MB`
-    log.info(`[TEMP][startup-mem] ${label}: current=${mb(current)}, peak=${mb(peak)}, anon=${mb(stat.anon)}, file=${mb(stat.file)}, kernel=${mb(stat.kernel)}, inactiveFile=${mb(stat.inactive_file)}, activeFile=${mb(stat.active_file)}`)
-  } catch {
-    // ignore temporary startup diagnostic failures
-  }
-}
-
 function reclaimStartupMemory () {
   if (process.platform !== 'linux') {
     return false
@@ -104,23 +81,17 @@ function newServerStart ({ mitmproxyPath }) {
 server.start = newServerStart
 async function startup ({ mitmproxyPath }) {
   const conf = config.get()
-  logStartupMemory('startup-entry')
-  const startupReclaimed = reclaimStartupMemory()
-  logStartupMemory(`after-startup-reclaim-${startupReclaimed ? 'success' : 'failed'}`)
+  reclaimStartupMemory()
   if (conf.server.enabled) {
     try {
-      logStartupMemory('before-server-start')
       await server.start({ mitmproxyPath })
-      logStartupMemory('after-server-start')
     } catch (err) {
       log.error('代理服务启动失败：', err)
     }
   }
   if (conf.proxy.enabled) {
     try {
-      logStartupMemory('before-proxy-start')
       await proxy.start()
-      logStartupMemory('after-proxy-start')
     } catch (err) {
       log.error('开启系统代理失败：', err)
     }
@@ -131,9 +102,7 @@ async function startup ({ mitmproxyPath }) {
       if (conf.plugin[key].enabled) {
         const start = async () => {
           try {
-            logStartupMemory(`before-plugin-${key}`)
             await plugin[key].start()
-            logStartupMemory(`after-plugin-${key}`)
             log.info(`插件【${key}】已启动`)
           } catch (err) {
             log.error(`插件【${key}】启动失败:`, err)
