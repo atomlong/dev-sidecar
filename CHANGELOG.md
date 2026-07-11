@@ -28,6 +28,9 @@ All notable changes to this project will be documented in this file.
 - Changed stage 2 and stage 3 to remove the explicit `migrateHotColdSchema`/`retire`/`compact`/`reclaim` sequence that was redundantly opening the 765 MB SQLite database every round with `migratedRows=0`, pushing cgroup file cache above 300 MB before any guardrail could fire.
 - Changed `updateSubscriptionAvailability` to compute the subscription availability summary in a single pass without joining the 1.6M-row `node_runtime_v2` table, and to reuse the in-memory summary rows after the transaction instead of re-running the full summary query a second time.
 - Changed all `memory.current` / `memory.reclaim` access to resolve the cgroup path dynamically from `/proc/self/cgroup` via `util.cgroup.js`, replacing the hardcoded `dev-sidecar.service` path that would break on non-standard service names.
+- Changed `subscriptionSyncLowWatermark` semantics so stage 2 fetches remote subscriptions only when the stable-node count is at or below the watermark (previously the boundary used `>=`); a watermark of `0` skips fetching whenever any stable node exists.
+- Changed `subscriptionSyncLowWatermark` validation to treat negative or non-numeric values as invalid configuration: instead of silently clamping to `0`, it now records a warning and skips remote subscription fetching (local nodes are still processed) so a misconfigured threshold cannot trigger unexpected remote syncs.
+- Removed the temporary `[TEMP]` cgroup memory diagnostic logging from `expose.js`, `cache.js`, and `index.js` after confirming the Linux service memory peak stayed below 300 MB across cold boot, Stage 3 batches, and round-finalize.
 
 ### Fixed
 - Fixed WebSocket and other HTTP upgrade requests to reuse the normal DNS resolution path, restoring Copilot Web chat message sending when those requests pass through DevSidecar.

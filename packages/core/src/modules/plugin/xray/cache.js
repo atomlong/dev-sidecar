@@ -733,27 +733,18 @@ function readProbedNodeIds (db) {
 
 // Path-based wrapper for updateProbedNodeIds. Called from Stage3 after a
 // probe round completes.
-function updateProbedNodeIdsAtPath (cacheFilePath, diagnosticHook = null) {
+function updateProbedNodeIdsAtPath (cacheFilePath) {
   const sqlitePath = getSqliteCachePath(cacheFilePath)
   if (!fs.existsSync(sqlitePath)) {
     return 0
   }
   let db = null
-  const emitDiagnostic = phase => {
-    if (typeof diagnosticHook === 'function') {
-      diagnosticHook(phase)
-    }
-  }
   try {
-    emitDiagnostic('before-open')
     db = openSqliteCache(cacheFilePath, { lowFileCache: true })
-    emitDiagnostic('after-open')
     if (!db) {
       return 0
     }
-    emitDiagnostic('before-query')
     const count = updateProbedNodeIds(db)
-    emitDiagnostic('after-query')
     return count
   } catch {
     return 0
@@ -1557,19 +1548,6 @@ function readSqliteCacheEntriesForStartup (cacheFilePath, options = {}) {
     return []
   }
 
-  const diagnosticHook = typeof options.diagnosticHook === 'function'
-    ? options.diagnosticHook
-    : null
-  const emitDiagnostic = (phase, extra = {}) => {
-    if (!diagnosticHook) {
-      return
-    }
-    try {
-      diagnosticHook(phase, extra)
-    } catch {
-      // ignore diagnostic hook failures
-    }
-  }
 
   let db = null
   try {
@@ -1587,62 +1565,25 @@ function readSqliteCacheEntriesForStartup (cacheFilePath, options = {}) {
       // next startup.
       const probedNodeIds = readProbedNodeIds(db)
       if (probedNodeIds.length === 0) {
-        emitDiagnostic('startup-compact-v2-empty-probed-node-ids', {
-          limit: options.limit,
-        })
         return []
       }
-
-      emitDiagnostic('startup-compact-v2-fast-before-lookup', {
-        probedNodeIdCount: probedNodeIds.length,
-        limit: options.limit,
-      })
       const limit = normalizeSqliteQueryLimit(options.limit)
       const candidateIds = limit != null && limit > 0
         ? probedNodeIds.slice(0, limit)
         : probedNodeIds
       const entries = readCompactV2CacheEntriesByRowIds(db, candidateIds)
-      emitDiagnostic('startup-compact-v2-fast-after-lookup', {
-        probedNodeIdCount: probedNodeIds.length,
-        candidateCount: candidateIds.length,
-        entryCount: entries.length,
-      })
       return entries
     }
 
     if (hasHotColdData(db)) {
-      emitDiagnostic('startup-hot-cold-before-rowids', {
-        limit: options.limit,
-        orderBy: options.orderBy || null,
-      })
       const rowIds = readSqliteCacheRowIdsFromHotCold(db, options)
         .map(row => Number(row && row.rowid))
         .filter(rowId => Number.isInteger(rowId) && rowId > 0)
-      emitDiagnostic('startup-hot-cold-after-rowids', {
-        rowIdCount: rowIds.length,
-      })
       if (rowIds.length === 0) {
         return []
       }
-
-      emitDiagnostic('startup-hot-cold-before-runtime', {
-        rowIdCount: rowIds.length,
-      })
       const runtimeRows = readSqliteCacheRuntimeRowsByRowIdsFromHotCold(db, rowIds)
-      emitDiagnostic('startup-hot-cold-after-runtime', {
-        rowIdCount: rowIds.length,
-        runtimeRowCount: runtimeRows.length,
-      })
-      emitDiagnostic('startup-hot-cold-before-payload', {
-        rowIdCount: rowIds.length,
-        runtimeRowCount: runtimeRows.length,
-      })
       const entries = hydrateHotColdRuntimeRowsWithPayload(db, runtimeRows, rowIds)
-      emitDiagnostic('startup-hot-cold-after-payload', {
-        rowIdCount: rowIds.length,
-        runtimeRowCount: runtimeRows.length,
-        entryCount: entries.length,
-      })
       return entries
     }
 
@@ -1669,21 +1610,8 @@ function readSqliteCacheEntriesForStartup (cacheFilePath, options = {}) {
       sql += '\n      OFFSET ?'
       queryParams.push(offset)
     }
-
-    emitDiagnostic('startup-legacy-before-query', {
-      limit,
-      offset,
-      orderBy: options.orderBy || null,
-    })
     const rows = db.prepare(sql).all(...queryParams)
-    emitDiagnostic('startup-legacy-after-query', {
-      rowCount: rows.length,
-    })
     const entries = rows.map(deserializeSqliteCacheEntry).filter(Boolean)
-    emitDiagnostic('startup-legacy-after-deserialize', {
-      rowCount: rows.length,
-      entryCount: entries.length,
-    })
     return entries
   } catch {
     return []
@@ -4190,16 +4118,8 @@ function reclaimCgroupMemory (bytes, options = {}) {
 
 function updateSubscriptionAvailability (cacheFilePath, options = {}) {
   let db = null
-  const diagnosticHook = typeof options.diagnosticHook === 'function' ? options.diagnosticHook : null
-  const emitDiagnostic = (phase, detail = {}) => {
-    if (diagnosticHook) {
-      diagnosticHook(phase, detail)
-    }
-  }
   try {
-    emitDiagnostic('before-open')
     db = openSqliteCache(cacheFilePath)
-    emitDiagnostic('after-open')
     if (!db) {
       return null
     }
@@ -4207,11 +4127,9 @@ function updateSubscriptionAvailability (cacheFilePath, options = {}) {
     const now = options.now || formatLocalTimestamp()
     const nowEpoch = toEpochSeconds(now) || Math.floor(Date.now() / 1000)
     const staleAfterDays = Math.max(1, Number(options.staleAfterDays) || 30)
-    emitDiagnostic('before-initial-summary')
     const rows = readSubscriptionAvailabilitySummary(cacheFilePath, {
       availableNodeKeys: options.availableNodeKeys,
     })
-    emitDiagnostic('after-initial-summary', { rowCount: rows.length })
     const compactV2Retired = isCompactV2StorageRetired(db) || !hasTable(db, 'subscriptions')
     if (compactV2Retired) {
       const updateAvailableV2 = db.prepare('UPDATE subscriptions_v2 SET last_available_at = ?, zero_available_since = NULL, stale_after_days = ?, updated_at = ? WHERE source_key = ?')
@@ -4247,9 +4165,7 @@ function updateSubscriptionAvailability (cacheFilePath, options = {}) {
           }
         }
       })
-      emitDiagnostic('before-apply')
       applyV2()
-      emitDiagnostic('after-apply')
 
       const deletedSet = new Set(deleted)
       const summary = rows.filter(row => !deletedSet.has(row.sourceKey))
@@ -4286,9 +4202,7 @@ function updateSubscriptionAvailability (cacheFilePath, options = {}) {
         }
       }
     })
-    emitDiagnostic('before-apply')
     apply()
-    emitDiagnostic('after-apply')
 
     const deletedSet = new Set(deleted)
     const summary = rows.filter(row => !deletedSet.has(row.sourceKey))

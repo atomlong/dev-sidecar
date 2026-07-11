@@ -115,188 +115,6 @@ const {
   getCgroupMemoryUsage,
 } = cgroupUtil
 
-// TEMP DEBUG: remove after stage2 memory investigation is complete.
-function logStage2MemoryUsage (log, label, extra = {}) {
-  const usage = process.memoryUsage()
-  const cgroupUsage = getCgroupMemoryUsage()
-  const extraFields = Object.entries(extra)
-    .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => `${key}=${value}`)
-    .join(', ')
-  const cgroupFields = cgroupUsage
-    ? [
-        `cgroupCurrent=${formatMemoryUsageMb(cgroupUsage.current)}`,
-        `cgroupPeak=${formatMemoryUsageMb(cgroupUsage.peak)}`,
-        `cgroupAnon=${formatMemoryUsageMb(cgroupUsage.anon)}`,
-        `cgroupFile=${formatMemoryUsageMb(cgroupUsage.file)}`,
-        `cgroupKernel=${formatMemoryUsageMb(cgroupUsage.kernel)}`,
-        `cgroupFileDirty=${formatMemoryUsageMb(cgroupUsage.fileDirty)}`,
-        `cgroupInactiveFile=${formatMemoryUsageMb(cgroupUsage.inactiveFile)}`,
-        `cgroupActiveFile=${formatMemoryUsageMb(cgroupUsage.activeFile)}`,
-      ].join(', ')
-    : ''
-  const allExtraFields = [cgroupFields, extraFields].filter(Boolean).join(', ')
-
-  const message = `[TEMP][stage2-mem] ${label}: rss=${formatMemoryUsageMb(usage.rss)}, heapUsed=${formatMemoryUsageMb(usage.heapUsed)}, heapTotal=${formatMemoryUsageMb(usage.heapTotal)}, external=${formatMemoryUsageMb(usage.external)}${allExtraFields ? `, ${allExtraFields}` : ''}`
-
-  if (log && typeof log.info === 'function') {
-    log.info(message)
-  }
-
-  try {
-    console.error(message)
-  } catch (error) {
-    // ignore temporary debug output failures
-  }
-}
-
-function logStage1CgroupProcesses (log, label) {
-  const cgroupPath = getCurrentProcessCgroupPath()
-  if (!cgroupPath) {
-    return
-  }
-
-  try {
-    const pids = fs.readFileSync(path.join(cgroupPath, 'cgroup.procs'), 'utf8')
-      .split(/\s+/)
-      .map(value => Number.parseInt(value, 10))
-      .filter(Number.isInteger)
-    const processes = pids.map(pid => {
-      try {
-        const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8')
-        const rssMatch = status.match(/^VmRSS:\s+(\d+)\s+kB$/m)
-        const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
-          .split('\0')
-          .filter(Boolean)
-          .join(' ')
-        return {
-          pid,
-          rssKb: rssMatch ? Number.parseInt(rssMatch[1], 10) : 0,
-          command: cmdline || `[${pid}]`,
-        }
-      } catch {
-        return null
-      }
-    })
-      .filter(Boolean)
-      .sort((left, right) => right.rssKb - left.rssKb)
-
-    const message = `[TEMP][stage1-processes] ${label}: ${processes.map(item => `pid=${item.pid},rss=${formatMemoryUsageMb(item.rssKb * 1024)},cmd=${item.command}`).join('; ') || 'none'}`
-    if (log && typeof log.info === 'function') {
-      log.info(message)
-    }
-    console.error(message)
-  } catch {
-    // ignore temporary cgroup process diagnostic failures
-  }
-}
-
-function statStage2FilePath (filePath) {
-  if (!filePath) {
-    return null
-  }
-  try {
-    const stat = fs.statSync(filePath)
-    return {
-      exists: true,
-      size: stat.size,
-      mtimeMs: Math.round(stat.mtimeMs),
-    }
-  } catch {
-    return {
-      exists: false,
-      size: 0,
-      mtimeMs: 0,
-    }
-  }
-}
-
-function readProcessOpenFileStats (targetPaths = []) {
-  const normalizedTargets = new Map()
-  for (const targetPath of targetPaths) {
-    if (!targetPath) {
-      continue
-    }
-    normalizedTargets.set(path.normalize(targetPath), {
-      path: targetPath,
-      fds: 0,
-      deletedFds: 0,
-    })
-  }
-
-  if (normalizedTargets.size === 0) {
-    return []
-  }
-
-  let fdNames = []
-  try {
-    fdNames = fs.readdirSync('/proc/self/fd')
-  } catch {
-    return []
-  }
-
-  for (const fdName of fdNames) {
-    const fdPath = path.join('/proc/self/fd', fdName)
-    let link = ''
-    try {
-      link = fs.readlinkSync(fdPath)
-    } catch {
-      continue
-    }
-
-    const deleted = link.endsWith(' (deleted)')
-    const normalizedLink = path.normalize(deleted ? link.slice(0, -10) : link)
-    const stat = normalizedTargets.get(normalizedLink)
-    if (!stat) {
-      continue
-    }
-
-    stat.fds += 1
-    if (deleted) {
-      stat.deletedFds += 1
-    }
-  }
-
-  return [...normalizedTargets.values()]
-}
-
-// TEMP DEBUG: remove after stage2 file-cache investigation is complete.
-function logStage2FileUsage (log, label, cachePath, extra = {}) {
-  if (!cachePath) {
-    return
-  }
-
-  const diagnosticPaths = xrayCache.getStage2DiagnosticPaths(cachePath)
-  const fileStats = diagnosticPaths.map(item => ({
-    label: item.label,
-    path: item.path,
-    ...statStage2FilePath(item.path),
-  }))
-  const openStatsByPath = new Map(readProcessOpenFileStats(fileStats.map(item => item.path)).map(item => [path.normalize(item.path), item]))
-  const existingFiles = fileStats
-    .filter(item => item.exists || openStatsByPath.has(path.normalize(item.path)))
-    .map(item => {
-      const openStat = openStatsByPath.get(path.normalize(item.path)) || {}
-      return `${item.label}:size=${formatMemoryUsageMb(item.size)},fds=${openStat.fds || 0},deletedFds=${openStat.deletedFds || 0},mtimeMs=${item.mtimeMs || 0}`
-    })
-    .join('; ')
-  const extraFields = Object.entries(extra)
-    .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => `${key}=${value}`)
-    .join(', ')
-  const message = `[TEMP][stage2-file] ${label}: ${[existingFiles || 'files=none', extraFields].filter(Boolean).join(', ')}`
-
-  if (log && typeof log.info === 'function') {
-    log.info(message)
-  }
-
-  try {
-    console.error(message)
-  } catch {
-    // ignore temporary debug output failures
-  }
-}
-
 function shouldLogLargeSubscriptionDetail ({ bytes = 0, nodes = 0 } = {}) {
   return Number(bytes) >= LARGE_SUBSCRIPTION_BYTES_THRESHOLD || Number(nodes) >= LARGE_SUBSCRIPTION_NODE_THRESHOLD
 }
@@ -347,10 +165,6 @@ async function runStage2GarbageCollection (log, reason, extra = {}, options = {}
     gc()
     await yieldToEventLoop()
     if (options.logAfter !== false) {
-      logStage2MemoryUsage(log, 'stage2-after-gc', {
-        reason,
-        ...extra,
-      })
     }
     return true
   } catch {
@@ -364,7 +178,6 @@ async function reclaimStageSqliteFileCache (log, reason, cachePath, extra = {}, 
   }
 
   xrayCache.dropSqliteFileCache(cachePath, [], {
-    logFadvise: (label, detail) => logStage2MemoryUsage(log, label, { ...detail, reason, ...extra }),
   })
 
   // posix_fadvise(DONTNEED) only hints the kernel and often fails to reclaim
@@ -382,7 +195,6 @@ async function reclaimStageSqliteFileCache (log, reason, cachePath, extra = {}, 
         const reclaimTarget = Math.min(currentBytes - 150 * 1024 * 1024, 200 * 1024 * 1024)
         if (reclaimTarget > 0) {
           const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
-          logStage2MemoryUsage(log, `${reason}-cgroup-reclaim`, { ...extra, reclaimed, reclaimTargetMb: Math.round(reclaimTarget / (1024 * 1024)) })
         }
       }
     } catch {
@@ -395,7 +207,6 @@ async function reclaimStageSqliteFileCache (log, reason, cachePath, extra = {}, 
     logSkipped: options.logGcSkipped === true,
   })
 
-  logStage2MemoryUsage(log, reason, extra)
   return true
 }
 
@@ -726,7 +537,12 @@ function resolveStage3BatchLevel (cfg) {
 }
 
 function getSubscriptionSyncLowWatermark (cfg) {
-  return normalizeNonNegativeInt(cfg && cfg.subscriptionSyncLowWatermark, 0)
+  const raw = cfg && cfg.subscriptionSyncLowWatermark
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < 0) {
+    return -1
+  }
+  return Math.floor(value)
 }
 
 function getSubscriptionStaleAfterDays (cfg) {
@@ -747,26 +563,26 @@ function isSubscriptionSyncEnabled (cfg) {
 
 function getSubscriptionSyncDecision ({ cachePath, cfg }) {
   const lowWatermark = getSubscriptionSyncLowWatermark(cfg)
-  if (lowWatermark <= 0) {
+  if (lowWatermark < 0) {
+    // Invalid value (negative or non-number): report error, do NOT sync.
     return {
-      lowWatermark,
+      lowWatermark: cfg && cfg.subscriptionSyncLowWatermark,
       effectiveCacheCount: null,
-      shouldSkip: false,
+      shouldSkip: true,
+      error: `subscriptionSyncLowWatermark must be a non-negative integer, got: ${cfg && cfg.subscriptionSyncLowWatermark}`,
     }
   }
 
   const query = buildCacheEntryQueryOptions({
     stableOnly: true,
-    maxDelayMs: normalizeNonNegativeInt(cfg && cfg.maxDelayMs, 0),
-    allowedCountries: cfg && cfg.allowedCountries,
-    allowedOwners: cfg && cfg.allowedOwners,
   })
   const effectiveCacheCount = xrayCache.countCacheEntries(cachePath, query)
 
   return {
     lowWatermark,
     effectiveCacheCount,
-    shouldSkip: effectiveCacheCount >= lowWatermark,
+    // Skip fetching only when stable nodes exceed the watermark.
+    shouldSkip: effectiveCacheCount > lowWatermark,
   }
 }
 
@@ -1204,14 +1020,6 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
     throw new Error('Xray stage2 seen-node dedup initialization failed')
   }
 
-  logStage2MemoryUsage(log, 'subscription-load-start', {
-    subscriptions: total,
-    candidateNodes: Array.isArray(nodeTarget) ? nodeTarget.length : 0,
-  })
-  logStage2FileUsage(log, 'subscription-load-start', stage2SeenCachePath, {
-    subscriptions: total,
-    candidateNodes: Array.isArray(nodeTarget) ? nodeTarget.length : 0,
-  })
 
   const stage2SeenExtraPaths = stage2SeenCachePath ? [xrayCache.getStage2SeenDbPath(stage2SeenCachePath)].filter(Boolean) : []
 
@@ -1225,7 +1033,6 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
     }
 
     xrayCache.dropSqliteFileCache(stage2SeenCachePath, stage2SeenExtraPaths, {
-      logFadvise: (label, detail) => logStage2MemoryUsage(log, label, { ...detail, reason, ...extra }),
     })
 
     const shouldRunGc = options.forceGc === true || process.memoryUsage().heapUsed >= STAGE2_GC_HEAP_USED_THRESHOLD_BYTES
@@ -1255,11 +1062,6 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
     pendingSourceMeta = null
 
     if (pendingNodeKeyCount > 0 || pendingNodeCount > 0) {
-      logStage2FileUsage(log, 'accepted-buffer-before-flush', stage2SeenCachePath, {
-        source: meta && meta.displayLabel,
-        nodeKeys: pendingNodeKeyCount,
-        nodes: pendingNodeCount,
-      })
     }
 
     try {
@@ -1276,11 +1078,6 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
     }
 
     if (pendingNodeKeyCount > 0 || pendingNodeCount > 0) {
-      logStage2FileUsage(log, 'accepted-buffer-after-flush', stage2SeenCachePath, {
-        source: meta && meta.displayLabel,
-        nodeKeys: pendingNodeKeyCount,
-        nodes: pendingNodeCount,
-      })
     }
   }
 
@@ -1416,16 +1213,6 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
             }, {
               logAfterGc: false,
             })
-            logStage2MemoryUsage(log, 'subscription-large-before-parse', {
-              subscription: subscriptionLabel,
-              bytes,
-              reason,
-            })
-            logStage2FileUsage(log, 'subscription-large-before-parse', stage2SeenCachePath, {
-              subscription: subscriptionLabel,
-              bytes,
-              reason,
-            })
             await runStage2GarbageCollection(log, 'large-subscription-before-parse', {
               subscription: subscriptionLabel,
               bytes,
@@ -1459,11 +1246,6 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
                 if (shouldLogDetail && parsedChunkCount % STAGE2_SUBSCRIPTION_PARSE_GC_CHUNKS === 0) {
                   const shouldLogChunkGc = parsedChunkCount === 1 || parsedChunkCount % 100 === 0
                   if (shouldLogChunkGc) {
-                    logStage2FileUsage(log, 'subscription-large-parse-chunks', stage2SeenCachePath, {
-                      subscription: subscriptionLabel,
-                      chunks: parsedChunkCount,
-                      acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
-                    })
                   }
                   await runStage2GarbageCollection(log, 'large-subscription-parse-chunks', {
                     subscription: subscriptionLabel,
@@ -1494,16 +1276,6 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
             const parsedNodeCount = parseSummary.totalNodes
             const shouldLogPostParseDetail = shouldLogDetail || shouldLogLargeSubscriptionDetail({ bytes: summary.bytes, nodes: parsedNodeCount })
             if (shouldLogPostParseDetail) {
-              logStage2MemoryUsage(log, 'subscription-large-after-parse', {
-                subscription: subscriptionLabel,
-                bytes: summary.bytes,
-                nodes: parsedNodeCount,
-              })
-              logStage2FileUsage(log, 'subscription-large-after-parse', stage2SeenCachePath, {
-                subscription: subscriptionLabel,
-                bytes: summary.bytes,
-                nodes: parsedNodeCount,
-              })
             }
             const protocolSummary = summarizeProtocolCounts(summary.protocolCounts)
             if (parsedNodeCount === 0) {
@@ -1512,18 +1284,9 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
               log.info(`订阅解析成功: ${subscriptionLabel}, nodes=${parsedNodeCount}, bytes=${summary.bytes}, mode=${parseSummary.streamMode || 'stream'}, protocols=${protocolSummary}`)
             }
             if (shouldLogPostParseDetail) {
-              logStage2MemoryUsage(log, 'subscription-large-after-accept', {
-                subscription: subscriptionLabel,
-                acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
-                snapshots: batchSubscriptions.length,
-              })
             }
             if (shouldLogPostParseDetail) {
               await yieldToEventLoop()
-              logStage2MemoryUsage(log, 'subscription-large-after-yield', {
-                subscription: subscriptionLabel,
-                acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
-              })
               await runStage2GarbageCollection(log, 'large-subscription', {
                 subscription: subscriptionLabel,
                 acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
@@ -1549,12 +1312,6 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
         })
       }
 
-      logStage2MemoryUsage(log, 'subscription-batch-finished', {
-        processed: Math.min(i + SUBSCRIPTION_BATCH_SIZE, total),
-        total,
-        uniqueNodes: maintainLocalNodeArray ? seen.size : (stage2SeenCachePath ? acceptedUniqueNodeCount : seenNodeKeys.size),
-        snapshots: snapshotCount,
-      })
 
       // Drop SQLite file cache pages between subscription batches so the
       // kernel page cache does not accumulate to the full database size
@@ -2301,17 +2058,12 @@ const Plugin = function (context) {
 
   api = {
     async start () {
-      logStage2MemoryUsage(log, 'stage1-plugin-start-entry')
-      logStage1CgroupProcesses(log, 'stage1-plugin-start-entry')
       const cfg = globalConfig.get().plugin.xray
       if (!cfg || !cfg.enabled) {
         return
       }
 
       const binPath = getXrayExePath()
-      logStage2MemoryUsage(log, 'stage1-after-config-and-bin-path', {
-        binExists: fs.existsSync(binPath),
-      })
       if (!fs.existsSync(binPath)) {
         log.error(`Xray 启动失败: 未找到内置 Xray 可执行文件 (${binPath})`)
         throw new Error('Xray binary not found')
@@ -2321,7 +2073,6 @@ const Plugin = function (context) {
       const xrayDir = path.join(userBasePath, 'xray')
       currentXrayDir = xrayDir
       cleanupStaleProbeArtifacts()
-      logStage2MemoryUsage(log, 'stage1-after-stale-probe-cleanup')
       const liveConfigPath = path.join(xrayDir, 'config.json')
       const liveConfigBakPath = path.join(xrayDir, 'config.json.bak')
       const cachePath = path.join(xrayDir, 'nodes_cache.sqlite')
@@ -2333,9 +2084,6 @@ const Plugin = function (context) {
       const allowedCountries = cfg.allowedCountries
       const allowedOwners = cfg.allowedOwners
       const maxDelayMs = normalizeNonNegativeInt(cfg.maxDelayMs, 0)
-      logStage2MemoryUsage(log, 'stage1-after-path-and-config-init', {
-        startupNodeLimit,
-      })
 
       // Stage1 cache maintenance (migration/retire/compact/reclaim) has been
       // removed from the startup path. The database schema is still checked
@@ -2361,8 +2109,6 @@ const Plugin = function (context) {
       }
 
       globalConfig.get().server.setting.xrayPort = port
-      logStage2MemoryUsage(log, 'stage1-after-port-selection', { port })
-      logStage1CgroupProcesses(log, 'stage1-after-port-selection')
 
       // 2. Stage 1 bootstrap: quickly verify a small set of previous cache nodes,
       // then fall back to last known stable entries if needed.
@@ -2402,44 +2148,15 @@ const Plugin = function (context) {
           limit: bootstrapCandidateLimit,
           probedOnly: true,
         })
-        logStage2MemoryUsage(log, 'stage1-before-startup-read', {
-          bootstrapCandidateLimit,
-          startupNodeLimit,
-        })
         const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
           ...stableFallbackQuery,
-          diagnosticHook: (phase, detail) => logStage2MemoryUsage(log, `stage1-stable-${phase}`, {
-            bootstrapCandidateLimit,
-            startupNodeLimit,
-            ...detail,
-          }),
         })
         const bootstrapCandidateEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
           ...bootstrapCandidateQuery,
-          diagnosticHook: (phase, detail) => logStage2MemoryUsage(log, `stage1-bootstrap-${phase}`, {
-            bootstrapCandidateLimit,
-            startupNodeLimit,
-            ...detail,
-          }),
-        })
-        logStage2MemoryUsage(log, 'stage1-after-startup-read', {
-          bootstrapCandidateLimit,
-          startupNodeLimit,
-          stableFallbackLoaded: fallbackStableSourceEntries.length,
-          bootstrapCandidatesLoaded: bootstrapCandidateEntries.length,
         })
         const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
         const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isParsedNodeValid(entry.node))
         const bootstrapCandidates = bootstrapCandidateEntries.map(entry => entry.node).filter(node => parser.isParsedNodeValid(node))
-        logStage2MemoryUsage(log, 'stage1-after-startup-filter', {
-          bootstrapCandidateLimit,
-          startupNodeLimit,
-          stableFallbackLoaded: fallbackStableSourceEntries.length,
-          stableFallbackFiltered: fallbackStableEntries.length,
-          stableFallbackSupported: supportedFallbackEntries.length,
-          bootstrapCandidatesLoaded: bootstrapCandidateEntries.length,
-          bootstrapSupported: bootstrapCandidates.length,
-        })
 
         // Drop SQLite file cache after reading 200 candidate blobs from the 700MB+
         // cache file. The candidate data is now in memory; the file page cache
@@ -2452,19 +2169,15 @@ const Plugin = function (context) {
           const cgroupPath = getCurrentProcessCgroupPath()
           const cgroupFile = cgroupPath ? path.join(cgroupPath, 'memory.current') : ''
           try {
-            logStage2MemoryUsage(log, 'stage1-before-reclaim-check', { cgroupPath, cgroupFileEmpty: !cgroupFile })
             const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
             if (Number.isFinite(currentBytes) && currentBytes > 150 * 1024 * 1024) {
               const reclaimTarget = Math.min(currentBytes - 100 * 1024 * 1024, 200 * 1024 * 1024)
               if (reclaimTarget > 0) {
                 const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
-                logStage2MemoryUsage(log, 'stage1-after-startup-read-reclaim', { reclaimed, reclaimTargetMb: Math.round(reclaimTarget / (1024 * 1024)) })
               }
             } else {
-              logStage2MemoryUsage(log, 'stage1-reclaim-skipped', { currentBytes })
             }
           } catch (reclaimError) {
-            logStage2MemoryUsage(log, 'stage1-reclaim-error', { error: reclaimError && reclaimError.message })
           }
         }
 
@@ -2643,19 +2356,24 @@ const Plugin = function (context) {
       let shouldSkipSubscriptionFetch = subscriptionSyncDecision.shouldSkip
 
       if (subscriptionSyncDecision.shouldSkip) {
-        const savedLocalInputState = readLocalInputState(localInputStatePath)
-        if (isLocalInputStateMatch(savedLocalInputState, currentLocalInputState)) {
-          log.info(`Xray 第二阶段已跳过: 订阅抓取已跳过且本地输入未变化, effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, manualNodes=${currentLocalInputState.manualNodeCount}`)
-          if (generation === refreshGeneration) {
-            if (!isCacheRefreshEnabled(cfg)) {
-              log.info('Xray 缓存周期探测已禁用，跳过第三阶段')
-              return
+        if (subscriptionSyncDecision.error) {
+          // Invalid config: never fetch remote subscriptions, but still process local nodes below.
+          log.warn(`Xray 订阅抓取已跳过（配置无效）: ${subscriptionSyncDecision.error}`)
+        } else {
+          const savedLocalInputState = readLocalInputState(localInputStatePath)
+          if (isLocalInputStateMatch(savedLocalInputState, currentLocalInputState)) {
+            log.info(`Xray 第二阶段已跳过: 订阅抓取已跳过且本地输入未变化, effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, manualNodes=${currentLocalInputState.manualNodeCount}`)
+            if (generation === refreshGeneration) {
+              if (!isCacheRefreshEnabled(cfg)) {
+                log.info('Xray 缓存周期探测已禁用，跳过第三阶段')
+                return
+              }
+              await api.refreshCacheFromCacheOnly({ binPath, cfg, xrayDir, cachePath })
             }
-            await api.refreshCacheFromCacheOnly({ binPath, cfg, xrayDir, cachePath })
+            return
           }
-          return
+          shouldSkipSubscriptionFetch = false
         }
-        shouldSkipSubscriptionFetch = false
       }
 
       const configSourcePath = fs.existsSync(liveConfigBakPath) ? liveConfigBakPath : liveConfigPath
@@ -2682,11 +2400,6 @@ const Plugin = function (context) {
       let totalAddedCount = 0
       let totalCountryReadyCount = 0
 
-      logStage2MemoryUsage(log, 'stage2-before-subscription-load', {
-        configNodes: configNodes.length,
-        manualNodes: manualNodes.length,
-        deduplicated: localCandidateNodes.length,
-      })
 
       const cacheSizeBeforeStage2 = xrayCache.getSqliteCacheSizeBytes(cachePath)
       if (cacheSizeBeforeStage2 >= CACHE_SIZE_LIMIT_BYTES) {
@@ -2707,18 +2420,10 @@ const Plugin = function (context) {
         log.info(`Xray 订阅抓取已跳过: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
       } else {
         const initialStage2SeenNodeKeys = collectUniqueNodeKeys(localCandidateNodes)
-        logStage2FileUsage(log, 'stage2-before-seen-reset', cachePath, {
-          initialNodeKeys: initialStage2SeenNodeKeys.length,
-        })
         if (!xrayCache.resetStage2SeenNodeKeys(cachePath, initialStage2SeenNodeKeys)) {
           throw new Error('Xray stage2 seen-node initialization failed')
         }
-        logStage2FileUsage(log, 'stage2-after-seen-reset', cachePath, {
-          initialNodeKeys: initialStage2SeenNodeKeys.length,
-        })
-        if (subscriptionSyncDecision.lowWatermark > 0) {
-          log.info(`Xray 订阅抓取已触发: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
-        }
+        log.info(`Xray 订阅抓取已触发: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
         const subscriptionResult = await loadSubscriptionNodes(cfg.subscriptions, log, {
           nodeTarget: [],
           stage2SeenCachePath: cachePath,
@@ -2800,19 +2505,6 @@ const Plugin = function (context) {
 
       const totalUniqueCandidateCount = localCandidateNodes.length + subscriptionNodeCount
 
-      logStage2MemoryUsage(log, 'stage2-after-subscription-load', {
-        subscriptionNodes: subscriptionNodeCount,
-        deduplicated: totalUniqueCandidateCount,
-        supported: totalSupportedCandidateCount,
-        snapshots: subscriptionSnapshotCount,
-      })
-      logStage2FileUsage(log, 'stage2-after-subscription-load', cachePath, {
-        subscriptionNodes: subscriptionNodeCount,
-        deduplicated: totalUniqueCandidateCount,
-        supported: totalSupportedCandidateCount,
-        snapshots: subscriptionSnapshotCount,
-        refs: subscriptionSyncRefs,
-      })
 
       log.info(`Xray 节点汇总候选: configBak=${configNodes.length}, cacheMatched=${totalCacheMatchedCount}, manual=${manualNodes.length}, subscriptions=${subscriptionNodeCount}, subscriptionFetch=${subscriptionFetchMode}, effectiveCache=${effectiveCacheLabel}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, deduplicated=${totalUniqueCandidateCount}, unsupportedDropped=${Math.max(0, totalUniqueCandidateCount - totalSupportedCandidateCount)}, selected=${totalSupportedCandidateCount}`)
 
@@ -2832,16 +2524,6 @@ const Plugin = function (context) {
       }
 
       if (!shouldSkipSubscriptionFetch) {
-        logStage2MemoryUsage(log, 'stage2-before-subscription-sync', {
-          snapshots: subscriptionSnapshotCount,
-          supportedNodes: totalSupportedCandidateCount,
-          refs: subscriptionSyncRefs,
-        })
-        logStage2FileUsage(log, 'stage2-before-subscription-sync', cachePath, {
-          snapshots: subscriptionSnapshotCount,
-          supportedNodes: totalSupportedCandidateCount,
-          refs: subscriptionSyncRefs,
-        })
         const subscriptionSyncStats = xrayCache.syncSubscriptions(cachePath, [], {
           staleAfterDays: getSubscriptionStaleAfterDays(cfg),
           currentSourceKeys: [...allSubscriptionSourceKeys],
@@ -2852,13 +2534,6 @@ const Plugin = function (context) {
         } else {
           log.warn('Xray 订阅来源同步失败')
         }
-        logStage2MemoryUsage(log, 'stage2-after-subscription-sync', {
-          snapshots: subscriptionSnapshotCount,
-        })
-        logStage2FileUsage(log, 'stage2-after-subscription-sync', cachePath, {
-          snapshots: subscriptionSnapshotCount,
-          refs: subscriptionSyncRefs,
-        })
       }
 
       // Build the delay partial index after Stage2 writes are complete but
@@ -3029,11 +2704,6 @@ const Plugin = function (context) {
               const reclaimTarget = Math.min(currentBytes - 100 * 1024 * 1024, 120 * 1024 * 1024)
               if (reclaimTarget > 0) {
                 const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
-                logStage2MemoryUsage(log, 'stage3-before-probe-reclaim', {
-                  batch: nextBatchIndex,
-                  reclaimed,
-                  reclaimTargetMb: Math.round(reclaimTarget / (1024 * 1024)),
-                })
               }
             }
           } catch {
@@ -3051,14 +2721,6 @@ const Plugin = function (context) {
             probeSamples: getCacheRefreshProbeSamples(cfg),
           })
 
-          // TEMP DIAGNOSTIC: log probe result sizes to find the 74MB heap spike source
-          {
-            const probeMem = process.memoryUsage()
-            const entriesJsonSize = batchProbeResult.entries ? JSON.stringify(batchProbeResult.entries).length : 0
-            const observedJsonSize = batchProbeResult.observedFingerprints ? JSON.stringify(batchProbeResult.observedFingerprints).length : 0
-            log.info(`[TEMP-DIAG] batch=${nextBatchIndex} entries=${batchProbeResult.entries?.length || 0} entriesJson=${(entriesJsonSize/1024).toFixed(1)}KB observed=${batchProbeResult.observedFingerprints?.length || 0} observedJson=${(observedJsonSize/1024).toFixed(1)}KB heapUsed=${(probeMem.heapUsed/1024/1024).toFixed(1)}MB`)
-          }
-
           if (generation !== refreshGeneration) {
             return
           }
@@ -3074,11 +2736,6 @@ const Plugin = function (context) {
             },
           })
 
-          // TEMP DIAGNOSTIC: log memory after annotateProbeEntries
-          {
-            const memAfterAnnotate = process.memoryUsage()
-            log.info(`[TEMP-DIAG] batch=${nextBatchIndex} afterAnnotate entries=${annotatedEntries.length} heapUsed=${(memAfterAnnotate.heapUsed/1024/1024).toFixed(1)}MB external=${(memAfterAnnotate.external/1024/1024).toFixed(1)}MB`)
-          }
           if (annotatedEntries.length === 0 && batchProbeResult.observedFingerprints.length === 0) {
             const networkStatusAfterEmptyResult = await ensureLocalNetworkAvailabilityForRefresh({
               generation,
@@ -3103,25 +2760,12 @@ const Plugin = function (context) {
             now: Date.now(),
           })
 
-          // TEMP DIAGNOSTIC: log memory after applyStage3ProbeResults, before writeCacheUpdates
-          {
-            const memBeforeWrite = process.memoryUsage()
-            const updatedJsonSize = JSON.stringify(batchWritePlan.updatedEntries).length
-            log.info(`[TEMP-DIAG] batch=${nextBatchIndex} beforeWrite updated=${batchWritePlan.updatedEntries.length} updatedJson=${(updatedJsonSize/1024).toFixed(1)}KB avail=${batchWritePlan.availableCount} heapUsed=${(memBeforeWrite.heapUsed/1024/1024).toFixed(1)}MB external=${(memBeforeWrite.external/1024/1024).toFixed(1)}MB`)
-          }
-
           let stage3WriteSucceeded = xrayCache.writeCacheUpdates(cachePath, batchWritePlan.updatedEntries, candidateNodes)
           if (!stage3WriteSucceeded) {
             log.warn(`Xray 缓存周期探测批次写回失败，尝试低缓存模式重试: batch=${nextBatchIndex}, cachePath=${cachePath}`)
             stage3WriteSucceeded = xrayCache.writeCacheUpdates(cachePath, batchWritePlan.updatedEntries, candidateNodes, {
               lowFileCache: true,
             })
-          }
-
-          // TEMP DIAGNOSTIC: log memory after writeCacheUpdates
-          {
-            const memAfterWrite = process.memoryUsage()
-            log.info(`[TEMP-DIAG] batch=${nextBatchIndex} afterWrite avail=${batchWritePlan.availableCount} heapUsed=${(memAfterWrite.heapUsed/1024/1024).toFixed(1)}MB heapTotal=${(memAfterWrite.heapTotal/1024/1024).toFixed(1)}MB external=${(memAfterWrite.external/1024/1024).toFixed(1)}MB`)
           }
           if (!stage3WriteSucceeded) {
             log.error(`Xray 缓存周期探测批次写回失败，已跳过本批持久化以避免整库回退重读: batch=${nextBatchIndex}, cachePath=${cachePath}`)
@@ -3162,11 +2806,6 @@ const Plugin = function (context) {
                 logAfter: true,
               })
             }
-            logStage2MemoryUsage(log, `stage3-batch-${batchIndex}`, {
-              progress: `${processedCount}/${totalDueCandidateCount}`,
-              availableRound: availableCount,
-              removedRound: removedCount,
-            })
           }
 
           // Drop SQLite file cache pages after each stage-3 batch write-back
@@ -3257,30 +2896,15 @@ const Plugin = function (context) {
       }
 
       log.info(`Xray 缓存文件已刷新: 本轮检测 ${processedCount}/${totalDueCandidateCount} 个到期节点，成功批次 ${successBatchCount}/${batchIndex}，本轮探测成功 ${availableCount} 个，显式失败 ${explicitFailureCount} 个，删除 ${removedCount} 个 -> ${cachePath}`)
-      logStage2MemoryUsage(log, 'stage3-round-finalize-entry', {
-        processedCount,
-        availableCount,
-        roundAvailableNodeKeyCount: roundAvailableNodeKeys.size,
-      })
 
       if (generation === refreshGeneration) {
         const roundStatus = processedCount >= totalDueCandidateCount && successBatchCount === plannedBatchCount ? 'completed' : 'partial'
-        logStage2MemoryUsage(log, 'stage3-before-subscription-availability', {
-          roundStatus,
-          roundAvailableNodeKeyCount: roundAvailableNodeKeys.size,
-        })
         const availabilityResult = roundStatus === 'completed'
           ? xrayCache.updateSubscriptionAvailability(cachePath, {
               staleAfterDays: getSubscriptionStaleAfterDays(cfg),
               availableNodeKeys: [...roundAvailableNodeKeys],
-              diagnosticHook: (phase, detail) => logStage2MemoryUsage(log, `stage3-subscription-availability-${phase}`, detail),
             })
           : null
-        logStage2MemoryUsage(log, 'stage3-after-subscription-availability', {
-          roundStatus,
-          subscriptionSummaryCount: availabilityResult && availabilityResult.summary ? availabilityResult.summary.length : 0,
-          deletedSubscriptionCount: availabilityResult && availabilityResult.deleted ? availabilityResult.deleted.length : 0,
-        })
         if (availabilityResult && availabilityResult.deleted.length > 0) {
           log.info(`Xray stale 订阅元数据已删除: ${availabilityResult.deleted.length} 个`)
         }
@@ -3292,11 +2916,8 @@ const Plugin = function (context) {
         // pages into cgroup file cache. The probed node_id list lets bootstrap
         // do a primary-key lookup instead. Updated once per Stage3 round.
         try {
-          logStage2MemoryUsage(log, 'stage3-before-probed-node-ids-update')
           const probedCount = xrayCache.updateProbedNodeIdsAtPath(cachePath, phase => {
-            logStage2MemoryUsage(log, `stage3-probed-node-ids-${phase}`)
           })
-          logStage2MemoryUsage(log, 'stage3-after-probed-node-ids-update', { probedCount })
           if (probedCount > 0) {
             log.info(`Xray 启动缓存已更新: probedNodeIds=${probedCount}`)
           }
@@ -3306,10 +2927,6 @@ const Plugin = function (context) {
 
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
         const nextRefreshAt = new Date(Date.now() + nextDelay).toISOString()
-        logStage2MemoryUsage(log, 'stage3-before-round-summary', {
-          hasAvailabilityResult: Boolean(availabilityResult),
-          roundAvailableNodeKeyCount: roundAvailableNodeKeys.size,
-        })
         const summaryPath = writeStage3RoundSummary({
           xrayDir,
           summary: {
@@ -3341,14 +2958,12 @@ const Plugin = function (context) {
               }),
           },
         })
-        logStage2MemoryUsage(log, 'stage3-after-round-summary')
         log.info(`Xray 阶段三轮次汇总已写入: ${summaryPath}`)
 
         // If this round found available nodes and the current live config
         // still has no proxy outbounds (cold-start Direct/Block only),
         // try to regenerate the live config from the freshly probed cache.
         if (availableCount > 0 && !liveConfigHasProxyNodes && generation === refreshGeneration) {
-          logStage2MemoryUsage(log, 'stage3-before-live-config-regenerate')
           await maybeRegenerateLiveConfigFromCache({
             binPath,
             cfg,
@@ -3356,12 +2971,9 @@ const Plugin = function (context) {
             cachePath,
             availableNodeKeys: [...roundAvailableNodeKeys],
           })
-          logStage2MemoryUsage(log, 'stage3-after-live-config-regenerate')
         }
 
-        logStage2MemoryUsage(log, 'stage3-before-next-round-schedule', { nextDelay })
         scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
-        logStage2MemoryUsage(log, 'stage3-after-next-round-schedule', { nextDelay })
         await reclaimStageSqliteFileCache(log, 'stage3-after-round-finalize-reclaim', cachePath, {
           nextDelay,
         }, {
