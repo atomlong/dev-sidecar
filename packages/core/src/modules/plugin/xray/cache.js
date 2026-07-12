@@ -729,6 +729,67 @@ function readProbedNodeIds (db) {
     .filter(id => Number.isInteger(id) && id > 0)
 }
 
+// Path-based wrapper for readProbedNodeIds. Returns an array of node_id integers.
+function readProbedNodeIdsAtPath (cacheFilePath) {
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  if (!fs.existsSync(sqlitePath)) {
+    return []
+  }
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: true })
+    if (!db) {
+      return []
+    }
+    return readProbedNodeIds(db)
+  } catch {
+    return []
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
+// Path-based wrapper to read cache entries by node_ids. Returns an array of
+// entry objects with node, stable, delay, country, owner, nodeId fields.
+function readCacheEntriesByNodeIds (cacheFilePath, nodeIds) {
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
+    return []
+  }
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  if (!fs.existsSync(sqlitePath)) {
+    return []
+  }
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: true })
+    if (!db) {
+      return []
+    }
+
+    if (hasCompactV2Data(db)) {
+      const uniqueIds = [...new Set(nodeIds.map(id => Number(id)).filter(id => Number.isInteger(id) && id > 0))]
+      if (uniqueIds.length === 0) {
+        return []
+      }
+      const entries = readCompactV2CacheEntriesByRowIds(db, uniqueIds)
+      return entries.map((entry, index) => ({
+        ...entry,
+        nodeId: uniqueIds[index],
+      }))
+    }
+
+    return []
+  } catch {
+    return []
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
 // Path-based wrapper for updateProbedNodeIds. Called from Stage3 after a
 // probe round completes.
 function updateProbedNodeIdsAtPath (cacheFilePath) {
@@ -4493,6 +4554,8 @@ module.exports = {
   ensureCompactV2DelayIndexAtPath,
   updateProbedNodeIds,
   updateProbedNodeIdsAtPath,
+  readProbedNodeIdsAtPath,
+  readCacheEntriesByNodeIds,
   setStage2LastRemoteFetchAt,
   getStage2LastRemoteFetchAt,
   readSubscriptionAvailabilitySummary,
