@@ -62,13 +62,15 @@ function getTimeoutConfig (hostname, serverSetting) {
   return {
     timeout: timeoutConfig.timeout || serverSetting.defaultTimeout || 20000,
     keepAliveTimeout: timeoutConfig.keepAliveTimeout || serverSetting.defaultKeepAliveTimeout || 30000,
+    allowTls12: serverSetting.allowTls12 === true,
   }
 }
 
 function createHttpsAgent (timeoutConfig, verifySsl) {
-  const key = `${timeoutConfig.timeout}-${timeoutConfig.keepAliveTimeout}`
+  const key = `${timeoutConfig.timeout}-${timeoutConfig.keepAliveTimeout}-${timeoutConfig.allowTls12 === true ? 'tls12' : 'tls13'}`
   if (!httpsAgentCache[key]) {
     verifySsl = !!verifySsl
+    const allowTls12 = timeoutConfig.allowTls12 === true
 
     // 证书回调函数
     const checkServerIdentity = (host, cert) => {
