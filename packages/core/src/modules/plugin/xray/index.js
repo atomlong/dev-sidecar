@@ -2689,6 +2689,9 @@ const Plugin = function (context) {
 
       if (totalSupportedCandidateCount === 0) {
         log.warn('Xray 节点汇总: 未找到任何候选节点，跳过缓存同步')
+        if (generation === refreshGeneration && isCacheRefreshEnabled(cfg)) {
+          await api.refreshCacheFromCacheOnly({ binPath, cfg, xrayDir, cachePath })
+        }
         return
       }
 
