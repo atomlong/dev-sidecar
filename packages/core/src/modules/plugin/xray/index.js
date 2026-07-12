@@ -41,12 +41,15 @@ const CACHE_REFRESH_NEW_RATIO = 0.3
 const CACHE_REFRESH_COLD_RATIO = 0.2
 const CACHE_FAILURE_BACKOFF_DAYS = [7, 30, 90]
 const EGRESS_METADATA_CONCURRENCY = 4
-const EGRESS_METADATA_LOOKUP_TIMEOUT = 12000
+const EGRESS_METADATA_LOOKUP_TIMEOUT = 30000
 const EGRESS_IP_LOOKUP_URLS = [
   'http://ipv4.icanhazip.com',
   'http://icanhazip.com',
   'http://ifconfig.me/ip',
   'http://ident.me',
+  'http://api.ipify.org',
+  'http://checkip.amazonaws.com',
+  'https://api.ipify.org',
 ]
 const LOCAL_INPUT_STATE_FILE_NAME = 'nodes_cache.state.json'
 const LOCAL_INPUT_STATE_SIGNATURE_VERSION = 2
@@ -477,7 +480,7 @@ async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_
         const text = await fetchTextThroughHttpProxy({
           proxyPort,
           url: lookupUrl,
-          timeoutMs: Math.min(remaining, 4000),
+          timeoutMs: Math.min(remaining, 6000),
         })
         const candidate = String(text || '').trim().split(/\s+/)[0]
         if (net.isIP(candidate)) {
@@ -1709,6 +1712,7 @@ async function annotateProbeEntries (entries, options = {}) {
 
   const existingEntryMap = createEntryMapByFingerprint(options.existingEntries)
   const useEgressMetadata = options.useEgressMetadata !== false
+  const logger = options.log || console
   return mapWithConcurrencyLimit(entries, EGRESS_METADATA_CONCURRENCY, async (entry) => {
     const fingerprint = xrayCache.fingerprintNode(entry && entry.node)
     const existingEntry = fingerprint ? existingEntryMap.get(fingerprint) : null
@@ -1722,18 +1726,26 @@ async function annotateProbeEntries (entries, options = {}) {
           binPath: options.binPath,
           xrayDir: options.xrayDir,
           node: entry && entry.node,
-          log: options.log,
+          log: logger,
           probeLifecycle: options.probeLifecycle,
         })
-      } catch {
+      } catch (error) {
+        logger.warn(`Xray egress metadata 探测失败: delay=${entry && entry.delay}ms, error=${error && error.message}`)
         metadata = null
       }
     }
 
+    const resolvedCountry = normalizeCountryCode(metadata && metadata.country) || fallbackCountry
+    const resolvedOwner = xrayCache.resolveOwnerLabel(metadata && metadata.owner, fallbackOwner)
+
+    if (!resolvedCountry || !resolvedOwner) {
+      logger.warn(`Xray 节点 metadata 不完整: country=${resolvedCountry || 'unknown'}, owner=${resolvedOwner || 'empty'}, delay=${entry && entry.delay}ms`)
+    }
+
     return {
       ...entry,
-      owner: xrayCache.resolveOwnerLabel(metadata && metadata.owner, fallbackOwner),
-      country: normalizeCountryCode(metadata && metadata.country) || fallbackCountry,
+      owner: resolvedOwner,
+      country: resolvedCountry,
     }
   })
 }
