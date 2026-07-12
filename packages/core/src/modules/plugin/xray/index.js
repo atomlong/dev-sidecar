@@ -1385,6 +1385,43 @@ function writeStage3RoundSummary ({ xrayDir, summary }) {
   return summaryPath
 }
 
+function getProbedNodeStatsPath (xrayDir) {
+  return path.join(xrayDir, 'probed-node-stats.json')
+}
+
+function writeProbedNodeStats ({ xrayDir, cachePath }) {
+  const statsPath = getProbedNodeStatsPath(xrayDir)
+  const probedNodeIds = xrayCache.readProbedNodeIdsAtPath(cachePath)
+  if (probedNodeIds.length === 0) {
+    writeJsonFile(statsPath, { totalProbed: 0, countryDistribution: {}, nodes: [] })
+    return statsPath
+  }
+
+  const entries = xrayCache.readCacheEntriesByNodeIds(cachePath, probedNodeIds)
+  const countryDistribution = {}
+  const nodes = []
+  for (const entry of entries) {
+    const country = entry.country || 'unknown'
+    countryDistribution[country] = (countryDistribution[country] || 0) + 1
+    nodes.push({
+      nodeId: entry.nodeId || null,
+      country,
+      owner: entry.owner || '',
+      delay: entry.delay || 0,
+      stable: entry.stable === true,
+      protocol: (entry.node && (entry.node.protocol || entry.node.type)) || 'unknown',
+    })
+  }
+  nodes.sort((a, b) => (a.delay || 0) - (b.delay || 0))
+  writeJsonFile(statsPath, {
+    totalProbed: probedNodeIds.length,
+    countryDistribution,
+    nodes,
+    updatedAt: new Date().toISOString(),
+  })
+  return statsPath
+}
+
 function createNodeMap (nodes) {
   const map = new Map()
   nodes.forEach((node, index) => {
@@ -2940,6 +2977,18 @@ const Plugin = function (context) {
           }
 
           log.info(`Xray 缓存周期探测批次已写回: ${batchIndex}, available=${batchWritePlan.availableCount}, explicitFailed=${batchWritePlan.explicitFailureCount}, removed=${batchWritePlan.removedCount}, partialCoverage=${batchWritePlan.partialCoverageCount}, progress=${processedCount}/${totalDueCandidateCount} -> ${cachePath}`)
+
+          // Update probed_node_ids after each batch so that a restart during
+          // a long Stage3 round still has the latest probed nodes for Stage1
+          // bootstrap. The query uses a partial index and takes <10ms.
+          if (batchWritePlan.availableCount > 0) {
+            try {
+              xrayCache.updateProbedNodeIdsAtPath(cachePath)
+              writeProbedNodeStats({ xrayDir, cachePath })
+            } catch (probedUpdateError) {
+              // non-fatal: probed_node_ids will be updated at round end
+            }
+          }
 
           // Sample heap/cgroup memory every 10 batches to track Stage3 memory growth over time.
           if (batchIndex % 10 === 0) {
