@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - Added Stage 1 fallback to the previous `config.json` when no usable nodes are found from cache or manual nodes, preserving the last known working proxy outbounds instead of overwriting with a Direct/Block-only config.
 - Added `subscriptionSyncIntervalDays` config option (default 3 days) to prevent Stage 2 from fetching remote subscriptions too frequently. The last fetch timestamp is persisted in `cache_meta`; subsequent Stage 2 runs within the cooldown period skip remote fetching and only process local nodes.
 - Added `fallbackTag: "direct"` to the Xray balancer configuration so that traffic falls back to direct connection when all proxy nodes are unavailable, preventing complete network interruption.
+- Added periodic Stage 2 triggering: after each Stage 3 round completes, the service checks if the last remote subscription fetch exceeds `subscriptionSyncIntervalDays`. If so, Stage 2 is automatically triggered to refresh subscriptions without requiring a service restart.
 
 ### Changed
 - Removed `config.json.bak` backup at Stage 1 startup since the previous config is now reused in-place when no cache candidates are available.
