@@ -3179,11 +3179,32 @@ const Plugin = function (context) {
           })
         }
 
-        // TODO: After Stage3 completes, check if Stage2 needs to run (periodic
-        // subscription refresh). This requires extracting Stage2 logic into a
-        // standalone function that can be called independently of startup().
-        // For now, Stage2 only runs at startup; the cooldown mechanism prevents
-        // redundant remote fetches on frequent restarts.
+        // After Stage3 completes, check if Stage2 needs to run (periodic
+        // subscription refresh). This runs independently of Stage3 node
+        // refresh and is guarded by isStageRunning to prevent overlap.
+        if (generation === refreshGeneration && isSubscriptionSyncEnabled(cfg) && !isStageRunning) {
+          const lastFetchAt = xrayCache.getStage2LastRemoteFetchAt(cachePath)
+          const intervalDays = getSubscriptionSyncIntervalDays(cfg)
+          const elapsedHours = lastFetchAt > 0 ? Math.floor((Date.now() / 1000 - lastFetchAt) / 3600) : Infinity
+          if (elapsedHours >= intervalDays * 24) {
+            log.info(`Xray Stage3 后触发 Stage2: 距上次远端抓取 ${elapsedHours === Infinity ? 'never' : elapsedHours + 'h'}, 间隔 ${intervalDays}d`)
+            isStageRunning = true
+            try {
+              await api.refreshCacheFromSourcesOnce({
+                binPath,
+                cfg,
+                xrayDir,
+                liveConfigPath: currentLiveConfigPath,
+                liveConfigBakPath: currentLiveConfigBakPath,
+                cachePath,
+              })
+            } catch (stage2Error) {
+              log.warn('Xray Stage3 后触发 Stage2 失败:', stage2Error)
+            } finally {
+              isStageRunning = false
+            }
+          }
+        }
 
         scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
         await reclaimStageSqliteFileCache(log, 'stage3-after-round-finalize-reclaim', cachePath, {
