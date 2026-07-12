@@ -47,7 +47,6 @@ const EGRESS_IP_LOOKUP_URLS = [
   'http://icanhazip.com',
   'http://ifconfig.me/ip',
   'http://ident.me',
-  'http://api.ipify.org',
   'http://checkip.amazonaws.com',
   'https://api.ipify.org',
 ]
@@ -476,11 +475,16 @@ async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_
         break
       }
 
+      // Allocate at most 1/3 of remaining time per URL, capped at 8s, so
+      // that a single slow URL doesn't exhaust the entire deadline and
+      // subsequent URLs still get a chance to succeed.
+      const urlTimeout = Math.min(remaining, Math.max(3000, Math.floor(remaining / 3)), 8000)
+
       try {
         const text = await fetchTextThroughHttpProxy({
           proxyPort,
           url: lookupUrl,
-          timeoutMs: Math.min(remaining, 6000),
+          timeoutMs: urlTimeout,
         })
         const candidate = String(text || '').trim().split(/\s+/)[0]
         if (net.isIP(candidate)) {
