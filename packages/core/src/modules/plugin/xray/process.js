@@ -85,7 +85,11 @@ const api = {
 
   async restart (binPath, configPath) {
     await api.stop()
-    await new Promise(resolve => setTimeout(resolve, 1000)) // 等待端口释放
+    // Wait for the process to fully exit before starting a new one to avoid
+    // port conflicts. Use a short 200ms sleep instead of 1000ms — the close
+    // event in stop() sets child=null synchronously, but the OS may need a
+    // brief moment to release the listening socket.
+    await new Promise(resolve => setTimeout(resolve, 200))
     await api.start(binPath, configPath)
   },
 }

@@ -48,6 +48,7 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
     balancers.push({
       tag: 'balancer-proxy',
       selector: proxyTags,
+      fallbackTag: 'direct',
       strategy: {
         type: 'leastPing', // Uses observatory results
       },

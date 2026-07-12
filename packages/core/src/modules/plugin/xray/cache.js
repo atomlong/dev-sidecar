@@ -23,6 +23,7 @@ const CACHE_META_LEGACY_NODES_RETIRED = 'legacy_nodes_retired'
 const CACHE_META_POST_RETIRE_COMPACTED = 'post_retire_compacted'
 const CACHE_META_COMPACT_V2_STORAGE_RETIRED = 'compact_v2_storage_retired'
 const CACHE_META_COMPACT_V2_MIGRATION_CURSOR = 'compact_v2_migration_cursor'
+const CACHE_META_STAGE2_LAST_REMOTE_FETCH_AT = 'stage2_last_remote_fetch_at'
 const COMPACT_CACHE_V2_SCHEMA_VERSION = 1
 const COMPACT_CACHE_V2_HASH_BYTES = 16
 
@@ -743,6 +744,55 @@ function updateProbedNodeIdsAtPath (cacheFilePath) {
     }
     const count = updateProbedNodeIds(db)
     return count
+  } catch {
+    return 0
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
+// Record the timestamp of the last Stage2 remote subscription fetch.
+// Called after Stage2 successfully fetches nodes from remote subscriptions.
+function setStage2LastRemoteFetchAt (cacheFilePath, epochSeconds) {
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  if (!fs.existsSync(sqlitePath)) {
+    return false
+  }
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: true })
+    if (!db) {
+      return false
+    }
+    setCacheMetaValue(db, CACHE_META_STAGE2_LAST_REMOTE_FETCH_AT, String(epochSeconds || Math.floor(Date.now() / 1000)))
+    return true
+  } catch {
+    return false
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
+// Read the timestamp of the last Stage2 remote subscription fetch.
+// Returns 0 if never recorded.
+function getStage2LastRemoteFetchAt (cacheFilePath) {
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  if (!fs.existsSync(sqlitePath)) {
+    return 0
+  }
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: true })
+    if (!db) {
+      return 0
+    }
+    const raw = getCacheMetaValue(db, CACHE_META_STAGE2_LAST_REMOTE_FETCH_AT)
+    const value = Number(raw)
+    return Number.isFinite(value) && value > 0 ? value : 0
   } catch {
     return 0
   } finally {
@@ -4443,6 +4493,8 @@ module.exports = {
   ensureCompactV2DelayIndexAtPath,
   updateProbedNodeIds,
   updateProbedNodeIdsAtPath,
+  setStage2LastRemoteFetchAt,
+  getStage2LastRemoteFetchAt,
   readSubscriptionAvailabilitySummary,
   readCacheNodes,
   buildCacheEntriesFromObservatory,
