@@ -1565,10 +1565,18 @@ function applyStage3ProbeResults ({
   cacheRefreshIntervalMs,
   now = Date.now(),
 }) {
+  const STAGE3_MAX_DELAY_MS = 10000
+
   const successEntriesByFingerprint = new Map()
   for (const entry of annotatedEntries || []) {
     const fingerprint = xrayCache.fingerprintNode(entry && entry.node)
     if (fingerprint) {
+      // Nodes with delay > 10s are treated as unavailable — they are too
+      // slow for practical use and egress metadata lookup will also fail.
+      const delay = Number(entry && entry.delay)
+      if (Number.isFinite(delay) && delay > STAGE3_MAX_DELAY_MS) {
+        continue
+      }
       successEntriesByFingerprint.set(fingerprint, entry)
     }
   }
@@ -1725,17 +1733,23 @@ async function annotateProbeEntries (entries, options = {}) {
 
     let metadata = null
     if (useEgressMetadata && (!fallbackCountry || !fallbackOwner)) {
-      try {
-        metadata = await resolveEntryEgressMetadata({
-          binPath: options.binPath,
-          xrayDir: options.xrayDir,
-          node: entry && entry.node,
-          log: logger,
-          probeLifecycle: options.probeLifecycle,
-        })
-      } catch (error) {
-        logger.warn(`Xray egress metadata 探测失败: delay=${entry && entry.delay}ms, error=${error && error.message}`)
-        metadata = null
+      const entryDelay = Number(entry && entry.delay)
+      if (Number.isFinite(entryDelay) && entryDelay > 10000) {
+        // Skip egress metadata lookup for very high latency nodes — they
+        // will be treated as unavailable anyway and the lookup would timeout.
+      } else {
+        try {
+          metadata = await resolveEntryEgressMetadata({
+            binPath: options.binPath,
+            xrayDir: options.xrayDir,
+            node: entry && entry.node,
+            log: logger,
+            probeLifecycle: options.probeLifecycle,
+          })
+        } catch (error) {
+          logger.warn(`Xray egress metadata 探测失败: delay=${entry && entry.delay}ms, error=${error && error.message}`)
+          metadata = null
+        }
       }
     }
 
