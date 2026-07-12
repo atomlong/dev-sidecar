@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.2.0] - Unreleased
+
+### Added
+- Added unconditional injection of manual nodes from the `nodes` config list into the Xray live config at Stage 1 startup, bypassing `allowedCountries`, `allowedOwners`, and `maxDelayMs` filters so that user-specified nodes are always included in `~/.dev-sidecar/xray/config.json`.
+- Added Stage 1 fallback to the previous `config.json` when no usable nodes are found from cache or manual nodes, preserving the last known working proxy outbounds instead of overwriting with a Direct/Block-only config.
+- Added `subscriptionSyncIntervalDays` config option (default 3 days) to prevent Stage 2 from fetching remote subscriptions too frequently. The last fetch timestamp is persisted in `cache_meta`; subsequent Stage 2 runs within the cooldown period skip remote fetching and only process local nodes.
+- Added `fallbackTag: "direct"` to the Xray balancer configuration so that traffic falls back to direct connection when all proxy nodes are unavailable, preventing complete network interruption.
+
+### Changed
+- Removed `config.json.bak` backup at Stage 1 startup since the previous config is now reused in-place when no cache candidates are available.
+- Changed Stage 3 to refresh the live `config.json` after every probe round, not just on cold start. Stale nodes (delay = 0 or failure_streak >= 3) are removed and replaced with freshly probed available nodes, keeping the proxy node pool up to `startupNodeLimit` healthy nodes. Xray is only restarted when the node list actually changes.
+- Enforced a minimum value of 3 hours for `cacheRefreshInterval` to prevent excessively frequent Stage 3 rounds and xray restarts.
+- Reduced xray restart delay from 1000ms to 200ms to minimize proxy interruption during live config refreshes.
+
+### Changed
+- Removed `config.json.bak` backup at Stage 1 startup since the previous config is now reused in-place when no cache candidates are available.
+
 ## [v2.1.5] - 2026-07-11
 
 ### Added

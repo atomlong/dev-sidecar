@@ -495,8 +495,11 @@ async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_
   throw lastError
 }
 
+const CACHE_REFRESH_INTERVAL_MIN_SECONDS = 3 * 60 * 60 // 3 hours
+
 function getCacheRefreshIntervalSeconds (cfg) {
-  return normalizePositiveInt(cfg.cacheRefreshInterval, pluginConfig.cacheRefreshInterval)
+  const value = normalizePositiveInt(cfg.cacheRefreshInterval, pluginConfig.cacheRefreshInterval)
+  return Math.max(value, CACHE_REFRESH_INTERVAL_MIN_SECONDS)
 }
 
 function getCacheBatchTimeoutSeconds (cfg) {
@@ -563,6 +566,28 @@ function isStartupSelectEnabled (cfg) {
 
 function isSubscriptionSyncEnabled (cfg) {
   return cfg ? cfg.subscriptionSyncEnabled !== false : true
+}
+
+const SUBSCRIPTION_SYNC_INTERVAL_DAYS_DEFAULT = 3
+const SUBSCRIPTION_SYNC_INTERVAL_DAYS_MIN = 1
+
+function getSubscriptionSyncIntervalDays (cfg) {
+  const raw = Number(cfg && cfg.subscriptionSyncIntervalDays)
+  if (!Number.isFinite(raw) || raw < SUBSCRIPTION_SYNC_INTERVAL_DAYS_MIN) {
+    return SUBSCRIPTION_SYNC_INTERVAL_DAYS_DEFAULT
+  }
+  return Math.floor(raw)
+}
+
+function shouldSkipRemoteFetchDueToCooldown (cachePath, cfg) {
+  const intervalDays = getSubscriptionSyncIntervalDays(cfg)
+  const lastFetchAt = xrayCache.getStage2LastRemoteFetchAt(cachePath)
+  if (lastFetchAt === 0) {
+    return false
+  }
+  const cooldownSeconds = intervalDays * 24 * 60 * 60
+  const elapsed = Math.floor(Date.now() / 1000) - lastFetchAt
+  return elapsed < cooldownSeconds
 }
 
 function getSubscriptionSyncDecision ({ cachePath, cfg }) {
@@ -1835,6 +1860,7 @@ const Plugin = function (context) {
   let currentLiveConfigBakPath = ''
   let currentBinPath = ''
   let liveConfigHasProxyNodes = false
+  let isStageRunning = false
 
   function registerTransientProbeController (controller) {
     if (controller && typeof controller.stop === 'function') {
@@ -1866,15 +1892,13 @@ const Plugin = function (context) {
     }
   }
 
-  // After Stage3 probes find available nodes, regenerate the live Xray config
-  // if the current live config has no proxy outbounds (Direct/Block only).
-  // This lets a cold-start that initially produced Direct/Block recover
-  // automatically once Stage3 discovers usable nodes, without requiring
-  // a manual restart.
+  // After Stage3 probes complete, check whether the live config.json nodes
+  // need to be refreshed. This runs every Stage3 round:
+  //   1. Read current config.json proxy nodes and check their cache status.
+  //   2. Remove nodes that are no longer available (delay = 0 or failure_streak >= 3).
+  //   3. Fill up to startupNodeLimit from freshly probed available nodes.
+  //   4. Only restart xray if the node list actually changed.
   async function maybeRegenerateLiveConfigFromCache ({ binPath, cfg, xrayDir, cachePath, availableNodeKeys = [] }) {
-    if (liveConfigHasProxyNodes) {
-      return
-    }
     if (!currentLiveConfigPath || !currentLivePort || !binPath) {
       return
     }
@@ -1884,18 +1908,96 @@ const Plugin = function (context) {
     const allowedOwners = cfg.allowedOwners
     const maxDelayMs = normalizeNonNegativeInt(cfg.maxDelayMs, 0)
 
-    const stableFallbackQuery = buildCacheEntryQueryOptions({
-      stableOnly: true,
-      maxDelayMs,
-      limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
-    })
-    const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
-    const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
-    const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isParsedNodeValid(entry.node))
+    // Read current config.json proxy nodes
+    const currentConfigNodes = xrayCache.extractNodesFromXrayConfigFile(currentLiveConfigPath)
+    if (currentConfigNodes.length === 0 && !liveConfigHasProxyNodes) {
+      // Cold start with no nodes — use original logic to bootstrap from cache
+      const stableFallbackQuery = buildCacheEntryQueryOptions({
+        stableOnly: true,
+        maxDelayMs,
+        limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
+      })
+      const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
+      const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
+      const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isParsedNodeValid(entry.node))
 
-    // Also try freshly probed available entries (not yet marked stable).
-    // Use a second query without stableOnly to pick up nodes that Stage3 just
-    // probed successfully (delay > 0) but haven't been promoted to stable yet.
+      const freshProbeQuery = buildCacheEntryQueryOptions({
+        maxDelayMs,
+        limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
+      })
+      const freshProbeSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, freshProbeQuery)
+      const freshProbeEntries = (await collectBootstrapCandidateEntries(freshProbeSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
+        .filter(entry => Number.isFinite(entry.delay) && entry.delay > 0)
+      const freshSupported = freshProbeEntries.filter(entry => parser.isParsedNodeValid(entry.node))
+
+      const candidateNodes = []
+      appendItems(candidateNodes, freshSupported.map(entry => entry.node))
+      appendItems(candidateNodes, supportedFallbackEntries.map(entry => entry.node))
+      const selectedNodes = xrayCache.deduplicateNodes(candidateNodes).slice(0, startupNodeLimit)
+
+      if (selectedNodes.length === 0) {
+        log.info(`Xray Stage3 后自动重生成: 仍无满足条件的可用节点 (freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}, maxDelayMs=${maxDelayMs}, availableNodeKeys=${availableNodeKeys.length})`)
+        return
+      }
+
+      const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, cfg.probeUrl, cfg.probeInterval, {
+        observatoryEnableConcurrency: true,
+      })
+      writeJsonFile(currentLiveConfigPath, liveConfig)
+      liveConfigHasProxyNodes = true
+      log.info(`Xray Stage3 后自动重生成 live config: proxyNodes=${selectedNodes.length}, freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length} -> ${currentLiveConfigPath}`)
+
+      try {
+        await processApi.restart(binPath, currentLiveConfigPath)
+        await api.injectRules(cfg.rules, currentLivePort)
+        if (server) {
+          await server.reload()
+        }
+        event.fire('status', { key: 'plugin.xray.enabled', value: true })
+        log.info('Xray Stage3 后自动重生成: live 进程已重启并注入规则')
+      } catch (error) {
+        log.warn('Xray Stage3 后自动重生成: live 进程重启失败:', error)
+        liveConfigHasProxyNodes = false
+      }
+      return
+    }
+
+    // Hot refresh: check existing config.json nodes against cache
+    const currentFingerprints = currentConfigNodes.map(node => xrayCache.fingerprintNode(node)).filter(Boolean)
+    let existingEntries = []
+    if (currentFingerprints.length > 0) {
+      existingEntries = xrayCache.readCacheEntriesByFingerprints(cachePath, currentFingerprints)
+    }
+
+    // Keep nodes that are still available (delay > 0, failure_streak < 3)
+    const keptNodes = []
+    const keptFingerprints = new Set()
+    const fingerprintToNode = new Map()
+    for (let i = 0; i < currentConfigNodes.length; i++) {
+      const fp = currentFingerprints[i]
+      if (fp) {
+        fingerprintToNode.set(fp, currentConfigNodes[i])
+      }
+    }
+    for (const entry of existingEntries) {
+      const fp = xrayCache.fingerprintNode(entry.node)
+      if (!fp) {
+        continue
+      }
+      const failureStreak = normalizePositiveInt(entry.failureStreak, 0)
+      const delay = Number(entry.delay)
+      if (Number.isFinite(delay) && delay > 0 && failureStreak < 3) {
+        keptNodes.push(fingerprintToNode.get(fp))
+        keptFingerprints.add(fp)
+      }
+    }
+
+    // If all existing nodes are still good, no need to restart
+    if (keptNodes.length === currentConfigNodes.length && keptNodes.length >= startupNodeLimit) {
+      return
+    }
+
+    // Fill remaining slots from freshly probed available nodes
     const freshProbeQuery = buildCacheEntryQueryOptions({
       maxDelayMs,
       limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
@@ -1906,12 +2008,25 @@ const Plugin = function (context) {
     const freshSupported = freshProbeEntries.filter(entry => parser.isParsedNodeValid(entry.node))
 
     const candidateNodes = []
-    appendItems(candidateNodes, freshSupported.map(entry => entry.node))
-    appendItems(candidateNodes, supportedFallbackEntries.map(entry => entry.node))
+    appendItems(candidateNodes, keptNodes)
+    for (const entry of freshSupported) {
+      const fp = xrayCache.fingerprintNode(entry.node)
+      if (fp && !keptFingerprints.has(fp)) {
+        candidateNodes.push(entry.node)
+        keptFingerprints.add(fp)
+      }
+    }
     const selectedNodes = xrayCache.deduplicateNodes(candidateNodes).slice(0, startupNodeLimit)
 
     if (selectedNodes.length === 0) {
-      log.info(`Xray Stage3 后自动重生成: 仍无满足条件的可用节点 (freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}, maxDelayMs=${maxDelayMs}, availableNodeKeys=${availableNodeKeys.length})`)
+      log.info(`Xray Stage3 后热刷新: 无可用节点可替换 (kept=${keptNodes.length}, fresh=${freshSupported.length})`)
+      return
+    }
+
+    // Check if the node list actually changed
+    const newFingerprints = selectedNodes.map(node => xrayCache.fingerprintNode(node)).filter(Boolean).sort()
+    const oldFingerprints = currentFingerprints.filter(Boolean).sort()
+    if (newFingerprints.length === oldFingerprints.length && newFingerprints.every((fp, i) => fp === oldFingerprints[i])) {
       return
     }
 
@@ -1919,8 +2034,8 @@ const Plugin = function (context) {
       observatoryEnableConcurrency: true,
     })
     writeJsonFile(currentLiveConfigPath, liveConfig)
-    liveConfigHasProxyNodes = true
-    log.info(`Xray Stage3 后自动重生成 live config: proxyNodes=${selectedNodes.length}, freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length} -> ${currentLiveConfigPath}`)
+    liveConfigHasProxyNodes = selectedNodes.length > 0
+    log.info(`Xray Stage3 后热刷新 live config: proxyNodes=${selectedNodes.length}, kept=${keptNodes.length}, fresh=${selectedNodes.length - keptNodes.length} -> ${currentLiveConfigPath}`)
 
     try {
       await processApi.restart(binPath, currentLiveConfigPath)
@@ -1929,10 +2044,9 @@ const Plugin = function (context) {
         await server.reload()
       }
       event.fire('status', { key: 'plugin.xray.enabled', value: true })
-      log.info('Xray Stage3 后自动重生成: live 进程已重启并注入规则')
+      log.info('Xray Stage3 后热刷新: live 进程已重启并注入规则')
     } catch (error) {
-      log.warn('Xray Stage3 后自动重生成: live 进程重启失败:', error)
-      liveConfigHasProxyNodes = false
+      log.warn('Xray Stage3 后热刷新: live 进程重启失败:', error)
     }
   }
 
@@ -2233,12 +2347,26 @@ const Plugin = function (context) {
       ensureDir(xrayDir)
 
       if (!reusedLiveConfig) {
-        try {
-          if (backupFileIfExists(liveConfigPath, liveConfigBakPath)) {
-            log.info(`Xray 旧配置已备份: ${liveConfigBakPath}`)
+        // If no usable nodes were found from cache, fall back to the previous
+        // config.json which may still have working proxy outbounds.
+        if (startupNodes.length === 0) {
+          const previousConfigNodes = xrayCache.extractNodesFromXrayConfigFile(liveConfigPath)
+          if (previousConfigNodes.length > 0) {
+            startupNodes = xrayCache.deduplicateNodes(previousConfigNodes)
+            log.info(`Xray 缓存无可用节点，复用上次 config.json: reusedNodes=${startupNodes.length}`)
           }
-        } catch (error) {
-          log.warn('Xray 旧配置备份失败:', error)
+        }
+
+        // Prepend manual nodes from cfg.nodes — these are user-specified nodes
+        // that must always be included in the live config, bypassing the
+        // country/owner/delay filters that apply to cache-derived candidates.
+        const manualStartupNodes = collectNodesFromLinks(cfg.nodes)
+        if (manualStartupNodes.length > 0) {
+          const combined = []
+          appendItems(combined, manualStartupNodes)
+          appendItems(combined, startupNodes)
+          startupNodes = xrayCache.deduplicateNodes(combined).slice(0, Math.max(startupNodeLimit, manualStartupNodes.length))
+          log.info(`Xray 预置节点已注入: manualNodes=${manualStartupNodes.length}, combinedStartupNodes=${startupNodes.length}`)
         }
 
         const liveConfig = genConfig(port, startupNodes, cfg.rules, cfg.probeUrl, cfg.probeInterval, {
@@ -2358,6 +2486,17 @@ const Plugin = function (context) {
       const localInputStatePath = getLocalInputStatePath(cachePath)
       const currentLocalInputState = buildLocalInputState({ manualNodes, subscriptions: cfg.subscriptions })
       let shouldSkipSubscriptionFetch = subscriptionSyncDecision.shouldSkip
+
+      // Cooldown check: even if the watermark says we should fetch, don't
+      // fetch if the last remote fetch was within subscriptionSyncIntervalDays.
+      if (!shouldSkipSubscriptionFetch && !subscriptionSyncDecision.error) {
+        if (shouldSkipRemoteFetchDueToCooldown(cachePath, cfg)) {
+          const lastFetchAt = xrayCache.getStage2LastRemoteFetchAt(cachePath)
+          const intervalDays = getSubscriptionSyncIntervalDays(cfg)
+          log.info(`Xray 订阅抓取冷却中: 距上次远端抓取 ${Math.floor((Date.now() / 1000 - lastFetchAt) / 3600)}h, 间隔 ${intervalDays}d, 跳过远端拉取`)
+          shouldSkipSubscriptionFetch = true
+        }
+      }
 
       if (subscriptionSyncDecision.shouldSkip) {
         if (subscriptionSyncDecision.error) {
@@ -2506,6 +2645,9 @@ const Plugin = function (context) {
       }
 
       const subscriptionFetchMode = shouldSkipSubscriptionFetch ? 'skipped' : 'loaded'
+      if (subscriptionFetchMode === 'loaded') {
+        xrayCache.setStage2LastRemoteFetchAt(cachePath)
+      }
       const effectiveCacheLabel = subscriptionSyncDecision.effectiveCacheCount == null ? 'n/a' : subscriptionSyncDecision.effectiveCacheCount
 
       const totalUniqueCandidateCount = localCandidateNodes.length + subscriptionNodeCount
@@ -2574,6 +2716,13 @@ const Plugin = function (context) {
     async refreshCacheFromCacheOnly ({ binPath, cfg, xrayDir, cachePath }) {
       if (!isCacheRefreshEnabled(cfg)) {
         log.info('Xray 缓存周期探测已禁用，跳过本轮刷新')
+        return
+      }
+
+      if (isStageRunning) {
+        log.info('Xray 缓存周期探测: Stage2 正在运行，跳过本轮 Stage3')
+        const nextDelay = getCacheRefreshIntervalSeconds(cfg) * 1000
+        scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
         return
       }
 
@@ -2965,10 +3114,10 @@ const Plugin = function (context) {
         })
         log.info(`Xray 阶段三轮次汇总已写入: ${summaryPath}`)
 
-        // If this round found available nodes and the current live config
-        // still has no proxy outbounds (cold-start Direct/Block only),
-        // try to regenerate the live config from the freshly probed cache.
-        if (availableCount > 0 && !liveConfigHasProxyNodes && generation === refreshGeneration) {
+        // After each Stage3 round, refresh the live config: remove stale
+        // nodes and fill with freshly probed available nodes. Only restarts
+        // xray if the node list actually changed.
+        if (availableCount > 0 && generation === refreshGeneration) {
           await maybeRegenerateLiveConfigFromCache({
             binPath,
             cfg,
@@ -2977,6 +3126,12 @@ const Plugin = function (context) {
             availableNodeKeys: [...roundAvailableNodeKeys],
           })
         }
+
+        // TODO: After Stage3 completes, check if Stage2 needs to run (periodic
+        // subscription refresh). This requires extracting Stage2 logic into a
+        // standalone function that can be called independently of startup().
+        // For now, Stage2 only runs at startup; the cooldown mechanism prevents
+        // redundant remote fetches on frequent restarts.
 
         scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
         await reclaimStageSqliteFileCache(log, 'stage3-after-round-finalize-reclaim', cachePath, {
