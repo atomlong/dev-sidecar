@@ -44,8 +44,6 @@ function reclaimStartupMemory () {
   }
 }
 
-const server = modules.server
-
 const context = {
   config,
   shell,

@@ -68,69 +68,6 @@ if (enableFlatpak && hasExecutable('flatpak') && hasExecutable('flatpak-builder'
   })
 }
 
-function normalizeArch (arch) {
-  if (arch === 'x64' || arch === 'arm64' || arch === 'armv7l') {
-    return arch
-  }
-  return null
-}
-
-function resolveLinuxTargetArchs () {
-  const explicitArchs = (process.env.DEV_SIDECAR_LINUX_TARGET_ARCHES || '')
-    .split(',')
-    .map(item => normalizeArch(item.trim()))
-    .filter(Boolean)
-
-  if (explicitArchs.length > 0) {
-    return explicitArchs
-  }
-
-  const nativeArch = normalizeArch(process.arch)
-  if (nativeArch) {
-    return [nativeArch]
-  }
-
-  return ['x64']
-}
-
-const linuxTargetArchs = resolveLinuxTargetArchs()
-
-function hasExecutable (command, args = ['--version']) {
-  const result = spawnSync(command, args, { stdio: 'ignore' })
-  return !result.error && result.status === 0
-}
-
-const linuxTargets = [
-  {
-    target: 'deb',
-    arch: linuxTargetArchs,
-  },
-  {
-    target: 'AppImage',
-    arch: linuxTargetArchs,
-  },
-  {
-    target: 'tar.gz',
-    arch: linuxTargetArchs,
-  },
-]
-
-const enableFlatpak = process.env.DEV_SIDECAR_ENABLE_FLATPAK === '1'
-
-if (hasExecutable('rpmbuild')) {
-  linuxTargets.push({
-    target: 'rpm',
-    arch: linuxTargetArchs,
-  })
-}
-
-if (enableFlatpak && hasExecutable('flatpak') && hasExecutable('flatpak-builder')) {
-  linuxTargets.push({
-    target: 'flatpak',
-    arch: ['x64'],
-  })
-}
-
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
   appId: 'dev-sidecar',
@@ -228,7 +165,7 @@ module.exports = {
     icon: './build/mac/icon.icns',
     target: {
       target: 'dmg',
-      arch: ['x64', 'arm64', 'universal'],
+      arch: ['x64', 'arm64'],
     },
     category: 'public.app-category.developer-tools',
   },
