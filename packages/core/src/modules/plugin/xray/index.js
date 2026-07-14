@@ -41,14 +41,22 @@ const CACHE_REFRESH_NEW_RATIO = 0.3
 const CACHE_REFRESH_COLD_RATIO = 0.2
 const CACHE_FAILURE_BACKOFF_DAYS = [7, 30, 90]
 const EGRESS_METADATA_CONCURRENCY = 4
-const EGRESS_METADATA_LOOKUP_TIMEOUT = 30000
+const EGRESS_METADATA_LOOKUP_TIMEOUT = 12000
 const EGRESS_IP_LOOKUP_URLS = [
   'http://ipv4.icanhazip.com',
   'http://icanhazip.com',
   'http://ifconfig.me/ip',
   'http://ident.me',
+  'http://api.ipify.org',
   'http://checkip.amazonaws.com',
   'https://api.ipify.org',
+  // China-accessible IP lookup services — foreign services (icanhazip, ipify,
+  // checkip.amazonaws, etc.) are blocked by the GFW and return an ICP filing
+  // interception page instead of the real IP. These domestic services return
+  // the caller's public IP as plain text and are accessible from CN nodes.
+  'http://ip.3322.net',
+  'http://www.bt.cn/Api/getIpAddress',
+  'http://myip.ipip.net',
 ]
 const LOCAL_INPUT_STATE_FILE_NAME = 'nodes_cache.state.json'
 const LOCAL_INPUT_STATE_SIGNATURE_VERSION = 2
@@ -404,6 +412,76 @@ function withTimeout (promise, timeoutMs, message) {
   })
 }
 
+// Polls a TCP port until it accepts a connection, the child process exits, or
+// the deadline elapses. Returns true when the port is ready, false otherwise.
+// This bridges the gap between spawn() returning and Xray actually binding the
+// listen socket — under cgroup memory pressure that delay can exceed 1s.
+function waitForProxyPortReady ({ proxyPort, child, timeoutMs = 5000, pollIntervalMs = 100 }) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs
+    let socket = null
+    let timer = null
+
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      if (socket) {
+        socket.destroy()
+        socket = null
+      }
+    }
+
+    const onChildExit = () => {
+      cleanup()
+      resolve(false)
+    }
+
+    if (child && typeof child.once === 'function') {
+      child.once('close', onChildExit)
+      child.once('error', onChildExit)
+    }
+
+    const poll = () => {
+      if (Date.now() >= deadline) {
+        cleanup()
+        resolve(false)
+        return
+      }
+
+      if (child && (child.exitCode != null || child.signalCode != null)) {
+        cleanup()
+        resolve(false)
+        return
+      }
+
+      socket = new net.Socket()
+      socket.setTimeout(pollIntervalMs)
+      socket.once('connect', () => {
+        cleanup()
+        if (child && typeof child.removeListener === 'function') {
+          child.removeListener('close', onChildExit)
+          child.removeListener('error', onChildExit)
+        }
+        resolve(true)
+      })
+      socket.once('error', () => {
+        socket = null
+        timer = setTimeout(poll, pollIntervalMs)
+      })
+      socket.once('timeout', () => {
+        socket = null
+        timer = setTimeout(poll, pollIntervalMs)
+      })
+      socket.connect(proxyPort, '127.0.0.1')
+    }
+
+    poll()
+  })
+}
+
+
 function fetchTextThroughHttpProxy ({ proxyPort, url, timeoutMs = 5000 }) {
   return new Promise((resolve, reject) => {
     const controller = new AbortController()
@@ -465,38 +543,30 @@ function fetchTextThroughHttpProxy ({ proxyPort, url, timeoutMs = 5000 }) {
 }
 
 async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT }) {
-  const deadline = Date.now() + timeoutMs
+  const perUrlTimeout = 30000
   let lastError = new Error('Egress IP lookup failed')
 
-  while (Date.now() < deadline) {
-    for (const lookupUrl of EGRESS_IP_LOOKUP_URLS) {
-      const remaining = deadline - Date.now()
-      if (remaining <= 0) {
-        break
+  for (const lookupUrl of EGRESS_IP_LOOKUP_URLS) {
+    try {
+      const text = await fetchTextThroughHttpProxy({
+        proxyPort,
+        url: lookupUrl,
+        timeoutMs: perUrlTimeout,
+      })
+      const candidate = String(text || '').trim().split(/\s+/)[0]
+      if (net.isIP(candidate)) {
+        return candidate
       }
-
-      // Allocate at most 1/3 of remaining time per URL, capped at 8s, so
-      // that a single slow URL doesn't exhaust the entire deadline and
-      // subsequent URLs still get a chance to succeed.
-      const urlTimeout = Math.min(remaining, Math.max(3000, Math.floor(remaining / 3)), 8000)
-
-      try {
-        const text = await fetchTextThroughHttpProxy({
-          proxyPort,
-          url: lookupUrl,
-          timeoutMs: urlTimeout,
-        })
-        const candidate = String(text || '').trim().split(/\s+/)[0]
-        if (net.isIP(candidate)) {
-          return candidate
-        }
-        lastError = new Error(`Invalid egress IP response from ${lookupUrl}: ${candidate}`)
-      } catch (error) {
-        lastError = error
+      // Some services (e.g. myip.ipip.net) return "当前 IP：1.2.3.4 来自于：..."
+      // Try to extract an IP from the full response body as a fallback.
+      const ipMatch = String(text || '').match(/(\d{1,3}\.){3}\d{1,3}/)
+      if (ipMatch && net.isIP(ipMatch[0])) {
+        return ipMatch[0]
       }
+      lastError = new Error(`Invalid egress IP response from ${lookupUrl}: ${candidate}`)
+    } catch (error) {
+      lastError = error
     }
-
-    await sleep(250)
   }
 
   throw lastError
@@ -1683,6 +1753,13 @@ async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeou
 
   let exitAddress = ''
   try {
+    // Wait for the Xray HTTP inbound port to start accepting connections
+    // before issuing the egress IP lookup. Under cgroup MemoryHigh pressure,
+    // the spawned Xray process can take several seconds to bind its listen
+    // socket; without this wait the very first proxy request fails with
+    // ECONNREFUSED, leaving country/owner permanently empty for the node.
+    await waitForProxyPortReady({ proxyPort, child: controller.child, timeoutMs: 5000 })
+
     exitAddress = await withTimeout(
       detectEgressAddressThroughProxy({
         proxyPort,
@@ -1748,6 +1825,20 @@ async function annotateProbeEntries (entries, options = {}) {
 
     if (!resolvedCountry || !resolvedOwner) {
       logger.warn(`Xray 节点 metadata 不完整: country=${resolvedCountry || 'unknown'}, owner=${resolvedOwner || 'empty'}, delay=${entry && entry.delay}ms`)
+    }
+
+    // If egress metadata lookup was attempted but failed to produce a country,
+    // the node cannot provide usable proxy service (rogue proxy, blocked exit,
+    // or trojan returning 400). Mark it as unavailable by clearing delay and
+    // setting stable=false so it gets removed from the active node pool.
+    if (useEgressMetadata && !fallbackCountry && !resolvedCountry) {
+      return {
+        ...entry,
+        owner: '',
+        country: '',
+        delay: null,
+        stable: false,
+      }
     }
 
     return {

@@ -200,7 +200,7 @@ function startXrayProcess ({ binPath, configPath, log, purpose = 'probe' }) {
     throw new Error('Failed to start Xray probe process')
   }
 
-  if (purpose !== 'egress' && log && typeof log.info === 'function') {
+  if (log && typeof log.info === 'function') {
     const label = purpose === 'egress'
       ? 'Xray 出口元数据探测进程'
       : purpose === 'batch'
