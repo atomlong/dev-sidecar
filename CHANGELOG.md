@@ -2,9 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.2.0] - Unreleased
+## [v2.1.6] - Unreleased
 
 ### Added
+- Added explicit loading of `NODE_EXTRA_CA_CERTS` (or `SSL_CERT_FILE`) in the mitmproxy HTTPS agent and tunnel-agent creation paths so that the bundled Node runtime in packaged Electron builds trusts system-installed root CAs (e.g. corporate SASE/TLS-interception root CAs). The Electron-bundled Node ignores the `NODE_EXTRA_CA_CERTS` environment variable, so the CA list is read from the PEM file, merged with Node's built-in root certificates, and passed explicitly via the `ca` option to both `agentkeepalive`'s `HttpsAgent` and `tunnel-agent`'s `httpsOverHttp`/`httpsOverHttps`. This fixes `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` errors when DevSidecar proxies HTTPS traffic to sites whose certificates are re-signed by a corporate TLS decryption device.
 - Added unconditional injection of manual nodes from the `nodes` config list into the Xray live config at Stage 1 startup, bypassing `allowedCountries`, `allowedOwners`, and `maxDelayMs` filters so that user-specified nodes are always included in `~/.dev-sidecar/xray/config.json`.
 - Added Stage 1 fallback to the previous `config.json` when no usable nodes are found from cache or manual nodes, preserving the last known working proxy outbounds instead of overwriting with a Direct/Block-only config.
 - Added `subscriptionSyncIntervalDays` config option (default 3 days) to prevent Stage 2 from fetching remote subscriptions too frequently. The last fetch timestamp is persisted in `cache_meta`; subsequent Stage 2 runs within the cooldown period skip remote fetching and only process local nodes.

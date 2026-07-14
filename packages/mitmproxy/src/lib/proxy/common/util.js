@@ -1,4 +1,6 @@
 const URL = require('node:url')
+const fs = require('node:fs')
+const tls = require('node:tls')
 const tunnelAgent = require('tunnel-agent')
 const log = require('../../../utils/util.log.server')
 const matchUtil = require('../../../utils/util.match')
@@ -16,6 +18,41 @@ const httpAgentCache = {}
 let socketId = 0
 
 let httpOverHttpAgent, httpsOverHttpAgent, httpOverHttpsAgent, httpsOverHttpsAgent
+
+// 读取 NODE_EXTRA_CA_CERTS 指向的 PEM 文件中的证书，与 Node 内置根证书合并。
+// Electron 打包应用会忽略 NODE_EXTRA_CA_CERTS 环境变量，这里显式读取并传入 ca 选项绕过该限制。
+// 模块级缓存：CA 文件运行时不变，只加载一次。null=未加载，false=加载失败/未配置，string[]=证书列表
+let extraCaCerts = null
+
+function loadExtraCaCerts () {
+  if (extraCaCerts !== null) return extraCaCerts
+  const caPath = process.env.NODE_EXTRA_CA_CERTS || process.env.SSL_CERT_FILE
+  if (!caPath) {
+    extraCaCerts = false
+    return false
+  }
+  try {
+    const pem = fs.readFileSync(caPath, 'utf8')
+    const certs = []
+    const re = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g
+    let m
+    while ((m = re.exec(pem)) !== null) {
+      certs.push(m[0])
+    }
+    if (certs.length === 0) {
+      log.warn(`NODE_EXTRA_CA_CERTS 指向的文件未找到 PEM 证书: ${caPath}`)
+      extraCaCerts = false
+    } else {
+      // 合并 Node 内置根证书 + 额外 CA：ca 选项会替换内置 CA，需手动追加以保持兼容
+      extraCaCerts = tls.rootCertificates.concat(certs)
+      log.info(`从 NODE_EXTRA_CA_CERTS 加载了 ${certs.length} 个证书（已与 ${tls.rootCertificates.length} 个内置根证书合并）: ${caPath}`)
+    }
+  } catch (e) {
+    log.warn(`读取 NODE_EXTRA_CA_CERTS 失败: ${caPath}, ${e.message}`)
+    extraCaCerts = false
+  }
+  return extraCaCerts
+}
 
 function getTimeoutConfig (hostname, serverSetting) {
   const timeoutMapping = serverSetting.timeoutMapping
@@ -38,12 +75,17 @@ function createHttpsAgent (timeoutConfig, verifySsl) {
       log.info(`checkServerIdentity: ${host}, CN: ${cert.subject.CN}, C: ${cert.subject.C || cert.issuer.C}, ST: ${cert.subject.ST || cert.issuer.ST}, bits: ${cert.bits}`)
     }
 
+    // 显式加载 NODE_EXTRA_CA_CERTS（Electron 打包应用会忽略该环境变量）
+    const extraCerts = loadExtraCaCerts()
+    const caOption = Array.isArray(extraCerts) ? { ca: extraCerts } : {}
+
     const agent = new HttpsAgent({
       keepAlive: true,
       timeout: timeoutConfig.timeout,
       keepAliveTimeout: timeoutConfig.keepAliveTimeout,
       checkServerIdentity,
       rejectUnauthorized: verifySsl,
+      ...caOption,
     })
 
     agent.unVerifySslAgent = new HttpsAgent({
@@ -52,6 +94,7 @@ function createHttpsAgent (timeoutConfig, verifySsl) {
       keepAliveTimeout: timeoutConfig.keepAliveTimeout,
       checkServerIdentity,
       rejectUnauthorized: false,
+      ...caOption,
     })
 
     httpsAgentCache[key] = agent
@@ -189,10 +232,15 @@ util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
   }
   const hostname = urlObj.hostname || 'localhost'
 
+  // Electron 打包应用会忽略 NODE_EXTRA_CA_CERTS，这里显式传入额外 CA 到隧道代理
+  const extraCerts = loadExtraCaCerts()
+  const caOption = Array.isArray(extraCerts) ? { ca: extraCerts } : {}
+
   if (requestIsSSL) {
     if (protocol === 'http:') {
       if (!httpsOverHttpAgent) {
         httpsOverHttpAgent = tunnelAgent.httpsOverHttp({
+          ...caOption,
           proxy: {
             host: hostname,
             port,
@@ -203,6 +251,7 @@ util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
     } else {
       if (!httpsOverHttpsAgent) {
         httpsOverHttpsAgent = tunnelAgent.httpsOverHttps({
+          ...caOption,
           proxy: {
             host: hostname,
             port,
