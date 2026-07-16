@@ -27,9 +27,6 @@ const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT = 100
 const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE = 50
 const CACHE_SIZE_LIMIT_BYTES = 1 * 1024 * 1024 * 1024
 const CACHE_SIZE_TARGET_BYTES = Math.floor(CACHE_SIZE_LIMIT_BYTES * 0.9)
-const HOT_COLD_MIGRATION_STAGE1_BATCH_ROWS = 1000
-const HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS = 1000
-const HOT_COLD_MIGRATION_STAGE3_BATCH_ROWS = 1000
 const LARGE_SUBSCRIPTION_BYTES_THRESHOLD = 5 * 1024 * 1024
 const LARGE_SUBSCRIPTION_NODE_THRESHOLD = 50000
 const STAGE2_GC_HEAP_USED_THRESHOLD_BYTES = 96 * 1024 * 1024
@@ -354,55 +351,6 @@ async function mapWithConcurrencyLimit (items, limit, mapper) {
 
 function sleep (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function maybeLogHotColdMigrationProgress (log, phase, result) {
-  if (!result || (Number(result.migratedRows) || 0) <= 0) {
-    return
-  }
-
-  log.info(`Xray hot/cold cache migration: phase=${phase}, migratedRows=${result.migratedRows}, pending=${result.pending === true ? 1 : 0}`)
-}
-
-function maybeRetireLegacyNodesStorage (log, cachePath, phase, migrationResult) {
-  if (!migrationResult || migrationResult.pending === true) {
-    return null
-  }
-
-  const result = xrayCache.retireLegacyNodesStorage(cachePath, { lowFileCache: true })
-  if (!result || result.retired !== true) {
-    return result
-  }
-
-  if (result.alreadyRetired === true) {
-    return result
-  }
-
-  log.info(`Xray legacy nodes storage retired: phase=${phase}`)
-  return result
-}
-
-function maybeCompactRetiredSqliteCache (log, cachePath, phase, retirementResult) {
-  if (!retirementResult || retirementResult.retired !== true) {
-    return null
-  }
-
-  const result = xrayCache.compactRetiredSqliteCache(cachePath, { lowFileCache: true })
-  if (!result || result.compacted !== true) {
-    return result
-  }
-
-  if (result.alreadyCompacted === true) {
-    return result
-  }
-
-  if (result.skippedVacuum === true) {
-    log.info(`Xray retired cache compaction skipped: phase=${phase}`)
-    return result
-  }
-
-  log.info(`Xray retired cache compacted: phase=${phase}`)
-  return result
 }
 
 function timeoutError (message) {
@@ -2820,28 +2768,10 @@ const Plugin = function (context) {
         return
       }
 
-      const stage2Migration = xrayCache.migrateHotColdSchema(cachePath, {
-        batchLimit: HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS,
-        maxRows: HOT_COLD_MIGRATION_STAGE2_BATCH_ROWS,
-        lowFileCache: true,
-      })
-      maybeLogHotColdMigrationProgress(log, 'stage2', stage2Migration)
-      const stage2Retirement = maybeRetireLegacyNodesStorage(log, cachePath, 'stage2', stage2Migration)
-      maybeCompactRetiredSqliteCache(log, cachePath, 'stage2', stage2Retirement)
-      await reclaimStageSqliteFileCache(log, 'stage2-after-migration-reclaim', cachePath, {
-        migratedRows: stage2Migration.migratedRows,
-        migrationPending: stage2Migration.pending,
-      }, {
-        forceGc: true,
-      })
-
-      // Stage2 cache maintenance (migration/retire/compact/reclaim) has been
-      // removed. The database schema is still checked and migrated
-      // automatically inside openSqliteCache() on every open, so removing the
-      // explicit migration call is safe — it only removes the redundant batch
-      // migration that was already complete (migratedRows=0) on every Stage2
-      // run. This avoids an extra openSqliteCache() call that reads the 765MB
-      // database file into cgroup file cache during Stage2.
+      // Stage2 cache migration/retire/compact has been removed. The database
+      // is already compact v2 only — legacy/hotcold tables are no longer
+      // created or maintained. openSqliteCache() creates the v2 schema on
+      // every open, so no explicit migration step is needed here.
 
       const manualNodes = collectNodesFromLinks(cfg.nodes)
       const subscriptionSyncDecision = getSubscriptionSyncDecision({ cachePath, cfg })
