@@ -2,13 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.1.7] - Unreleased
+## [v2.1.7] - 2026-07-16
 
 ### Added
 - Added `exit_ip` column to the `node_runtime_v2` SQLite cache table to store the egress IP address of each probed node. The egress IP is obtained during Stage 3 egress metadata probing and refreshed on each probe round. Existing databases are automatically migrated via `ALTER TABLE ADD COLUMN`. The `probed-node-stats.json` report now includes an `exitIp` field for each node.
 - Added `probe_protocol` column to the `node_runtime_v2` SQLite cache table to record which probe protocol(s) each node supports (`http`, `https`, or `both`). The `probed-node-stats.json` report now includes a `probeProtocol` field for each node. Existing databases are automatically migrated via `ALTER TABLE ADD COLUMN`.
 - Added dual-protocol Stage 3 batch probing: each batch is probed with both the configured `probeUrl` and its protocol-flipped alternate (HTTP↔HTTPS). This discovers nodes that only support port 80 (HTTP) or port 443 (HTTPS) regardless of which protocol the user configured, increasing node yield. The probe result for each node is tagged with `probeProtocol` accordingly.
 - Added Linux deb package integration: the `dev-sidecar.service` systemd template, `postinst`/`prerm` scripts, and sudoers helper scripts (`reclaim-memory.sh`, `setup-ca.sh`) are now bundled in the deb package. On install, the postinst auto-detects the UID 1000 user, installs the service with correct `User`/`Group`, creates a sudoers drop-in for NOPASSWD execution of the helper scripts, and enables/starts the service.
+- Added `shareLink` field to `probed-node-stats.json`: each probed node now includes a shareable proxy link (e.g. `vless://...`, `vmess://...`, `trojan://...`, `ss://...`, `http://...`, `socks://...`) with a human-readable tag in the format `🇺🇸 US 1.2.3.4` (flag emoji + country code + exit IP). Links are generated on the fly when writing `probed-node-stats.json` and are not stored in the SQLite cache.
 
 ### Changed
 - Increased mitmproxy child process V8 old-space limit from 64 MB to 80 MB (Stage 3 batch level 2) to prevent JavaScript heap out of memory (`SIGABRT`) under high-concurrency HTTPS interception workloads. The `stage3GcThresholdMB` for all batch levels (1-5) was adjusted to ~75% of `maxOldSpaceSizeMB` so that explicit GC triggers before V8 is forced into a full mark-sweep, reducing event-loop freezes.

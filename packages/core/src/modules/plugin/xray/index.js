@@ -1481,6 +1481,131 @@ function getProbedNodeStatsPath (xrayDir) {
   return path.join(xrayDir, 'probed-node-stats.json')
 }
 
+// Build a human-readable tag from country code and exit IP.
+// Format: "🇺🇸 US 1.2.3.4" (flag emoji + country code + exit IP)
+function buildNodeTag (country, exitIp) {
+  const code = (country && country !== 'unknown') ? country : '??'
+  // Convert country code to flag emoji (regional indicator symbols)
+  const flag = code.toUpperCase().replace(/./g, char => String.fromCodePoint(127397 + char.charCodeAt(0)))
+  const ip = exitIp || 'no-ip'
+  return `${flag} ${code} ${ip}`
+}
+
+// Generate a shareable proxy link from a parsed node object.
+// Supports vless, vmess, trojan, ss, http, socks protocols.
+// If customTag is provided, it overrides the node's tag in the link.
+function nodeToShareLink (node, customTag) {
+  if (!node || !node.protocol) {
+    return ''
+  }
+
+  const proto = String(node.protocol).toLowerCase()
+  const settings = node.settings || {}
+  const stream = node.streamSettings || {}
+  const tag = encodeURIComponent(customTag || node.tag || '')
+
+  try {
+    if (proto === 'vless') {
+      const vnext = settings.vnext && settings.vnext[0]
+      if (!vnext) return ''
+      const user = vnext.users && vnext.users[0]
+      if (!user) return ''
+      const params = new URLSearchParams()
+      params.set('type', stream.network || 'tcp')
+      params.set('security', stream.security || 'none')
+      if (stream.security === 'tls' && stream.tlsSettings) {
+        if (stream.tlsSettings.serverName) params.set('sni', stream.tlsSettings.serverName)
+        if (stream.tlsSettings.fingerprint) params.set('fp', stream.tlsSettings.fingerprint)
+        if (stream.tlsSettings.alpn) params.set('alpn', stream.tlsSettings.alpn.join(','))
+      }
+      if (stream.security === 'reality' && stream.realitySettings) {
+        if (stream.realitySettings.serverName) params.set('sni', stream.realitySettings.serverName)
+        if (stream.realitySettings.publicKey) params.set('pbk', stream.realitySettings.publicKey)
+        if (stream.realitySettings.shortId) params.set('sid', stream.realitySettings.shortId)
+        if (stream.realitySettings.fingerprint) params.set('fp', stream.realitySettings.fingerprint)
+      }
+      if (user.flow) params.set('flow', user.flow)
+      if (stream.network === 'ws' && stream.wsSettings) {
+        if (stream.wsSettings.path) params.set('path', stream.wsSettings.path)
+        if (stream.wsSettings.host) params.set('host', stream.wsSettings.host)
+      }
+      if (stream.network === 'grpc' && stream.grpcSettings) {
+        if (stream.grpcSettings.serviceName) params.set('serviceName', stream.grpcSettings.serviceName)
+      }
+      return `vless://${user.id}@${vnext.address}:${vnext.port}?${params.toString()}#${tag}`
+    }
+
+    if (proto === 'vmess') {
+      const vnext = settings.vnext && settings.vnext[0]
+      if (!vnext) return ''
+      const user = vnext.users && vnext.users[0]
+      if (!user) return ''
+      const vmessObj = {
+        v: '2',
+        ps: node.tag || '',
+        add: vnext.address,
+        port: String(vnext.port),
+        id: user.id,
+        aid: String(user.alterId || 0),
+        scy: user.security || 'auto',
+        net: stream.network || 'tcp',
+        type: 'none',
+        host: (stream.wsSettings && stream.wsSettings.host) || (stream.httpSettings && stream.httpSettings.host) || '',
+        path: (stream.wsSettings && stream.wsSettings.path) || (stream.httpSettings && stream.httpSettings.path) || '',
+        tls: stream.security === 'tls' ? 'tls' : '',
+        sni: (stream.tlsSettings && stream.tlsSettings.serverName) || '',
+      }
+      return `vmess://${Buffer.from(JSON.stringify(vmessObj)).toString('base64')}`
+    }
+
+    if (proto === 'trojan') {
+      const server = settings.servers && settings.servers[0]
+      if (!server) return ''
+      const params = new URLSearchParams()
+      params.set('type', stream.network || 'tcp')
+      params.set('security', stream.security || 'tls')
+      if (stream.tlsSettings && stream.tlsSettings.serverName) params.set('sni', stream.tlsSettings.serverName)
+      if (stream.network === 'ws' && stream.wsSettings) {
+        if (stream.wsSettings.path) params.set('path', stream.wsSettings.path)
+        if (stream.wsSettings.host) params.set('host', stream.wsSettings.host)
+      }
+      return `trojan://${server.password}@${server.address}:${server.port}?${params.toString()}#${tag}`
+    }
+
+    if (proto === 'shadowsocks' || proto === 'ss') {
+      const server = settings.servers && settings.servers[0]
+      if (!server) return ''
+      const userInfo = Buffer.from(`${server.method || server.cipher}:${server.password}`).toString('base64')
+      return `ss://${userInfo}@${server.address}:${server.port}#${tag}`
+    }
+
+    if (proto === 'http' || proto === 'https') {
+      const server = settings.servers && settings.servers[0]
+      if (!server) return ''
+      const scheme = (stream.security === 'tls') ? 'https' : 'http'
+      let auth = ''
+      if (server.users && server.users[0]) {
+        auth = `${encodeURIComponent(server.users[0].user)}:${encodeURIComponent(server.users[0].pass)}@`
+      }
+      return `${scheme}://${auth}${server.address}:${server.port}#${tag}`
+    }
+
+    if (proto === 'socks') {
+      const server = settings.servers && settings.servers[0]
+      if (!server) return ''
+      let auth = ''
+      if (server.users && server.users[0]) {
+        auth = `${encodeURIComponent(server.users[0].user)}:${encodeURIComponent(server.users[0].pass)}@`
+      }
+      return `socks://${auth}${server.address}:${server.port}#${tag}`
+    }
+  } catch {
+    return ''
+  }
+
+  return ''
+}
+
 function writeProbedNodeStats ({ xrayDir, cachePath }) {
   const statsPath = getProbedNodeStatsPath(xrayDir)
   const probedNodeIds = xrayCache.readProbedNodeIdsAtPath(cachePath)
@@ -1504,6 +1629,7 @@ function writeProbedNodeStats ({ xrayDir, cachePath }) {
       delay: entry.delay || 0,
       stable: entry.stable === true,
       protocol: (entry.node && (entry.node.protocol || entry.node.type)) || 'unknown',
+      shareLink: nodeToShareLink(entry.node, buildNodeTag(country, entry.exitIp)),
     })
   }
   nodes.sort((a, b) => (a.delay || 0) - (b.delay || 0))
