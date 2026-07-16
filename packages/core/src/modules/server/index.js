@@ -98,11 +98,11 @@ const serverApi = {
     //   Keep STAGE3_MAX_OLD_SPACE_BY_LEVEL in sync with
     //   STAGE3_BATCH_LEVEL_TABLE in modules/plugin/xray/config.js.
     //   level 1 (64):   48 MB   — low-memory devices (Raspberry Pi)
-    //   level 2 (128):  64 MB   — default, steady heap ~15 MB
+    //   level 2 (128):  80 MB   — default, steady heap ~15 MB
     //   level 3 (256):  128 MB  — moderate throughput
     //   level 4 (512):  256 MB  — high throughput
     //   level 5 (1024): 512 MB  — max coverage
-    const STAGE3_MAX_OLD_SPACE_BY_LEVEL = { 1: 48, 2: 64, 3: 128, 4: 256, 5: 512 }
+    const STAGE3_MAX_OLD_SPACE_BY_LEVEL = { 1: 48, 2: 80, 3: 128, 4: 256, 5: 512 }
     const rawBatchLevel = Number.parseInt(allConfig.plugin?.xray?.cacheRefreshBatchLevel, 10)
     const batchLevel = Number.isInteger(rawBatchLevel) && rawBatchLevel >= 1 && rawBatchLevel <= 5
       ? rawBatchLevel

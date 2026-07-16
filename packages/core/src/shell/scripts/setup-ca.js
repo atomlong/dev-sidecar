@@ -9,7 +9,7 @@ const executor = {
     return true
   },
   async linux (exec, { certPath }) {
-    const cmds = [`sudo cp ${certPath} /usr/local/share/ca-certificates`, 'sudo update-ca-certificates ']
+    const cmds = [`sudo /usr/lib/dev-sidecar/setup-ca.sh ${certPath}`]
     await exec(cmds)
     return true
   },

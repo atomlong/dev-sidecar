@@ -4,6 +4,8 @@ const path = require('node:path')
 const publishUrl = process.env.VUE_APP_PUBLISH_URL
 const publishProvider = process.env.VUE_APP_PUBLISH_PROVIDER
 const debLifecycleScript = path.join(__dirname, 'pkg', 'deb-stop-processes.sh')
+const debPostinstScript = path.join(__dirname, 'pkg', 'linux', 'postinst')
+const debPrermScript = path.join(__dirname, 'pkg', 'linux', 'prerm')
 
 function normalizeArch (arch) {
   if (arch === 'x64' || arch === 'arm64' || arch === 'armv7l') {
@@ -193,6 +195,13 @@ module.exports = {
       from: 'extra/xray/${os}/${arch}',
       to: 'extra/xray',
     },
+    {
+      from: 'pkg/linux',
+      to: 'linux',
+      filter: [
+        'dev-sidecar.service',
+      ],
+    },
   ],
   beforePack: './pkg/before-pack.cjs',
   afterPack: './pkg/after-pack.cjs',
@@ -222,6 +231,8 @@ module.exports = {
     fpm: [
       `--before-install=${debLifecycleScript}`,
       `--before-remove=${debLifecycleScript}`,
+      `--after-install=${debPostinstScript}`,
+      `--after-remove=${debPrermScript}`,
     ],
   },
   mac: {

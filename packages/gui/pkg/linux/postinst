@@ -1,0 +1,88 @@
+#!/bin/sh
+# DevSidecar postinst: install systemd service, sudoers, and helper scripts.
+# Runs as root during `apt install` / `dpkg -i`.
+set -e
+
+INSTALL_DIR="/opt/dev-sidecar"
+PKG_DIR="${INSTALL_DIR}/resources/linux"
+SERVICE_FILE="/etc/systemd/system/dev-sidecar.service"
+SUDOERS_FILE="/etc/sudoers.d/dev-sidecar"
+HELPER_DIR="/usr/lib/dev-sidecar"
+
+# --- Resolve the default desktop user (UID 1000) ---
+DS_USER=$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)
+if [ -z "$DS_USER" ]; then
+  DS_USER=$(awk -F: '$3 >= 1000 && $3 < 65534 && $1 != "nobody" {print $1; exit}' /etc/passwd 2>/dev/null || true)
+fi
+if [ -z "$DS_USER" ]; then
+  echo "dev-sidecar postinst: WARNING — no suitable user found, skipping service/sudoers setup" >&2
+  exit 0
+fi
+DS_GROUP_ID=$(getent passwd "$DS_USER" | cut -d: -f4 || true)
+DS_GROUP=$(getent group "$DS_GROUP_ID" | cut -d: -f1 || true)
+# Fall back to a group with the same name as the user
+if [ -z "$DS_GROUP" ]; then
+  DS_GROUP="$DS_USER"
+fi
+
+echo "dev-sidecar postinst: using user=$DS_USER group=$DS_GROUP"
+
+# --- Install helper scripts ---
+mkdir -p "$HELPER_DIR"
+
+cat > "$HELPER_DIR/reclaim-memory.sh" <<'RECLAIM_EOF'
+#!/bin/bash
+# Reclaim cgroup memory for dev-sidecar.service (Linux 5.19+).
+# Called by dev-sidecar at runtime via sudo (NOPASSWD sudoers rule).
+# Usage: reclaim-memory.sh <amount>  (e.g. "100M")
+AMOUNT="${1:-100M}"
+CGROUP_PATH="/sys/fs/cgroup/system.slice/dev-sidecar.service"
+if [ -f "$CGROUP_PATH/memory.reclaim" ]; then
+  echo "$AMOUNT" > "$CGROUP_PATH/memory.reclaim" 2>/dev/null || true
+fi
+RECLAIM_EOF
+chmod 0755 "$HELPER_DIR/reclaim-memory.sh"
+
+cat > "$HELPER_DIR/setup-ca.sh" <<'CA_EOF'
+#!/bin/bash
+# Install dev-sidecar root CA into system trust store.
+# Called by dev-sidecar GUI at runtime via sudo (NOPASSWD sudoers rule).
+# Usage: setup-ca.sh <cert-path>
+CERT_PATH="$1"
+if [ -z "$CERT_PATH" ] || [ ! -f "$CERT_PATH" ]; then
+  echo "Usage: setup-ca.sh <cert-path>" >&2
+  exit 1
+fi
+BASENAME=$(basename "$CERT_PATH")
+cp "$CERT_PATH" "/usr/local/share/ca-certificates/${BASENAME}"
+update-ca-certificates
+CA_EOF
+chmod 0755 "$HELPER_DIR/setup-ca.sh"
+
+# --- Install sudoers drop-in ---
+cat > "$SUDOERS_FILE" <<SUDOERS_EOF
+# Managed by dev-sidecar package — do not edit manually.
+# Allows the service user to run dev-sidecar helper scripts without a password.
+$DS_USER ALL=(root) NOPASSWD: $HELPER_DIR/reclaim-memory.sh *
+$DS_USER ALL=(root) NOPASSWD: $HELPER_DIR/setup-ca.sh *
+SUDOERS_EOF
+chmod 0440 "$SUDOERS_FILE"
+
+# --- Install systemd service (if template exists in package) ---
+if [ -f "$PKG_DIR/dev-sidecar.service" ]; then
+  sed \
+    -e "s/__DS_USER__/$DS_USER/g" \
+    -e "s/__DS_GROUP__/$DS_GROUP/g" \
+    "$PKG_DIR/dev-sidecar.service" > "$SERVICE_FILE"
+  chmod 0644 "$SERVICE_FILE"
+  echo "dev-sidecar postinst: installed $SERVICE_FILE (user=$DS_USER)"
+fi
+
+# --- Enable and start the service ---
+if [ -f "$SERVICE_FILE" ]; then
+  systemctl daemon-reload || true
+  systemctl enable dev-sidecar.service || true
+  systemctl start dev-sidecar.service || true
+fi
+
+exit 0

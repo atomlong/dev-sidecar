@@ -4,10 +4,10 @@
 // desync them by picking an arbitrary batchSize.
 const STAGE3_BATCH_LEVEL_TABLE = {
   1: { batchSize: 64,   maxOldSpaceSizeMB: 48,  stage3GcThresholdMB: 32  },
-  2: { batchSize: 128,  maxOldSpaceSizeMB: 64,  stage3GcThresholdMB: 64  },
-  3: { batchSize: 256,  maxOldSpaceSizeMB: 128, stage3GcThresholdMB: 128 },
-  4: { batchSize: 512,  maxOldSpaceSizeMB: 256, stage3GcThresholdMB: 256 },
-  5: { batchSize: 1024, maxOldSpaceSizeMB: 512, stage3GcThresholdMB: 512 },
+  2: { batchSize: 128,  maxOldSpaceSizeMB: 80,  stage3GcThresholdMB: 56  },
+  3: { batchSize: 256,  maxOldSpaceSizeMB: 128, stage3GcThresholdMB: 96  },
+  4: { batchSize: 512,  maxOldSpaceSizeMB: 256, stage3GcThresholdMB: 192 },
+  5: { batchSize: 1024, maxOldSpaceSizeMB: 512, stage3GcThresholdMB: 384 },
 }
 const STAGE3_BATCH_LEVEL_DEFAULT = 2
 
@@ -33,11 +33,14 @@ module.exports = {
   // 阶段3：探测批次等级（1-5）。level=N 对应 batchSize=N*64（即 64/128/256/512/1024）。
   // 等级越高，单批探测节点越多，吞吐越高但内存占用越大。
   // V8 old-space 上限与 stage3 显式 GC 阈值按等级精确映射，避免用户自定义任意 batchSize 导致 GC 参数失配。
+  // stage3 GC 阈值 ≈ maxOldSpace 的 70-75%，留缓冲让显式 GC 在 V8 被迫 GC 前清理。
   //   level 1 (64):  max-old-space=48MB,  stage3 GC 阈值=32MB   — 低内存设备（树莓派）
-  //   level 2 (128): max-old-space=64MB,  stage3 GC 阈值=64MB   — 默认，实测稳态 heap ~15MB
-  //   level 3 (256): max-old-space=128MB, stage3 GC 阈值=128MB  — 中等吞吐
-  //   level 4 (512): max-old-space=256MB, stage3 GC 阈值=256MB  — 高吞吐
-  //   level 5 (1024):max-old-space=512MB, stage3 GC 阈值=512MB  — 极速覆盖
+  //   level 2 (128): max-old-space=80MB,  stage3 GC 阈值=56MB   — 默认，实测稳态 heap ~15MB
+  //   level 3 (256): max-old-space=128MB, stage3 GC 阈值=96MB   — 中等吞吐
+  //   level 4 (512): max-old-space=256MB, stage3 GC 阈值=192MB  — 高吞吐（需 ≥512M cgroup MemoryHigh）
+  //   level 5 (1024):max-old-space=512MB, stage3 GC 阈值=384MB  — 极速覆盖（需 ≥1G cgroup MemoryHigh）
+  // 注意：mitmproxy 子进程与 Stage3 探测共用同一 fork 路径，maxOldSpaceSizeMB 同时作用于两者。
+  // 默认 cgroup MemoryHigh=280M 下仅 level 1-3 可用，level 4/5 需放宽 cgroup 限制。
   cacheRefreshBatchLevel: 2,
   cacheRefreshProbeSamples: 2, // 阶段3：每批 burst 探测样本数
   subscriptionStaleAfterDays: 30, // 订阅连续无可用节点且无节点引用后的数据库清理阈值（天）

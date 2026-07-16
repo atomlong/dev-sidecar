@@ -33,9 +33,8 @@ function reclaimStartupMemory () {
     try {
       childProcess.execFileSync('sudo', [
         '-n',
-        'sh',
-        '-c',
-        `echo 100M > ${reclaimFile}`,
+        '/usr/lib/dev-sidecar/reclaim-memory.sh',
+        '100M',
       ], { timeout: 5000 })
       return true
     } catch {

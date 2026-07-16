@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.1.7] - Unreleased
+
+### Added
+- Added `exit_ip` column to the `node_runtime_v2` SQLite cache table to store the egress IP address of each probed node. The egress IP is obtained during Stage 3 egress metadata probing and refreshed on each probe round. Existing databases are automatically migrated via `ALTER TABLE ADD COLUMN`. The `probed-node-stats.json` report now includes an `exitIp` field for each node.
+- Added `probe_protocol` column to the `node_runtime_v2` SQLite cache table to record which probe protocol(s) each node supports (`http`, `https`, or `both`). The `probed-node-stats.json` report now includes a `probeProtocol` field for each node. Existing databases are automatically migrated via `ALTER TABLE ADD COLUMN`.
+- Added dual-protocol Stage 3 batch probing: each batch is probed with both the configured `probeUrl` and its protocol-flipped alternate (HTTP↔HTTPS). This discovers nodes that only support port 80 (HTTP) or port 443 (HTTPS) regardless of which protocol the user configured, increasing node yield. The probe result for each node is tagged with `probeProtocol` accordingly.
+- Added Linux deb package integration: the `dev-sidecar.service` systemd template, `postinst`/`prerm` scripts, and sudoers helper scripts (`reclaim-memory.sh`, `setup-ca.sh`) are now bundled in the deb package. On install, the postinst auto-detects the UID 1000 user, installs the service with correct `User`/`Group`, creates a sudoers drop-in for NOPASSWD execution of the helper scripts, and enables/starts the service.
+
+### Changed
+- Increased mitmproxy child process V8 old-space limit from 64 MB to 80 MB (Stage 3 batch level 2) to prevent JavaScript heap out of memory (`SIGABRT`) under high-concurrency HTTPS interception workloads. The `stage3GcThresholdMB` for all batch levels (1-5) was adjusted to ~75% of `maxOldSpaceSizeMB` so that explicit GC triggers before V8 is forced into a full mark-sweep, reducing event-loop freezes.
+- Increased default systemd `MemoryHigh` from 280M to 512M in the packaged service template to accommodate Stage 3 batch levels 1-4 without cgroup memory pressure.
+- Unified all timestamp formatting to use local timezone (`formatLocalTimestamp`) instead of mixed UTC (`toISOString`). Affected files: `probed-node-stats.json`, `stage3-last-round.json`, `local-input-state.json`, and cache sync plan timestamps. All timestamps now display in the operating system's local timezone (e.g. `2026-07-16T11:30:34.595+08:00`) instead of UTC (`2026-07-16T03:30:34.595Z`).
+- Reordered `EGRESS_IP_LOOKUP_URLS` to list China-accessible IP-lookup services (`ip.3322.net`, `bt.cn`, `myip.ipip.net`) before foreign services so that CN exit nodes resolve their egress IP in 1-2 seconds instead of exhausting the timeout on GFW-blocked foreign endpoints.
+- Increased egress metadata lookup per-URL timeout from implicit 30s to explicit 8s per URL with a 90s outer cap, allowing multiple lookup URLs to be attempted within a single egress probe instead of timing out on the first blocked URL.
+- Adapted egress IP lookup URL selection to the node's `probeProtocol`: nodes tagged `https` only attempt HTTPS IP-lookup URLs (port 443), while `http`/`both`/unknown nodes use the full URL list (HTTP first).
+- Replaced direct `sudo` calls in `cache.js`, `expose.js`, and `setup-ca.js` with packaged helper scripts (`/usr/lib/dev-sidecar/reclaim-memory.sh`, `/usr/lib/dev-sidecar/setup-ca.sh`) invoked via NOPASSWD sudoers rules installed by the deb postinst.
+- Removed unnecessary `sudo` from the Linux autostart desktop file removal in `auto-start/backend.js` (the file is in the user's home directory and does not require elevated privileges).
+
 ## [v2.1.6] - 2026-07-14
 
 ### Added

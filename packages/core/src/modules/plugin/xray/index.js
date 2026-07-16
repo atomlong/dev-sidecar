@@ -41,22 +41,33 @@ const CACHE_REFRESH_NEW_RATIO = 0.3
 const CACHE_REFRESH_COLD_RATIO = 0.2
 const CACHE_FAILURE_BACKOFF_DAYS = [7, 30, 90]
 const EGRESS_METADATA_CONCURRENCY = 4
-const EGRESS_METADATA_LOOKUP_TIMEOUT = 12000
+// Outer cap for the whole egress metadata lookup (port readiness wait +
+// IP lookup through the proxy). The per-URL timeout inside
+// detectEgressAddressThroughProxy is 8s; with 12 URLs the worst-case
+// total is ~96s. This must be large enough to let several URLs be tried.
+const EGRESS_METADATA_LOOKUP_TIMEOUT = 90000
 const EGRESS_IP_LOOKUP_URLS = [
+  // China-accessible IP lookup services listed first. Foreign services
+  // (icanhazip, ipify, checkip.amazonaws, etc.) are blocked by the GFW
+  // when probed from CN exit nodes: they either hang until timeout or
+  // return an ICP filing interception page instead of the real IP.
+  // Listing CN services first lets CN nodes resolve in 1-2s instead of
+  // burning the whole outer timeout on blocked foreign endpoints.
+  // These domestic services return the caller's public IP as plain text
+  // and are accessible from both CN and overseas exit nodes.
+  // All URLs use HTTP because the probeUrl (observatory) is also HTTP —
+  // if a node passes observatory it supports HTTP proxying on port 80,
+  // so HTTP IP lookups will work too. HTTPS would require CONNECT
+  // tunnel support (port 443) which many free proxy nodes lack.
+  'http://ip.3322.net',
+  'http://www.bt.cn/Api/getIpAddress',
+  'http://myip.ipip.net',
   'http://ipv4.icanhazip.com',
   'http://icanhazip.com',
   'http://ifconfig.me/ip',
   'http://ident.me',
   'http://api.ipify.org',
   'http://checkip.amazonaws.com',
-  'https://api.ipify.org',
-  // China-accessible IP lookup services — foreign services (icanhazip, ipify,
-  // checkip.amazonaws, etc.) are blocked by the GFW and return an ICP filing
-  // interception page instead of the real IP. These domestic services return
-  // the caller's public IP as plain text and are accessible from CN nodes.
-  'http://ip.3322.net',
-  'http://www.bt.cn/Api/getIpAddress',
-  'http://myip.ipip.net',
 ]
 const LOCAL_INPUT_STATE_FILE_NAME = 'nodes_cache.state.json'
 const LOCAL_INPUT_STATE_SIGNATURE_VERSION = 2
@@ -542,11 +553,19 @@ function fetchTextThroughHttpProxy ({ proxyPort, url, timeoutMs = 5000 }) {
   })
 }
 
-async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT }) {
-  const perUrlTimeout = 30000
+async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeProtocol = '' }) {
+  const perUrlTimeout = 8000
   let lastError = new Error('Egress IP lookup failed')
 
-  for (const lookupUrl of EGRESS_IP_LOOKUP_URLS) {
+  // Filter URL list by the node's probeProtocol so egress IP lookup uses
+  // a protocol the node is known to support. If probeProtocol is 'https',
+  // only HTTPS URLs are tried (node only supports port 443). If 'http' or
+  // 'both' (or unknown), all URLs are tried (HTTP first, then HTTPS).
+  const urls = probeProtocol === 'https'
+    ? EGRESS_IP_LOOKUP_URLS.filter(url => url.startsWith('https://'))
+    : EGRESS_IP_LOOKUP_URLS
+
+  for (const lookupUrl of urls) {
     try {
       const text = await fetchTextThroughHttpProxy({
         proxyPort,
@@ -777,7 +796,7 @@ function writeLocalInputState (statePath, state) {
     semanticsVersion: state.semanticsVersion,
     manualNodeCount: state.manualNodeCount,
     subscriptionCount: state.subscriptionCount,
-    updatedAt: new Date().toISOString(),
+    updatedAt: xrayCache.formatLocalTimestamp(),
   }
 
   try {
@@ -1492,6 +1511,8 @@ function writeProbedNodeStats ({ xrayDir, cachePath }) {
       nodeId: entry.nodeId || null,
       country,
       owner: entry.owner || '',
+      exitIp: entry.exitIp || '',
+      probeProtocol: entry.probeProtocol || '',
       delay: entry.delay || 0,
       stable: entry.stable === true,
       protocol: (entry.node && (entry.node.protocol || entry.node.type)) || 'unknown',
@@ -1502,7 +1523,7 @@ function writeProbedNodeStats ({ xrayDir, cachePath }) {
     totalProbed: probedNodeIds.length,
     countryDistribution,
     nodes,
-    updatedAt: new Date().toISOString(),
+    updatedAt: xrayCache.formatLocalTimestamp(),
   })
   return statsPath
 }
@@ -1723,7 +1744,7 @@ function applyStage3ProbeResults ({
   }
 }
 
-async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeLifecycle = null }) {
+async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeLifecycle = null, probeProtocol = '' }) {
   if (!node || typeof node !== 'object') {
     return { country: '', owner: '' }
   }
@@ -1772,6 +1793,7 @@ async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeou
       detectEgressAddressThroughProxy({
         proxyPort,
         timeoutMs,
+        probeProtocol,
       }),
       timeoutMs + 1000,
       `Egress metadata lookup timeout after ${timeoutMs}ms`
@@ -1795,6 +1817,7 @@ async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeou
   return {
     country: normalizeCountryCode(country),
     owner: xrayCache.resolveOwnerLabel(owner),
+    exitIp: exitAddress || '',
   }
 }
 
@@ -1813,7 +1836,7 @@ async function annotateProbeEntries (entries, options = {}) {
     const fallbackCountry = normalizeCountryCode(entry && (entry.country || entry.countryCode) || (existingEntry && existingEntry.country))
 
     let metadata = null
-    if (useEgressMetadata && (!fallbackCountry || !fallbackOwner)) {
+    if (useEgressMetadata && (!fallbackCountry || !fallbackOwner || !(existingEntry && existingEntry.exitIp))) {
       try {
         metadata = await resolveEntryEgressMetadata({
           binPath: options.binPath,
@@ -1821,6 +1844,7 @@ async function annotateProbeEntries (entries, options = {}) {
           node: entry && entry.node,
           log: logger,
           probeLifecycle: options.probeLifecycle,
+          probeProtocol: entry && entry.probeProtocol,
         })
       } catch (error) {
         logger.warn(`Xray egress metadata 探测失败: delay=${entry && entry.delay}ms, error=${error && error.message}`)
@@ -1853,6 +1877,8 @@ async function annotateProbeEntries (entries, options = {}) {
       ...entry,
       owner: resolvedOwner,
       country: resolvedCountry,
+      exitIp: (metadata && metadata.exitIp) || (existingEntry && existingEntry.exitIp) || '',
+      probeProtocol: entry && entry.probeProtocol || (existingEntry && existingEntry.probeProtocol) || '',
     }
   })
 }
@@ -1866,7 +1892,7 @@ function createCacheSyncPlan (candidateNodes, existingEntries, stats = {}) {
     }
   }
 
-  const timestamp = new Date().toISOString()
+  const timestamp = xrayCache.formatLocalTimestamp()
   stats.countryReadyCount = 0
   const addedEntries = []
   const candidateFingerprints = new Set()
@@ -2263,6 +2289,76 @@ const Plugin = function (context) {
       }
     }
 
+    const configuredProbeUrl = cfg.probeUrl || pluginConfig.probeUrl
+
+    // Derive the alternate protocol URL so both HTTP and HTTPS are always tried.
+    // If the configured probeUrl is HTTP, the alternate is HTTPS (and vice versa).
+    // This ensures nodes that only support port 80 (HTTP) or port 443 (HTTPS)
+    // are both discovered regardless of which protocol the user configured.
+    let alternateProbeUrl = null
+    if (configuredProbeUrl && configuredProbeUrl.startsWith('http://')) {
+      alternateProbeUrl = configuredProbeUrl.replace(/^http:/, 'https:')
+    } else if (configuredProbeUrl && configuredProbeUrl.startsWith('https://')) {
+      alternateProbeUrl = configuredProbeUrl.replace(/^https:/, 'http:')
+    }
+
+    if (!alternateProbeUrl) {
+      return await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: configuredProbeUrl, probeSamples: effectiveProbeSamples })
+    }
+
+    // Determine protocol labels for each pass
+    const primaryProto = configuredProbeUrl.startsWith('https') ? 'https' : 'http'
+    const alternateProto = alternateProbeUrl.startsWith('https') ? 'https' : 'http'
+
+    // Primary probe: probe ALL nodes with the configured probeUrl
+    const primaryResult = await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: configuredProbeUrl, probeSamples: effectiveProbeSamples })
+
+    // Fallback probe: probe ALL nodes with the alternate protocol
+    log.info(`Xray 后台探测: 补充 ${alternateProto.toUpperCase()} 探测全部 ${batchNodes.length} 个节点, probeUrl=${alternateProbeUrl}`)
+
+    const alternateResult = await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: alternateProbeUrl, probeSamples: effectiveProbeSamples })
+
+    // Merge results: a node may appear in primary, alternate, or both.
+    // probeProtocol: 'http' | 'https' | 'both'
+    const entryByFingerprint = new Map()
+    const observedFingerprintSet = new Set()
+
+    for (const entry of primaryResult.entries) {
+      const fp = xrayCache.fingerprintNode(entry.node)
+      if (fp) {
+        entryByFingerprint.set(fp, { ...entry, probeProtocol: primaryProto })
+        observedFingerprintSet.add(fp)
+      }
+    }
+
+    for (const entry of alternateResult.entries) {
+      const fp = xrayCache.fingerprintNode(entry.node)
+      if (fp) {
+        if (entryByFingerprint.has(fp)) {
+          // Node succeeded in both passes
+          entryByFingerprint.get(fp).probeProtocol = 'both'
+        } else {
+          entryByFingerprint.set(fp, { ...entry, probeProtocol: alternateProto })
+        }
+        observedFingerprintSet.add(fp)
+      }
+    }
+
+    // Merge observed fingerprints from both passes
+    for (const fp of primaryResult.observedFingerprints) {
+      observedFingerprintSet.add(fp)
+    }
+    for (const fp of alternateResult.observedFingerprints) {
+      observedFingerprintSet.add(fp)
+    }
+
+    return {
+      entries: [...entryByFingerprint.values()],
+      observedFingerprints: [...observedFingerprintSet],
+    }
+  }
+
+  async function runSingleProbePass ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl, probeSamples }) {
     ensureDir(xrayDir)
     const probeDir = path.join(xrayDir, 'probe')
     ensureDir(probeDir)
@@ -2270,11 +2366,11 @@ const Plugin = function (context) {
     const probePort = await portFinder.findFreePort()
     const metricsPort = await portFinder.findFreePort()
 
-    const probeConfig = genConfig(probePort, batchNodes, cfg.rules, cfg.probeUrl, CACHE_PROBE_SAMPLE_INTERVAL, {
+    const probeConfig = genConfig(probePort, batchNodes, cfg.rules, probeUrl, CACHE_PROBE_SAMPLE_INTERVAL, {
       metricsPort,
       observatoryEnableConcurrency: true,
       probeMode: 'burst',
-      probeSamples: effectiveProbeSamples,
+      probeSamples,
       probeTimeoutSeconds: CACHE_PROBE_SAMPLE_TIMEOUT,
     })
 
@@ -2286,7 +2382,7 @@ const Plugin = function (context) {
       metricsPort,
       log,
       timeoutMs,
-      expectedSamples: effectiveProbeSamples,
+      expectedSamples: probeSamples,
       expectedSubjectCount: batchNodes.length,
     })
 
@@ -2916,8 +3012,8 @@ const Plugin = function (context) {
           xrayDir,
           summary: {
             status: 'empty',
-            startedAt: new Date(roundStartedAt).toISOString(),
-            endedAt: new Date().toISOString(),
+            startedAt: xrayCache.formatLocalTimestamp(new Date(roundStartedAt)),
+            endedAt: xrayCache.formatLocalTimestamp(),
             durationMs: Date.now() - roundStartedAt,
             candidateCount: 0,
             dueCandidateCount: 0,
@@ -2930,7 +3026,7 @@ const Plugin = function (context) {
             failedBatchCount: 0,
             availableNodeCount: 0,
             removedNodeCount: 0,
-            nextRefreshAt: new Date(Date.now() + nextDelay).toISOString(),
+            nextRefreshAt: xrayCache.formatLocalTimestamp(new Date(Date.now() + nextDelay)),
             subscriptions: xrayCache.readSubscriptionAvailabilitySummary(cachePath).filter(subscription => subscription.configured),
           },
         })
@@ -3187,13 +3283,13 @@ const Plugin = function (context) {
       if (successBatchCount === 0) {
         log.warn('Xray 缓存周期探测: 所有批次都失败，保留原缓存')
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
-        const nextRefreshAt = new Date(Date.now() + nextDelay).toISOString()
+        const nextRefreshAt = xrayCache.formatLocalTimestamp(new Date(Date.now() + nextDelay))
         writeStage3RoundSummary({
           xrayDir,
           summary: {
             status: 'all_failed',
-            startedAt: new Date(roundStartedAt).toISOString(),
-            endedAt: new Date().toISOString(),
+            startedAt: xrayCache.formatLocalTimestamp(new Date(roundStartedAt)),
+            endedAt: xrayCache.formatLocalTimestamp(),
             durationMs: Date.now() - roundStartedAt,
             candidateCount: processedCount,
             dueCandidateCount: totalDueCandidateCount,
@@ -3247,13 +3343,13 @@ const Plugin = function (context) {
         }
 
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
-        const nextRefreshAt = new Date(Date.now() + nextDelay).toISOString()
+        const nextRefreshAt = xrayCache.formatLocalTimestamp(new Date(Date.now() + nextDelay))
         const summaryPath = writeStage3RoundSummary({
           xrayDir,
           summary: {
             status: roundStatus,
-            startedAt: new Date(roundStartedAt).toISOString(),
-            endedAt: new Date().toISOString(),
+            startedAt: xrayCache.formatLocalTimestamp(new Date(roundStartedAt)),
+            endedAt: xrayCache.formatLocalTimestamp(),
             durationMs: Date.now() - roundStartedAt,
             candidateCount: processedCount,
             dueCandidateCount: totalDueCandidateCount,
