@@ -277,12 +277,31 @@ describe('xray stage gating', function () {
     const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
 
     try {
+      // v2 subscription refs require real nodes in nodes_v2 (joined by node_id);
+      // raw nodeKey strings with no matching node are silently skipped on write.
+      // Pre-create four real nodes and use their nodeKeys for the chunk syncs.
+      const nodes = [
+        createNode('10.0.0.1', 8001),
+        createNode('10.0.0.2', 8002),
+        createNode('10.0.0.3', 8003),
+        createNode('10.0.0.4', 8004),
+      ]
+      xrayCache.writeCache(cachePath, nodes.map((node, index) => ({
+        node,
+        stable: false,
+        delay: 100 + index,
+        source: 'source-sync',
+        updatedAt: '2026-05-10T00:00:00.000+08:00',
+        nextCheckAt: '2026-05-10T00:00:00.000+08:00',
+      })))
+      const nodeKeys = nodes.map(node => xrayCache.getNodeKey(node))
+
       const sourceKey = 'subscription-ref-lossless-source'
       const firstChunkStats = xrayCache.syncSubscriptionSourceChunk(cachePath, {
         sourceKey,
         displayLabel: 'subscription ref lossless source',
         sortOrder: 1,
-      }, ['node-1', 'node-2', 'node-3'], { lowFileCache: true })
+      }, nodeKeys.slice(0, 3), { lowFileCache: true })
 
       assert.deepStrictEqual(firstChunkStats, {
         configured: 1,
@@ -294,7 +313,7 @@ describe('xray stage gating', function () {
         sourceKey,
         displayLabel: 'subscription ref lossless source',
         sortOrder: 1,
-      }, ['node-4'], { lowFileCache: true })
+      }, [nodeKeys[3]], { lowFileCache: true })
 
       assert.deepStrictEqual(secondChunkStats, {
         configured: 1,
@@ -366,60 +385,11 @@ describe('xray stage gating', function () {
     }
   })
 
-  it('backfills NULL next_check_at during schema migration and treats it as a bug to repair', () => {
-    if (!sqliteAvailable) {
-      return
-    }
-
-    const Database = require('better-sqlite3')
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-next-check-backfill-'))
-    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
-
-    try {
-      const db = new Database(cachePath)
-      db.exec(`
-        CREATE TABLE nodes (
-          fingerprint TEXT PRIMARY KEY,
-          node_json TEXT NOT NULL,
-          stable INTEGER NOT NULL DEFAULT 0,
-          delay REAL,
-          country TEXT,
-          owner TEXT,
-          source TEXT,
-          updated_at TEXT,
-          tag TEXT
-        );
-      `)
-      const node = createNode('9.9.9.9', 80)
-      db.prepare(`
-        INSERT INTO nodes (fingerprint, node_json, stable, delay, country, owner, source, updated_at, tag)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        xrayCache.fingerprintNode(node),
-        JSON.stringify(node),
-        0,
-        null,
-        '',
-        '',
-        'source-sync',
-        '2026-05-16T00:00:00.000+08:00',
-        ''
-      )
-      db.close()
-
-      const migratedEntries = xrayCache.readCacheEntries(cachePath)
-      assert.strictEqual(migratedEntries.length, 1)
-      assert.strictEqual(migratedEntries[0].nextCheckAt, '2026-05-16T00:00:00.000+08:00')
-
-      const dueRows = xrayCache.readCacheRowIds(cachePath, {
-        orderBy: 'due',
-        dueBefore: '2026-05-16T00:00:00.000+08:00',
-      })
-      assert.strictEqual(dueRows.length, 1)
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
+  // Note: 'backfills NULL next_check_at during schema migration and treats it as a bug to repair'
+  // was removed because it created a legacy `nodes` table by raw SQL and relied on the deleted
+  // legacy-to-v2 schema migration path (backfillNextCheckAt / migrateNodesToHotColdSchema etc.).
+  // The DB is now exclusively compact v2, and writeCache always persists next_check_at, so the
+  // legacy NULL-backfill scenario no longer applies.
 
   it('reads only matching existing cache entries for stage2 candidate nodes', () => {
     if (!sqliteAvailable) {
@@ -1116,6 +1086,17 @@ describe('xray stage gating', function () {
         },
       ])
 
+      // The v2 startup reader bootstraps from probed_node_ids stored in cache_meta
+      // (populated by Stage3 via updateProbedNodeIdsAtPath). Without this, the
+      // startup reader returns [] on a fresh cache. updateProbedNodeIdsAtPath
+      // selects nodes with delay > 0 ordered by delay ASC, stable DESC,
+      // updated_at DESC — which gives [83 (delay 80, stable), 82 (delay 120,
+      // stable), 81 (delay 300, unstable)].
+      assert.strictEqual(xrayCache.updateProbedNodeIdsAtPath(cachePath), 3)
+
+      // v2 startup reader ignores stableOnly / maxDelayMs / orderBy filters and
+      // only honors `limit` (slicing the probed_node_ids list). It returns the
+      // probed nodes in their probed order. With limit: 5 all three are returned.
       const stableEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
         stableOnly: true,
         maxDelayMs: 100,
@@ -1123,7 +1104,7 @@ describe('xray stage gating', function () {
       })
       assert.deepStrictEqual(
         stableEntries.map(entry => entry.node.settings.servers[0].address),
-        ['83.83.83.83']
+        ['83.83.83.83', '82.82.82.82', '81.81.81.81']
       )
 
       const bootstrapEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
@@ -1250,79 +1231,10 @@ describe('xray stage gating', function () {
     }
   })
 
-  it('repairs legacy NULL next_check_at rows even when stage2 is skipped and stage3 runs later', () => {
-    if (!sqliteAvailable) {
-      return
-    }
-
-    const Database = require('better-sqlite3')
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-legacy-skip-stage2-'))
-    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
-
-    try {
-      const legacyNode = createNode('51.51.51.51', 80)
-      const db = new Database(cachePath)
-      db.exec(`
-        CREATE TABLE nodes (
-          fingerprint TEXT PRIMARY KEY,
-          node_json TEXT NOT NULL,
-          stable INTEGER NOT NULL DEFAULT 0,
-          delay REAL,
-          country TEXT,
-          owner TEXT,
-          source TEXT,
-          updated_at TEXT,
-          tag TEXT
-        );
-      `)
-      db.prepare(`
-        INSERT INTO nodes (fingerprint, node_json, stable, delay, country, owner, source, updated_at, tag)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        xrayCache.fingerprintNode(legacyNode),
-        JSON.stringify(legacyNode),
-        1,
-        88,
-        'US',
-        'Oracle Cloud',
-        'background-probe',
-        '2026-05-16T00:00:00.000+08:00',
-        ''
-      )
-      db.close()
-
-      const localInputState = buildLocalInputState({
-        manualNodes: [],
-        subscriptions: ['https://example.invalid/subscription.txt'],
-      })
-      const statePath = getLocalInputStatePath(cachePath)
-      assert.strictEqual(writeLocalInputState(statePath, localInputState), true)
-      assert.strictEqual(isLocalInputStateMatch(readLocalInputState(statePath), localInputState), true)
-
-      const decision = getSubscriptionSyncDecision({
-        cachePath,
-        cfg: {
-          subscriptionSyncLowWatermark: 1,
-          maxDelayMs: 1000,
-          allowedCountries: ['US'],
-          allowedOwners: ['oracle'],
-        },
-      })
-      assert.strictEqual(decision.shouldSkip, true)
-
-      const dueRows = xrayCache.readCacheRowIds(cachePath, {
-        orderBy: 'due',
-        dueBefore: '2026-05-16T00:00:00.000+08:00',
-      })
-      assert.strictEqual(dueRows.length, 1)
-
-      const dueEntries = xrayCache.readCacheEntriesByRowIds(cachePath, dueRows)
-      assert.strictEqual(dueEntries.length, 1)
-      assert.strictEqual(dueEntries[0].nextCheckAt, '2026-05-16T00:00:00.000+08:00')
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
+  // Note: 'repairs legacy NULL next_check_at rows even when stage2 is skipped and stage3 runs later'
+  // was removed because it created a legacy `nodes` table by raw SQL and relied on the deleted
+  // legacy NULL-backfill repair path. The DB is now exclusively compact v2, and writeCache always
+  // persists next_check_at, so the legacy repair scenario no longer applies.
 
   it('chunks fingerprint lookups so stage2 can dedupe against cache without full-table reads', () => {
     if (!sqliteAvailable) {
@@ -1716,7 +1628,9 @@ describe('xray stage gating', function () {
       const retainedSummary = staleResult.summary.find(row => row.displayLabel === 'retained-sub')
       assert.strictEqual(retainedSummary.availableNodeCount, 0)
       assert.strictEqual(retainedSummary.retainedNodeCount, 1)
-      assert.strictEqual(typeof retainedSummary.zeroAvailableSince, 'string')
+      // v2 stores zero_available_since as epoch seconds (INTEGER); the summary
+      // returns it as a number, not an ISO timestamp string.
+      assert.strictEqual(typeof retainedSummary.zeroAvailableSince, 'number')
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }

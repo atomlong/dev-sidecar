@@ -1,0 +1,142 @@
+# Active Context
+
+## Current Work
+- Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除、“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化，以及 v2.1.4 的订阅 provenance / stage 3 订阅可用节点汇总 / egress probe 清理修复；当前重点是发布后 CI 与运行态观察。
+- 版本发布：`v2.1.4` 已于 2026-05-20 完成公开发布推送，随后因 macOS DMG CI 失败补推修复；当前 GitHub `origin/master`、`origin/release-v2.1.x`、tag `v2.1.4` 均指向 `7bd3cc29`，GitLab 已改用 SSH 远端并完成同步。
+- CI 修复：已处理 GitHub Actions 跨平台构建稳定性，重点包括 Windows 的 `node-gyp` Python 绑定、macOS Xray universal 合并，以及 pnpm 下 `app-builder-lib@22.14.13` 误解析 `dmg-builder@26.8.1` 的 DMG 打包失败。
+- 工作流增强：正在继续演进 `submit.sh`，本轮聚焦于移除自动代理检测、补齐上游公共仓库同步能力，并保证现有 submit/release 流程职责清晰。
+
+## Recent Changes
+- [Fix] **Copilot Web 聊天发送失败修复**：
+    - 已在真实浏览器复现 Copilot Web 页面提示 `Sorry, I didn’t get that / Not sure what happened, but I didn’t get your message`，浏览器侧对应为 `wss://copilot.microsoft.com/c/api/chat` 在收到握手响应前就关闭连接。
+    - 运行日志确认：聊天升级请求进入 `packages/mitmproxy/src/lib/proxy/mitmproxy/createUpgradeHandler.js` 后，仍调用已移除的 `DnsUtil.hasDnsLookup`，触发 `TypeError`，导致 WebSocket upgrade 在请求真正建立前就失败。
+    - 已将 upgrade 路径改为复用普通请求路径的 `DnsUtil.getDNSAndFamily` + `dnsLookup.createLookupFunc` 逻辑，并新增 `packages/mitmproxy/test/createUpgradeHandlerTest.js` 回归测试覆盖“带 DNS 配置的升级请求不会在发起前崩溃”这一场景。
+    - 用户已重新编译并重新部署修复后的版本，实机确认 Copilot Web 已恢复正常使用。
+- [Release] **v2.1.4 预发布准备**：
+    - 四个工作区包版本（core / cli / gui / mitmproxy）已提升到 `2.1.4`。
+    - `CHANGELOG.md` 的 `v2.1.4` 条目已补充 Linux SQLite/Electron 打包修复、Xray 订阅 provenance、stage 3 per-subscription 可用节点汇总、stale subscription cleanup 语义，以及 egress probe 日志/清理修复；发布前已将标题日期落到 `2026-05-20`。
+    - 已重新构建并安装 `DevSidecar-2.1.4-amd64.deb` 到 `/opt/dev-sidecar`，并重启 `dev-sidecar.service`；当前验证显示只剩主 Xray 进程，旧的卡住 PID 41600 已消失。
+- [Release] **v2.1.4 已发布**：
+    - `CHANGELOG.md` 顶部版本日期已落到 `2026-05-20`。
+    - 已提交私有记忆银行提交 `0eb8df8b` 和公共发布提交 `94761771`。
+    - `./submit.sh --push-public` 已将公共提交同步到本地 `master` 为 `ba2bd3cb`；推送 `gitlab` 时因鉴权失败中断，随后手动推送 `origin/master` 并执行 `./submit.sh --release`。
+    - 首次 GitHub Actions release run `26164715980` 在 macOS DMG 打包失败，根因是 `vue-cli-plugin-electron-builder` 调用 `electron-builder@22.14.13` 时，pnpm 让 `app-builder-lib@22.14.13` 运行期解析到了顶层 `dmg-builder@26.8.1`，触发 `packager.info.emitArtifactBuildStarted is not a function`。
+    - 已通过公共提交 `12868853` 增加 `pnpm.packageExtensions`，将 `app-builder-lib@22.14.13` 的运行期 `dmg-builder` 固定为 `22.14.13`；本地已验证冻结安装与解析路径，`packages/core` 阶段门控测试仍为 `7 passing`。
+    - `./submit.sh --push-public` 已将该修复同步到本地 `master` 为 `7bd3cc29`；因 `gitlab` 鉴权失败未能由脚本完成远端推送，随后手动推送 GitHub `origin/master`、`origin/release-v2.1.x`，并强制移动 tag `v2.1.4` 到 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
+    - 已验证 GitHub `origin/master`、`origin/release-v2.1.x` 和 tag `v2.1.4` 均指向 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`；新的 Build And Release run `26169088856` 已触发，当前状态 `in_progress`。
+    - 已将本地 `gitlab` remote 从 HTTPS 改为 `git@gitlab.com:atom.long/dev-sidecar.git`；SSH 鉴权验证通过后，已推送 GitLab `develop`、`master`、`release-v2.1.x` 和 tag `v2.1.4`。GitLab `develop` 指向 `5a4f77a5`，其余公开发布引用均指向 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
+- [Plugin] **Xray 订阅 provenance 与阶段 3 汇总**：
+    - SQLite cache 增加 `nodes.node_key`、`subscriptions` 与 `subscription_node_refs`，用于记录每个配置项订阅与节点的来源关系。
+    - 订阅 source key 现在包含配置项 occurrence，重复 URL 会按出现顺序当作不同配置项统计，不再被合并成一个订阅。
+    - 第二阶段负责同步订阅元数据和订阅到节点引用，但不把阶段 2 保留缓存当作“当前可用”。
+    - 第三阶段完整轮次会收集本轮实际可用节点 key，写出 `stage3-last-round.json`，并据此更新 per-subscription usable-node summary。
+    - `subscriptionStaleAfterDays` 属于阶段 3 配置；只有第三阶段确认订阅超过阈值仍无可用节点且没有节点引用时，才清理订阅 metadata，`nodes` 行删除仍只由第三阶段不可用探测决定。
+- [Plugin] **Xray egress probe 清理与日志区分**：
+    - `annotateProbeEntries` 已改为当节点已有 `country` 和 `owner` 时跳过 egress metadata probe，避免重复启动临时 Xray。
+    - probe 启动日志已区分 `Xray 批次探测进程` 与 `Xray 出口元数据探测进程`，避免与 config batch probe 混淆。
+    - `stopChild` 已改为按真实 PID 检查并发送 `SIGTERM` / `SIGKILL`，不再依赖 `child.killed` 状态，修复 egress 子进程可能残留的问题。
+    - PID 70068 复现后确认：临时 egress Xray 只监听本地端口且手动通过该代理请求可返回，说明子进程本身不是死锁；更准确根因是父进程的出口 IP HTTP 查询 Promise 缺少绝对超时，导致 `finally { controller.stop() }` 没机会执行。
+    - 已为 egress HTTP proxy 请求增加 `AbortController` + hard timeout，并在 `resolveEntryEgressMetadata()` 外层用 `withTimeout()` 包住整个出口 IP 查询；同时临时加入 PID 化启停日志便于观察。
+    - 经过一段观察后确认：正常情况下 egress 子进程不会再残留，因此已去掉 egress 正常启动/停止 info 日志，仅保留异常未退出告警；批次探测仍保留启动日志但不打印 pid。
+- [Release] **v2.1.3 预发布准备**：
+    - 四个工作区包版本（core / cli / gui / mitmproxy）已提升到 `2.1.3`；根 `package.json` 无版本号，不需要改。
+    - `CHANGELOG.md` 的 `v2.1.3` 条目已收敛到 staged workflow、阶段门控、egress probe 清理、Linux 打包依赖修复、Stage 3 observatory 覆盖修复与 SQLite 缩容修复。
+    - 已重新构建一版 `2.1.3` 安装包。
+- [Release] **v2.1.3 已发布**：
+    - `CHANGELOG.md` 顶部版本日期已落到 `2026-05-16`。
+    - 已在 GitHub `origin` 上推送 `master`、`release-v2.1.x` 和 tag `v2.1.3`，三者当前指向同一提交 `121daf5`。
+    - `submit.sh --push-private` / `--push-public` 在 `gitlab` 远端都因 HTTP Basic / token 鉴权失败而中断，因此私有远端 `gitlab/develop` 当前仍落后本地 `develop` 2 个提交；公开发布已通过手动 `git push origin master` + `./submit.sh --release` 完成。
+- [Plugin] **Xray 阶段门控与缓存优先模式**：
+    - 新增 `subscriptionSyncLowWatermark`：当“有效缓存数”（按 stable/maxDelay/country/owner SQLite 过滤统计）达到阈值时，第二阶段跳过远端订阅抓取，但仍保留本地源合并与缓存写回。
+    - 新增 `cacheRefreshEnabled`：允许显式关闭第三阶段后台周期探测与 metadata 回填；默认值保持兼容，为 `true`。
+    - 个人运行配置已验证“有效缓存数 = 1、lowWatermark = 1”时会跳过 245 个订阅 URL 的抓取，并在缓存同步后明确记录“跳过第三阶段”。
+- [Plugin] **Xray 第二阶段本地输入状态文件跳过**：
+    - 新增 `nodes_cache.state.json` sidecar 状态文件，与 `nodes_cache.sqlite` 同目录保存。
+    - 当前状态签名只覆盖 `cfg.nodes` 解析后的手工节点集合；签名计算会先做去重、排序，再结合 `signatureVersion` / `semanticsVersion` 生成 SHA-256。
+    - 当第二阶段判定“订阅抓取已跳过”且 `nodes_cache.state.json` 与当前本地输入签名一致时，会整段跳过第二阶段，不再全量读取缓存候选。
+    - 状态文件只在第二阶段成功完成后原子写入；文件缺失或损坏时自动回退执行第二阶段。
+    - 已完成构建、部署到 `/opt/dev-sidecar`、并通过两次重启实机验证：第一次重启写出状态文件，第二次重启日志确认 `Xray 第二阶段已跳过: 订阅抓取已跳过且本地输入未变化`。
+- [Plugin] **Xray 启动路径进一步收敛**：
+    - 第一阶段快速复检不再起 egress metadata probe，而是直接复用缓存中的 `country` / `owner`，避免额外拖慢启动并减少临时 Xray 实例数量。
+    - `resolveEntryEgressMetadata` 已改为在拿到出口 IP 后立即停止临时 Xray，再进行 country / owner 解析，避免空闲 egress 子进程泄漏。
+- [Plugin] **Xray 第一阶段 / 第二阶段职责收敛**：
+    - 第一阶段新增 `allowedOwners`，支持按 owner 名称做大小写不敏感的包含匹配与 `!cloudflare` 这类排除语法。
+    - 第一阶段 owner 过滤已改为只消费缓存中已有的 owner 或节点自带元数据，不再在启动路径里触发联网 owner 补全，避免拖慢冷启动。
+    - 第一阶段 bootstrap 候选选择已改为“边筛边取”，达到上限即停止，不再先对整份缓存做完整 country/owner 筛选后再截断；启动日志新增 `scanned` 计数，用于观察实际扫描量。
+    - `bootstrapBatchSize` 已更名为 `bootstrapCandidateLimit`，旧键 `bootstrapBatchSize` 兼容已删除；当前代码只认新键名。
+    - 第二阶段 `buildSyncedCacheEntries` 已恢复为轻量缓存同步：保留上一次缓存中已存在的 `country` / `owner` / `delay` / `stable` 等字段，并仅做本地规范化，不再对全量候选节点做主动 metadata 回填。
+    - 第三阶段仍在成功探测后通过 `annotateProbeEntries` 补充 `country` / `owner`，因此第三阶段日志在第二阶段快速完成后已重新可见。
+    - 已确认重新部署后，第二阶段执行明显变快，第三阶段日志重新出现，但本轮改动仍需要更多测试，当前不能提交。
+- [Plugin] **Xray metadata 缺失样例确认**：
+    - `sg1n.asasone.cyou` 当前 DNS 解析结果为 `NXDOMAIN`，因此既无法解析 IP，也无法补 country / owner；这类节点只能等待订阅更新地址或在后续周期探测中被淘汰。
+- [Workflow] **`submit.sh` 公共同步增强**：
+    - `--push-public` 现改为通过 `git cherry` 做 patch-id aware 去重，只同步真正尚未进入公共分支的 public commit，避免等价补丁被重复 cherry-pick。
+    - 公共同步前会自动启用 `git rerere` 与 `rerere.autoupdate`，复用历史冲突解决结果。
+    - `--push-public` 现在默认使用 `ours` 策略自动处理冲突；也可通过 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs` 覆盖默认行为。
+    - 当首次 `git cherry-pick -x --allow-empty` 冲突时，脚本会自动 `--abort` 后使用 `git cherry-pick -X <strategy>` 重试；若仍有未合并路径，则继续对剩余冲突文件执行 `--ours/--theirs` 强制收敛，再自动 `git cherry-pick --continue`。
+    - 若自动解决后发现该 cherry-pick 实际已变成空提交，脚本会自动执行 `git cherry-pick --skip`，不再把仓库卡在“已解决冲突但无法 continue”的中间状态。
+    - 已通过 `bash -n submit.sh` 语法检查、临时仓库 patch-id 跳过测试、以及真实文本冲突的自动重试策略测试。
+- [Workflow] **`submit.sh` 上游同步与网络职责收敛**：
+    - 删除脚本对本地代理端口的自动探测与 git proxy 自动改写，网络配置改由外部环境或用户自行控制。
+    - 新增 `--sync-upstream`，用于抓取 `docmirror/dev-sidecar` 的公共分支更新，先合并进本地 `master`/`main`，再回灌到 `develop`。
+    - 新增 fetch-only 的 `upstream` remote 约定，并在 `--push-private` / `--push-public` 中显式排除该 remote，避免把私有或发布分支误推到上游仓库。
+    - 修复 `--push-public` 在本地公共分支已经领先远程时仍执行 `git pull --rebase` 的问题；现在会根据 ahead/behind 状态选择跳过、fast-forward 或 merge，避免把上游同步得到的 merge 历史改写成 rebase 冲突现场。
+- [CI] **GitHub Actions 构建修复**：
+    - 在 `.github/workflows/build-and-release.yml` 中显式将 `PYTHON`、`npm_config_python`、`NODE_GYP_FORCE_PYTHON` 绑定到 `actions/setup-python` 提供的 Python 3.10，避免 Windows 上 `node-gyp` 落回 Python 3.12 并触发 `distutils` 缺失错误。
+    - 增加 CI 调试输出，便于在日志中确认 `node-gyp` 实际使用的 Python 解释器。
+    - 已确认此前移除 macOS `universal` DMG 只是临时止血，不是根因修复。
+    - 根因已进一步细化：上游 Xray 的 macOS 二进制既可能是 fat/universal Mach-O，也可能已经是目标架构的 thin Mach-O；此前无条件执行 `lipo -thin` 会在 GitHub Actions 的 macOS arm64 runner 上因为输入文件本身就是单架构而失败。
+    - 现改为在 `packages/gui/scripts/download-xray.js` 中先通过 `lipo -archs` 检测实际架构：若已是目标单架构则直接跳过，若为 fat/universal 且包含目标架构才执行 `lipo -thin`，再由 `electron-builder` 继续生成 `universal` DMG。
+    - `.github/workflows/test-and-upload.yml` 也同步固定 `node-gyp` Python 解释器，避免测试工作流与发布工作流行为不一致。
+    - v2.1.4 发布后新增 macOS DMG 根因：`app-builder-lib@22.14.13` 在 pnpm 下没有运行期可见的 `dmg-builder` 声明，可能解析到顶层 `dmg-builder@26.8.1`；已通过根 `package.json` 的 `pnpm.packageExtensions` 固定 `dmg-builder@22.14.13`。
+- [Release] **v2.1.2**：
+    - 同步升级 package 版本到 2.1.2。
+    - 更新 `CHANGELOG.md`，记录 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复。
+- [Fix] **`daily-cloudcode-pa.googleapis.com` 拦截崩溃修复**：
+    - 将 `sni`、`proxy`、`unVerifySsl`、普通请求与 Upgrade 请求路径中对 `rOptions.agent.options.rejectUnauthorized` 的直接访问改为空值安全读取。
+    - `daily-cloudcode-pa.googleapis.com` 现已可正常拦截，测试通过。
+- [Release] **v2.1.1**:
+    - 全线升级包版本至 2.1.1。
+    - 更新 `CHANGELOG.md`，反映 Xray Core 的内置化调整。
+- [Plugin] **Xray 深度集成 (Out-of-the-box)**:
+    - 移除了所有需要用户手动配置 `binPath` 的代码和 UI 元素。
+    - 新增了自动构建下载脚本 `scripts/download-xray.js`，支持根据操作系统下载全平台的 Xray 二进制和数据库文件。
+    - 修改了 `vue.config.js` 使用 electron-builder 的 `extraResources` 配合宏按需打入所需的特定平台可执行文件。
+    - 统一内部工具路径引用，通过 `getXrayExePath` 获取。
+- [Documentation]:
+    - 同步更新了 `doc/wiki/Xray插件使用说明.md`。
+
+## Next Steps
+- 观察其他依赖 DNS/SNI 改写的 WebSocket / HTTP upgrade 路径，确认没有继续保留与普通请求路径分叉的旧逻辑。
+- 继续观察 v2.1.4 安装后的 stage 3 长轮次，确认 `stage3-last-round.json`、订阅可用节点计数和 stale cleanup 语义符合预期。
+- 继续观察是否还会出现残留 `egress-*.json` 临时 Xray 进程；若复现，优先抓取 PID、父进程、cmdline、socket、日志上下文，并核对是否有对应 `正在停止 Xray 出口元数据探测进程` 日志。
+- 观察新的 GitHub Actions Build And Release run `26169088856` 是否基于 tag `v2.1.4` 正常完成，并确认 GitHub Release 附件已重新产出。
+- 继续观察 `nodes_cache.state.json` 方案在真实运行中的稳定性，确认仅基于 `cfg.nodes` 的签名范围足够，或决定是否把更多本地输入纳入签名。
+- 后续 GitLab 推送应继续使用 SSH remote，避免 HTTPS 因无凭据助手或 token 失效反复要求输入密码。
+- 决定是否在正式发布前保留当前个人配置中的“缓存优先 + 第三阶段关闭”模式，或仅将其作为高级可选能力而非默认推荐路径。
+- 针对 `NXDOMAIN`、无 country、无 owner 的节点进一步评估处理策略，决定是更激进地在第三阶段淘汰，还是引入额外轻量标记字段辅助排查。
+- 当前代码已经进入预发布整理阶段；后续优先级是发布核查，不是继续扩展新功能。
+- 通过临时仓库验证 `--sync-upstream` 的分支更新路径，并继续确认既有 `--push-private` / `--push-public` / `--release` 不受影响。
+- 若需要进一步接近真实环境验证，可在实际仓库上演练一次 `./submit.sh --push-public`，并优先确认私有 `gitlab` remote 的可达性。
+- 观察 v2.1.2 发布后的 `daily-cloudcode-pa.googleapis.com` 及其他 Google APIs 拦截路径的实际运行情况。
+- 重新触发并观察修复后的 GitHub Actions `build-and-release` / `test-and-upload` 是否在 Windows / macOS / Linux 三个平台稳定通过，尤其确认 macOS `universal` DMG 已恢复正常产出。
+- 如需要对外发布补丁版本，更新 `CHANGELOG.md` 并走 `submit.sh` 发布流程。
+
+## Active Considerations
+- **Upgrade 路径一致性**：Mitmproxy 的普通请求与 WebSocket / HTTP upgrade 请求不能各自维护一套 DNS/SNI 处理逻辑；后续凡是修改 `createRequestHandler` 的 DNS 语义时，都要同步检查 `createUpgradeHandler`，否则很容易出现“页面能开、流式聊天失败”的隐性回归。
+- **v2.1.4 发布边界**：当前对外能力应聚焦 Linux packaged SQLite/Electron 兼容、Xray 订阅 provenance、stage 3 订阅可用节点汇总、stale subscription cleanup 语义和 egress probe 根因修复，不再继续扩展新功能。
+- **订阅可用性口径**：第二阶段只能建立订阅来源关系，不能证明可用；per-subscription usable-node count 必须来自第三阶段完整轮次的实际可用节点 key。
+- **egress probe 根因定位**：残留 egress 进程若只剩本地监听且无外部连接，优先判断父进程清理链路；清理逻辑必须按 PID 确认，而不能只看 Node `child.killed`。
+- **egress probe 观察日志**：`正在停止 Xray 出口元数据探测进程: pid=...` 是临时诊断日志，用于证明 `finally -> stop()` 是否执行；若用户连续观察几天不再复现，应删除或降到 debug，避免长期刷 info 日志。
+- **v2.1.3 发布边界**：当前对外能力应聚焦 staged workflow、阶段门控、SQLite 缓存稳定性与 Linux 打包修复，不再继续往该版本塞入新的 Xray 特性。
+- **Xray 分阶段职责**：第一阶段只做冷启动所需的少量缓存候选筛选与快速复检；第二阶段必须足够轻，不应再因为全量 metadata 回填阻塞第三阶段；第三阶段才是批量探测与补全 metadata 的主路径。
+- **缓存优先模式**：`subscriptionSyncLowWatermark` 统计的是“有效缓存数”而不是原始总行数；`cacheRefreshEnabled=false` 会停止第三阶段自动修正 `country` / `owner`，因此更适合已经有足够稳定缓存、且接受 metadata 渐旧的场景。
+- **第二阶段跳过边界**：当前 `nodes_cache.state.json` 只对 `cfg.nodes` 生成签名，不把 `liveConfigBak` 当作“本地输入”；这样命中率更高，但如果未来要让更多本地来源影响第二阶段跳过，需要同步扩展签名范围或 bump `semanticsVersion`。
+- **配置迁移**：`bootstrapCandidateLimit` 是现行唯一有效键名；个人配置与 GUI 都应围绕新键名工作，不再保留 `bootstrapBatchSize` 兼容层。
+- **测试状态**：核心阶段门控测试已补充并通过；当前更需要的是发布前构建与运行态核查，而不是继续做大范围重构。
+- **发布流程**: 在打包 Xray Core 后可能会导致应用程序整体大小略有增加（约十几MB），需要观察下载体验的影响。后续需保持对 Xray-core release 版本的关注，在必要时再次发起内置核心更新的变更。
+- **拦截器健壮性**: Mitmproxy 的请求拦截链路中，`agent.options` 不能假定存在；后续新增规则需继续采用空值安全访问，避免类似空指针问题再次出现。
+- **分支纪律**: `develop` 属于私有分支，禁止推送到公共仓库；公共发布面应始终通过 `submit.sh --push-public` 同步到 `master` / `feature/*`。
+- **远端现实状态**: GitHub `origin` 与 GitLab 已同步 v2.1.4 发布引用；GitLab HTTPS 鉴权问题通过改用 SSH remote 规避。WSL 中当前没有 Git Credential Manager，若未来改回 HTTPS，需要配置凭据助手并使用 GitLab PAT 而不是账号密码。
+- **同步策略**: 当前 public sync 已具备 patch-id 去重、rerere 复用、默认 `ours` 的自动冲突收敛能力，以及空 cherry-pick 自动 skip；若特定场景更需要保留私有分支冲突块，可临时使用 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs`。
+- **上游约束**: `upstream` 仅用于 fetch 公共更新，不能参与 `--push-private` / `--push-public` 的推送目标集合。

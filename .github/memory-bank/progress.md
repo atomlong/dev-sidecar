@@ -1,0 +1,116 @@
+# Progress
+
+## Status
+- **Current Version**: 2.1.4 (Released on 2026-05-20; tag moved to CI-fix commit `7bd3cc29`)
+- **Development Branch**: `develop`
+- **Stable Branch**: `master`
+
+## Completed Features
+- [x] **CI Build Stability**:
+    - GitHub Actions 工作流已显式固定 `node-gyp` 使用 `actions/setup-python` 安装的 Python 3.10，降低 Windows 平台因 Python 3.12 缺少 `distutils` 导致的原生模块重编译失败风险。
+    - 已定位 macOS `universal` 打包失败根因为：Xray 的 macOS 二进制在进入 electron-builder 的 universal 合并流程前需要按实际架构状态处理；若是 fat/universal 需要先裁剪，若本身已是目标单架构则不能再无条件执行 `lipo -thin`。
+    - 已在 `packages/gui/scripts/download-xray.js` 中加入 `lipo -archs` 架构检测，仅对 fat/universal 的 macOS Xray 二进制执行 `lipo -thin`，并在已为目标单架构时直接复用，恢复 `universal` DMG 构建链路。
+    - `build-and-release.yml` 与 `test-and-upload.yml` 已同步固定 Python 解释器，避免两个工作流在 Windows 原生模块重建行为上出现漂移。
+    - v2.1.4 GitHub Actions macOS DMG 失败已定位为 pnpm 依赖解析混装：`app-builder-lib@22.14.13` 解析到 `dmg-builder@26.8.1`；已通过 `pnpm.packageExtensions` 固定 `dmg-builder@22.14.13`，本地验证解析路径一致。
+- [x] **Submit Workflow Hardening**:
+    - `submit.sh --push-public` 已改为基于 `git cherry` 做 patch-id aware 去重，避免公共分支重复同步等价补丁。
+    - 公共同步会自动启用 `git rerere` / `rerere.autoupdate`，复用历史冲突解决结果。
+    - 默认使用 `ours` 自动收敛 `--push-public` 冲突，并支持 `SUBMIT_PUBLIC_CONFLICT_STRATEGY=theirs` 覆盖默认策略。
+    - 在 `git cherry-pick -X <strategy>` 仍有未合并路径时，会继续对剩余冲突文件执行 `--ours/--theirs` 强制收敛并自动 `git cherry-pick --continue`。
+    - 当自动解决后发现 cherry-pick 已变成空提交时，会自动执行 `git cherry-pick --skip`，避免脚本停在公共分支等待人工处理。
+    - 已移除自动代理探测 / git proxy 自动改写逻辑，避免脚本隐式修改网络配置。
+    - 已新增 `--sync-upstream`，支持把 `docmirror/dev-sidecar` 的公共更新合并到本地公共分支并回灌到 `develop`，同时显式排除 `upstream` remote 的推送路径。
+    - 已修复 `--push-public` 对已领先远程的公共分支误做 `git pull --rebase` 的问题，改为按 ahead/behind 状态选择跳过、fast-forward 或 merge，避免真实仓库执行时掉进 detached HEAD 的 rebase 冲突状态。
+    - 已完成 shell 语法检查、patch-id skip 集成测试，以及真实文本冲突场景下的自动重试策略测试。
+- [x] **DevOps**: 
+    - 自动化 Release Notes 生成 (Based on CHANGELOG)。
+    - `submit.sh` 脚本优化（修复中文文件名支持）。
+- [x] **Xray Plugin**: 
+    - 内置打包 Xray Core 二进制文件与 `*.dat` 资源（自动下载构建），开箱即用，无需手动配置 `binPath`。
+    - 集成 Xray Core，支持 VLESS, VMess, Trojan, ShadowSocks, Reality 等高级协议。
+    - 支持订阅解析与自动更新。
+    - 支持 `tunnel://` 透明代理转发。
+    - 支持全局节点去重。
+    - 已新增 `subscriptionSyncLowWatermark`，允许在有效缓存已足够时跳过第二阶段远端订阅抓取。
+    - 已新增 `cacheRefreshEnabled`，允许显式关闭第三阶段后台周期探测。
+    - 已新增 `nodes_cache.state.json` 本地输入状态文件；当订阅已跳过且手工节点签名未变化时，第二阶段可整段跳过。
+    - 第一阶段快速复检已改为直接复用缓存 `country` / `owner`，不再启动 egress metadata probe。
+    - egress metadata 临时 Xray 进程已改为在拿到出口 IP 后立即停止，避免空闲子进程泄漏。
+    - 第一阶段现支持 `allowedOwners`，可按 owner 名称做大小写不敏感匹配与排除，例如 `!cloudflare`。
+    - 第一阶段 bootstrap 候选选择已改为边筛边取，达到 `bootstrapCandidateLimit` 即停止，减少大缓存场景下的冷启动拖延。
+    - 第二阶段已恢复为轻量缓存同步：保留旧缓存已存在的 `country` / `owner` 等 metadata，但不再对全量候选主动回填，避免阻塞第三阶段。
+    - 当前同时支持“第二阶段快速完成后进入第三阶段”和“缓存优先 + 第三阶段关闭”的两种运行模式。
+- [x] **Xray Subscription Provenance and Stage 3 Summary**:
+    - SQLite cache 已增加 `nodes.node_key`、`subscriptions`、`subscription_node_refs`，用于记录订阅来源与订阅到节点引用。
+    - 重复订阅 URL 已按配置 occurrence 生成不同 source key，避免 160 个配置项被折叠成 159 个订阅。
+    - 阶段 3 完整轮次会使用本轮实际可用节点 key 生成 per-subscription usable-node summary，并写出 `stage3-last-round.json`。
+    - `subscriptionStaleAfterDays` 已加入配置语义；订阅 metadata 只在超过阈值、无可用节点且无节点引用时清理，`nodes` 行仍只由阶段 3 不可用探测删除。
+    - `readSubscriptionAvailabilitySummary` 已改为只把当前完整阶段 3 轮次的 `availableNodeKeys` 计入 `availableNodeCount`。
+- [x] **Xray Egress Probe Lifecycle Fixes**:
+    - 已修复已有 `country` 与 `owner` 的节点仍启动 egress metadata probe 的问题。
+    - 已区分 probe 日志：批次缓存探测使用 `Xray 批次探测进程`，出口元数据探测使用 `Xray 出口元数据探测进程`。
+    - `stopChild` 已改为按真实 PID 检查并发送 `SIGTERM` / `SIGKILL`，不再因 `child.killed` 状态误判跳过仍存活的进程。
+    - egress 出口 IP 查询已增加单次 HTTP 请求 hard timeout 与外层绝对超时，避免查询 Promise 不返回导致 `finally` 无法停止临时 Xray。
+    - 已实机验证：重新构建安装 `2.1.4` 后，旧 egress PID 41600 / 70068 均已消失；后续已清理临时诊断日志，正常 egress 启停不再刷 info，批次探测启动日志保留但不打印 pid。
+- [x] **Release v2.1.4 Prep**:
+    - 已同步升级四个工作区 package 版本至 2.1.4。
+    - 已更新 `CHANGELOG.md` 的 v2.1.4 条目，并在发布前落日期 `2026-05-20`。
+    - 已重新构建并安装 `DevSidecar-2.1.4-amd64.deb`。
+    - 已运行 `packages/core` 的 Xray 阶段门控回归测试，当前为 `7 passing`。
+- [x] **Release v2.1.4 Publish**:
+    - 已推送 GitHub `origin/master`。
+    - 已推送 GitHub `origin/release-v2.1.x`。
+    - 已创建并推送 tag `v2.1.4`。
+    - 首次发布提交 `ba2bd3cb39a6f8abe98a5dcabf56bafb085590d4` 触发的 GitHub Actions run `26164715980` 因 macOS DMG 打包失败而失败。
+    - 已追加公共修复提交 `12868853`，经 `./submit.sh --push-public` 同步到本地 `master` 后对应公共提交为 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
+    - 已重新推送 GitHub `origin/master` 与 `origin/release-v2.1.x`，并强制移动 tag `v2.1.4` 到 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
+    - 新的 Build And Release run `26169088856` 已触发，当前状态为 `in_progress`。
+    - GitLab HTTPS 鉴权失败的原因是 WSL 中未配置 credential helper / Git Credential Manager，且 GitLab HTTPS 推送需要 PAT；已改用可用的 SSH remote `git@gitlab.com:atom.long/dev-sidecar.git`。
+    - 已同步 GitLab：`develop` 指向 `5a4f77a5`，`master`、`release-v2.1.x`、tag `v2.1.4` 均指向 `7bd3cc297685e4db55b1373c54e8b84f1b243a1f`。
+- [x] **Release v2.1.3 Prep**:
+    - 已同步升级四个工作区 package 版本至 2.1.3。
+    - 已更新并收缩 `CHANGELOG.md` 的 v2.1.3 条目。
+    - 已重新构建一版 2.1.3 Linux 安装包。
+    - 已通过运行日志验证：在个人配置 `subscriptionSyncLowWatermark=1`、`cacheRefreshEnabled=false` 下，第二阶段会跳过 245 个订阅 URL 抓取，第三阶段会在缓存同步后明确跳过。
+    - 已重新部署到 `/opt/dev-sidecar`，第一次重启成功写出 `nodes_cache.state.json`，第二次重启已在系统日志中验证“订阅跳过且本地输入未变化 => 第二阶段整段跳过”。
+- [x] **Release v2.1.3 Publish**:
+    - 已将 `CHANGELOG.md` 顶部版本日期设置为 `2026-05-16`。
+    - 已推送 GitHub `origin/master`。
+    - 已推送 GitHub `origin/release-v2.1.x`。
+    - 已创建并推送 tag `v2.1.3`。
+- [x] **Release v2.1.2**:
+    - 同步升级各 package 版本至 2.1.2。
+    - 更新 `CHANGELOG.md`，记录 `daily-cloudcode-pa.googleapis.com` 拦截崩溃修复。
+    - 验证 `daily-cloudcode-pa.googleapis.com` 可正常拦截。
+- [x] **Mitmproxy Robustness**:
+    - 修复 `agent.options` 为空导致的拦截崩溃问题。
+    - `sni`、`proxy`、`unVerifySsl`、普通请求与 Upgrade 请求路径已改为空值安全访问。
+    - 已验证 `daily-cloudcode-pa.googleapis.com` 可正常拦截。
+- [x] **Copilot Web Chat Compatibility**:
+    - 已在真实浏览器复现 `wss://copilot.microsoft.com/c/api/chat` 握手在响应前关闭，并对应页面提示 `Sorry, I didn’t get that`。
+    - 根因定位为 `packages/mitmproxy/src/lib/proxy/mitmproxy/createUpgradeHandler.js` 仍调用已移除的 `DnsUtil.hasDnsLookup`，导致 upgrade 代理分支在请求真正发出前抛出 `TypeError`。
+    - 已修复为复用普通请求路径的 `DnsUtil.getDNSAndFamily` 逻辑，并新增 `test/createUpgradeHandlerTest.js` 回归测试覆盖该场景。
+    - 用户重新编译并重新部署后确认：Copilot Web 已恢复正常使用。
+- [x] **Configuration**: 支持 HTTP/HTTPS/FILE 协议加载远程配置。
+- [x] **Core Proxy**: HTTP/HTTPS 拦截与代理。
+- [x] **DNS Optimization**: DNS 优选与智能解析。
+- [x] **GitHub Acceleration**: SNI 伪装、Release 加速、Clone 加速。
+- [x] **NPM Acceleration**: Registry 切换与代理。
+- [x] **GUI**: Electron 桌面应用，支持配置与日志查看。
+- [x] **System Integration**: 自动安装根证书 (Windows/Mac/Linux)，自动设置系统代理。
+
+## Known Issues
+- [ ] Windows 下关机/重启时若未退出应用，可能导致系统代理未还原（已在 1.8.9 修复，但需持续关注）。
+- [ ] 部分 Linux 系统下系统代理设置可能不生效或需要 root 权限（目前仅支持 GNOME `gsettings`）。
+- [ ] 与其他代理软件（如 Watt Toolkit、Clash）共存时可能存在端口冲突。
+- [ ] 当前 Xray staged workflow 已有定向测试与真实日志验证，但距离完整发布回归仍有差距，发布前仍应至少复查核心构建与关键运行态日志。
+- [ ] `nodes_cache.state.json` 当前只覆盖手工节点签名；若后续需要把更多本地来源纳入“本地输入未变化”的判定，需扩展签名范围并同步升级语义版本。
+- [ ] WSL 中当前没有 Git Credential Manager；GitLab 已切换为 SSH remote，若未来改回 HTTPS，需要配置 credential helper 并使用 GitLab PAT。
+- [ ] 部分节点会因域名本身解析失败而长期缺少 country / owner，例如 `sg1n.asasone.cyou` 当前解析结果为 `NXDOMAIN`；这类节点的清理策略仍需进一步确认。
+- [ ] v2.1.4 的阶段 3 全量轮次在百万级缓存上耗时很长，仍需继续观察完整轮次后的 `stage3-last-round.json`、订阅可用节点计数与 stale subscription cleanup 行为。
+- [ ] egress probe 残留问题已修复并通过 PID 41600 / 70068 个案验证，但仍应在长时间运行中观察是否还有新的 `egress-*.json` 临时 Xray 进程残留。
+
+## Roadmap
+- [ ] **v2.2.0**: 增强插件系统，支持更多自定义脚本。
+- [ ] **UI/UX**: 优化设置界面交互，支持暗色模式（已部分支持）。
+- [ ] **Platform**: 更好的 Linux 支持（Snap/Flatpak 打包）。

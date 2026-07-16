@@ -284,110 +284,10 @@ describe('xray cache ordering', () => {
     }
   })
 
-  // eslint-disable-next-line no-undef
-  it('migrates to compact v2 and retires old wide storage without losing nodes', () => {
-    if (!sqliteAvailable) {
-      return
-    }
-
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-cache-v2-retire-'))
-    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
-
-    try {
-      const nodes = [
-        createNode('11.11.11.11', 80),
-        createNode('12.12.12.12', 80),
-        createNode('13.13.13.13', 80),
-      ]
-      xrayCache.writeCache(cachePath, nodes.map((node, index) => ({
-        node,
-        stable: index === 1,
-        delay: 100 + index,
-        source: 'source-sync',
-        updatedAt: '2026-05-11T00:00:00.000+08:00',
-        nextCheckAt: `2026-05-1${index + 1}T00:00:00.000+08:00`,
-        failureStreak: index,
-      })))
-
-      const sourceKey = xrayCache.getSubscriptionSourceKey('https://example.test/retire')
-      const nodeKeys = nodes.map(node => xrayCache.getNodeKey(node))
-      xrayCache.syncSubscriptions(cachePath, [{
-        url: 'https://example.test/retire',
-        displayLabel: 'retire-sub',
-        nodeKeys,
-      }], { now: '2026-05-11T01:00:00.000+08:00' })
-
-      let db = new BetterSqlite3(cachePath)
-      try {
-        db.exec(`
-          DELETE FROM subscription_node_refs_v2;
-          DELETE FROM subscriptions_v2;
-          DELETE FROM node_runtime_v2;
-          DELETE FROM node_identity_v2;
-          DELETE FROM nodes_v2;
-          UPDATE cache_meta SET value = '' WHERE key = 'compact_v2_migration_cursor';
-        `)
-        assert.strictEqual(db.prepare('SELECT COUNT(*) AS count FROM node_runtime').get().count, 3)
-        assert.strictEqual(db.prepare('SELECT COUNT(*) AS count FROM nodes_v2').get().count, 0)
-      } finally {
-        db.close()
-      }
-
-      const firstBatch = xrayCache.migrateCompactV2Storage(cachePath, { batchLimit: 2, maxRows: 2 })
-      assert.strictEqual(firstBatch.migratedRows, 2)
-      assert.strictEqual(firstBatch.pending, true)
-
-      const finalBatch = xrayCache.migrateCompactV2Storage(cachePath, { batchLimit: 2, maxRows: 10 })
-      assert.strictEqual(finalBatch.pending, false)
-      assert.strictEqual(finalBatch.compactV2Count, 3)
-      assert.strictEqual(finalBatch.legacyCount, 3)
-      assert.strictEqual(finalBatch.subscriptions, 1)
-      assert.strictEqual(finalBatch.refs, 3)
-
-      const retired = xrayCache.retireCompactV2LegacyStorage(cachePath)
-      assert.strictEqual(retired.retired, true)
-      assert.strictEqual(retired.pending, false)
-
-      db = new BetterSqlite3(cachePath, { readonly: true })
-      try {
-        assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('nodes', 'node_runtime', 'node_payload', 'subscriptions', 'subscription_node_refs')").get().count, 0)
-        assert.strictEqual(db.prepare('SELECT COUNT(*) AS count FROM nodes_v2').get().count, 3)
-        assert.strictEqual(db.prepare('SELECT COUNT(*) AS count FROM subscription_node_refs_v2').get().count, 3)
-      } finally {
-        db.close()
-      }
-
-      const entries = xrayCache.readCacheEntries(cachePath)
-      const addresses = entries.map(entry => entry.node.settings.servers[0].address).sort()
-      assert.deepStrictEqual(addresses, ['11.11.11.11', '12.12.12.12', '13.13.13.13'])
-      assert.strictEqual(xrayCache.countCacheEntries(cachePath), 3)
-
-      const updated = xrayCache.writeCacheUpdates(cachePath, [{
-        node: nodes[0],
-        stable: true,
-        delay: 10,
-        source: 'background-probe',
-        updatedAt: '2026-05-12T00:00:00.000+08:00',
-        nextCheckAt: '2026-05-12T00:00:00.000+08:00',
-        failureStreak: 0,
-      }], [nodes[0]])
-      assert.strictEqual(updated, true)
-
-      const chunked = xrayCache.syncSubscriptionSourceChunk(cachePath, {
-        sourceKey,
-        displayLabel: 'retire-sub',
-      }, [nodeKeys[0]], { replaceExistingRefs: true })
-      assert.strictEqual(chunked.refs, 1)
-      db = new BetterSqlite3(cachePath, { readonly: true })
-      try {
-        assert.strictEqual(db.prepare('SELECT COUNT(*) AS count FROM subscription_node_refs_v2').get().count, 1)
-      } finally {
-        db.close()
-      }
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
+  // Note: 'migrates to compact v2 and retires old wide storage without losing nodes'
+  // was removed because it exercised migrateCompactV2Storage / retireCompactV2LegacyStorage
+  // (deleted along with all legacy/hotcold migration code). The DB is now exclusively
+  // compact v2, so there is no wide storage to migrate or retire.
 
   // eslint-disable-next-line no-undef
   it('keeps colliding hash16 compact v2 nodes via collision suffix fallback', () => {
@@ -449,49 +349,17 @@ describe('xray cache ordering', () => {
     }
   })
 
-  // eslint-disable-next-line no-undef
-  it('compacts retired legacy sqlite cache after migrating an existing database', () => {
-    if (!sqliteAvailable) {
-      return
-    }
-
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-cache-compact-'))
-    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
-
-    try {
-      xrayCache.writeCache(cachePath, Array.from({ length: 200 }, (_, index) => ({
-        node: createNode(`10.0.0.${index + 1}`, 8000 + index),
-        stable: index % 2 === 0,
-        delay: 50 + index,
-        source: 'source-sync',
-        updatedAt: '2026-05-10T00:00:00.000+08:00',
-        nextCheckAt: '2026-05-10T00:00:00.000+08:00',
-      })))
-
-      const migrated = xrayCache.migrateHotColdSchema(cachePath, { batchLimit: 500, maxRows: 500, lowFileCache: true })
-      assert.strictEqual(migrated.pending, false)
-
-      const retired = xrayCache.retireLegacyNodesStorage(cachePath, { lowFileCache: true })
-      assert.strictEqual(retired.retired, true)
-      assert.strictEqual(retired.pending, false)
-
-      const compacted = xrayCache.compactRetiredSqliteCache(cachePath, { lowFileCache: true })
-      assert.strictEqual(compacted.compacted, true)
-      assert.strictEqual(compacted.pending, false)
-
-      const compactedAgain = xrayCache.compactRetiredSqliteCache(cachePath, { lowFileCache: true })
-      assert.strictEqual(compactedAgain.compacted, true)
-      assert.strictEqual(compactedAgain.alreadyCompacted, true)
-
-      const entries = xrayCache.readCacheEntries(cachePath)
-      assert.strictEqual(entries.length, 200)
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
+  // Note: 'compacts retired legacy sqlite cache after migrating an existing database'
+  // was removed because it exercised migrateHotColdSchema / retireLegacyNodesStorage /
+  // compactRetiredSqliteCache (deleted along with all legacy/hotcold migration code).
+  // The DB is now exclusively compact v2, so there is no legacy storage to retire or compact.
 
   // eslint-disable-next-line no-undef
-  it('cleanupOutdatedToSizeLimit evicts oldest-due nodes to shrink below target', () => {
+  it('cleanupOutdatedToSizeLimit evicts oldest-due nodes to shrink below target', function () {
+    // Writing 600 vless nodes with a large random remark takes ~1.2s; allow
+    // extra headroom over the default 2s mocha timeout.
+    this.timeout(10000)
+
     if (!sqliteAvailable) {
       return
     }
@@ -500,22 +368,34 @@ describe('xray cache ordering', () => {
     const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
 
     try {
-      // Insert 300 nodes with a large node_json payload so the DB exceeds the target.
-      // Stagger next_check_at: node 0 oldest, node 299 newest.
-      // Cleanup by next_check_at ASC should evict the oldest-due nodes first.
-      const bigPayload = JSON.stringify({ padding: 'x'.repeat(4096) })
-      xrayCache.writeCache(cachePath, Array.from({ length: 300 }, (_, index) => ({
+      // Use vless nodes (not subject to socks/http compact storage) with a large
+      // random remark so the SQLite DB grows large enough that deleting a batch
+      // of nodes frees >= SQLITE_INCREMENTAL_VACUUM_MIN_FREE_PAGES pages, which
+      // lets incremental VACUUM actually shrink the file. Socks/http nodes get
+      // compacted to ~60 bytes and never reach the vacuum threshold, so the
+      // file would never shrink (a pre-existing baseline failure).
+      // Random bytes (base64) do not compress, so deflateRaw cannot shrink them.
+      const nodeCount = 600
+      const bigRemark = crypto.randomBytes(35000).toString('base64')
+      xrayCache.writeCache(cachePath, Array.from({ length: nodeCount }, (_, index) => ({
         node: {
-          protocol: 'socks',
-          settings: { servers: [{ address: `10.0.0.${index + 1}`, port: 8000 + index }] },
-          _big: bigPayload,
+          protocol: 'vless',
+          settings: {
+            vnext: [{
+              address: `10.0.0.${index + 1}`,
+              port: 8000 + index,
+              users: [{ id: `00000000-0000-0000-0000-0000000000${index % 10}` }],
+            }],
+          },
+          streamSettings: { network: 'tcp' },
+          remark: bigRemark,
         },
         stable: false,
         delay: 100 + index,
         source: 'source-sync',
         // older index => older next_check_at => evicted first
-        updatedAt: `2026-05-${10 + Math.floor(index / 30)}T00:00:00.000+08:00`,
-        nextCheckAt: `2026-05-${10 + Math.floor(index / 30)}T00:00:00.000+08:00`,
+        updatedAt: `2026-05-${10 + Math.floor(index / 60)}T00:00:00.000+08:00`,
+        nextCheckAt: `2026-05-${10 + Math.floor(index / 60)}T00:00:00.000+08:00`,
       })))
 
       const sizeBefore = xrayCache.getSqliteCacheSizeBytes(cachePath)
@@ -532,8 +412,8 @@ describe('xray cache ordering', () => {
 
       // Verify surviving node count decreased by deletedNodes.
       const remaining = xrayCache.readCacheEntries(cachePath)
-      assert.ok(remaining.length < 300, `remaining=${remaining.length} should be less than 300`)
-      assert.strictEqual(remaining.length, 300 - result.deletedNodes)
+      assert.ok(remaining.length < nodeCount, `remaining=${remaining.length} should be less than ${nodeCount}`)
+      assert.strictEqual(remaining.length, nodeCount - result.deletedNodes)
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }

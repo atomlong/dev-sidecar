@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [v2.1.7] - 2026-07-16
 
+### Changed
+- Removed all legacy/hotcold database migration code from the Xray cache plugin (`cache.js` -1568 lines, `index.js` -60 lines). This fork's database has been compact v2 format for a long time; the legacy `nodes` single-table, hot/cold `node_runtime`+`node_payload`, and old `subscriptions`+`subscription_node_refs` tables are no longer created or maintained. 44 dead migration/retire functions, 3 stage2 migration helper functions, and 4 unused `CACHE_META` constants were deleted. All read/write/sync functions were simplified to compact v2-only paths. This also fixes a CI test failure where `exit_ip`/`probe_protocol` columns were referenced in queries against the legacy `node_runtime` table that did not have those columns, causing `SqliteError` swallowed by catch blocks and migration returning 0 rows.
+
 ### Added
 - Added `exit_ip` column to the `node_runtime_v2` SQLite cache table to store the egress IP address of each probed node. The egress IP is obtained during Stage 3 egress metadata probing and refreshed on each probe round. Existing databases are automatically migrated via `ALTER TABLE ADD COLUMN`. The `probed-node-stats.json` report now includes an `exitIp` field for each node.
 - Added `probe_protocol` column to the `node_runtime_v2` SQLite cache table to record which probe protocol(s) each node supports (`http`, `https`, or `both`). The `probed-node-stats.json` report now includes a `probeProtocol` field for each node. Existing databases are automatically migrated via `ALTER TABLE ADD COLUMN`.
