@@ -1,0 +1,29 @@
+[Unit]
+Description=DevSideCar Service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__DS_USER__
+Group=__DS_GROUP__
+Environment=DISPLAY=:0
+Environment=DEV_SIDECAR_SERVICE_MODE=true
+RuntimeDirectory=dev-sidecar
+RuntimeDirectoryMode=0755
+ExecStart=/opt/dev-sidecar/@docmirrordev-sidecar-gui
+Restart=on-failure
+RestartSec=15
+RemainAfterExit=yes
+# Ensure all child processes are killed on stop/restart
+KillMode=control-group
+TimeoutStopSec=10
+# Soft memory limit: kernel reclaims file cache (including mmap pages) when
+# cgroup memory exceeds this, preventing peak spikes from Electron binary
+# page cache. Does NOT trigger OOM kill — only throttles and reclaims.
+# Default 512M allows Stage3 batch levels 1-4; reduce to 280M for low-memory
+# devices or increase for high-throughput level 5.
+MemoryHigh=512M
+
+[Install]
+WantedBy=multi-user.target

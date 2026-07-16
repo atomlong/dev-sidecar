@@ -1,0 +1,28 @@
+#!/bin/sh
+# DevSidecar prerm: stop service and remove systemd/sudoers files.
+# Runs as root during `apt remove` / `dpkg -r`.
+set -e
+
+SERVICE_FILE="/etc/systemd/system/dev-sidecar.service"
+SUDOERS_FILE="/etc/sudoers.d/dev-sidecar"
+HELPER_DIR="/usr/lib/dev-sidecar"
+
+# Stop and disable the service
+if [ -f "$SERVICE_FILE" ]; then
+  systemctl stop dev-sidecar.service 2>/dev/null || true
+  systemctl disable dev-sidecar.service 2>/dev/null || true
+fi
+
+# Remove systemd service file
+rm -f "$SERVICE_FILE"
+
+# Remove sudoers drop-in
+rm -f "$SUDOERS_FILE"
+
+# Remove helper scripts
+rm -rf "$HELPER_DIR"
+
+# Reload systemd
+systemctl daemon-reload 2>/dev/null || true
+
+exit 0

@@ -222,7 +222,9 @@ function buildCompactNodeRuntimeTableSchemaSql () {
       updated_at INTEGER,
       next_check_at INTEGER,
       failure_streak INTEGER NOT NULL DEFAULT 0,
-      tag TEXT
+      tag TEXT,
+      exit_ip TEXT,
+      probe_protocol TEXT
     );
   `
 }
@@ -648,6 +650,11 @@ function createCompactV2Schema (db) {
   db.exec(buildCompactNodeTableSchemaSql())
   db.exec(buildCompactNodeIdentityTableSchemaSql())
   db.exec(buildCompactNodeRuntimeTableSchemaSql())
+  // exit_ip was added after the initial schema; ALTER TABLE is needed for
+  // databases created before this column existed (CREATE TABLE IF NOT EXISTS
+  // does not add columns to an already-existing table).
+  ensureSqliteColumn(db, 'node_runtime_v2', 'exit_ip', 'TEXT')
+  ensureSqliteColumn(db, 'node_runtime_v2', 'probe_protocol', 'TEXT')
   db.exec(buildCompactSubscriptionRefsTableSchemaSql())
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_runtime_next_check_v2
@@ -994,7 +1001,7 @@ function migrateNodesToCompactV2Schema (db, options = {}) {
 
   if (hasTable(db, 'node_runtime') && hasTable(db, 'node_payload')) {
     rows = db.prepare(`
-      SELECT r.fingerprint, r.node_key, p.node_json, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+      SELECT r.fingerprint, r.node_key, p.node_json, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip, r.probe_protocol
       FROM node_runtime r
       LEFT JOIN node_payload p ON p.node_key = r.node_key
       WHERE p.node_json IS NOT NULL AND r.node_key > ?
@@ -1363,7 +1370,7 @@ function readSqliteCacheEntriesFromHotCold (db, options = {}) {
   const limit = normalizeSqliteQueryLimit(options.limit)
   const offset = normalizeSqliteQueryOffset(options.offset)
   let sql = `
-    SELECT r.node_key, p.node_json, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+    SELECT r.node_key, p.node_json, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip, r.probe_protocol
     FROM node_runtime r
     LEFT JOIN node_payload p ON p.node_key = r.node_key
     ${whereClause}
@@ -1392,7 +1399,7 @@ function readCompactV2CacheRows (db, options = {}) {
   const limit = normalizeSqliteQueryLimit(options.limit)
   const offset = normalizeSqliteQueryOffset(options.offset)
   let sql = `
-    SELECT r.node_id, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+    SELECT r.node_id, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip, r.probe_protocol
     FROM node_runtime_v2 r
     JOIN nodes_v2 n ON n.node_id = r.node_id
     ${whereClause}
@@ -1461,7 +1468,7 @@ function readCompactV2CacheEntriesByRowIds (db, rowIds) {
 
   const placeholders = uniqueRowIds.map(() => '?').join(', ')
   const rows = db.prepare(`
-    SELECT r.node_id AS rowid, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+    SELECT r.node_id AS rowid, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip, r.probe_protocol
     FROM node_runtime_v2 r
     JOIN nodes_v2 n ON n.node_id = r.node_id
     WHERE r.node_id IN (${placeholders})
@@ -1538,7 +1545,7 @@ function readSqliteCacheEntriesByRowIdsFromHotCold (db, rowIds) {
 
   const placeholders = uniqueRowIds.map(() => '?').join(', ')
   return db.prepare(`
-    SELECT r.rowid, r.node_key, p.node_json, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+    SELECT r.rowid, r.node_key, p.node_json, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip, r.probe_protocol
     FROM node_runtime r
     LEFT JOIN node_payload p ON p.node_key = r.node_key
     WHERE r.rowid IN (${placeholders})
@@ -1559,7 +1566,7 @@ function readSqliteCacheRuntimeRowsByRowIdsFromHotCold (db, rowIds) {
 
   const placeholders = uniqueRowIds.map(() => '?').join(', ')
   return db.prepare(`
-    SELECT r.rowid, r.fingerprint, r.node_key, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+    SELECT r.rowid, r.fingerprint, r.node_key, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip, r.probe_protocol
     FROM node_runtime r
     WHERE r.rowid IN (${placeholders})
   `).all(...uniqueRowIds)
@@ -1751,7 +1758,7 @@ function readSqliteCacheEntriesByFingerprintsFromHotCold (db, fingerprints) {
     const chunk = lookupFingerprints.slice(index, index + chunkSize)
     const placeholders = chunk.map(() => '?').join(', ')
     const rows = db.prepare(`
-      SELECT r.fingerprint, r.node_key, p.node_json, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag
+      SELECT r.fingerprint, r.node_key, p.node_json, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip, r.probe_protocol
       FROM node_runtime r
       LEFT JOIN node_payload p ON p.node_key = r.node_key
       WHERE r.fingerprint IN (${placeholders})
@@ -2286,6 +2293,8 @@ function serializeCacheEntryForSqlite (entry) {
     nextCheckAt: normalizedEntry.nextCheckAt || null,
     failureStreak: normalizeFailureStreak(normalizedEntry.failureStreak),
     tag: normalizedEntry.tag || '',
+    exitIp: normalizedEntry.exitIp || '',
+    probeProtocol: normalizedEntry.probeProtocol || '',
   }
 }
 
@@ -2372,8 +2381,8 @@ function upsertCompactV2CacheEntry (db, compactEntry) {
   db.prepare(`
     INSERT INTO node_runtime_v2 (
       node_id, stable, delay, country, owner, source,
-      updated_at, next_check_at, failure_streak, tag
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      updated_at, next_check_at, failure_streak, tag, exit_ip, probe_protocol
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(node_id) DO UPDATE SET
       stable = excluded.stable,
       delay = excluded.delay,
@@ -2383,7 +2392,9 @@ function upsertCompactV2CacheEntry (db, compactEntry) {
       updated_at = excluded.updated_at,
       next_check_at = excluded.next_check_at,
       failure_streak = excluded.failure_streak,
-      tag = excluded.tag
+      tag = excluded.tag,
+      exit_ip = excluded.exit_ip,
+      probe_protocol = excluded.probe_protocol
   `).run(
     nodeId,
     compactEntry.stable,
@@ -2394,7 +2405,9 @@ function upsertCompactV2CacheEntry (db, compactEntry) {
     compactEntry.updatedAtEpoch,
     compactEntry.nextCheckAtEpoch,
     compactEntry.failureStreak,
-    compactEntry.tag
+    compactEntry.tag,
+    compactEntry.exitIp || null,
+    compactEntry.probeProtocol || null
   )
 
   return {
@@ -2507,6 +2520,8 @@ function deserializeCompactV2CacheEntry (row) {
     nextCheckAt: formatEpochSecondsAsLocalTimestamp(row.next_check_at),
     failureStreak: normalizeFailureStreak(row.failure_streak),
     tag: row.tag || '',
+    exitIp: row.exit_ip || '',
+    probeProtocol: row.probe_protocol || '',
   })
 }
 
@@ -4214,9 +4229,11 @@ function reclaimCgroupMemory (bytes, options = {}) {
     fs.writeFileSync(reclaimFile, amount)
     return true
   } catch {
-    // Fall back to sudo (service user with NOPASSWD sudo)
+    // Fall back to the packaged helper script via sudo (NOPASSWD sudoers rule
+    // installed by the deb postinst). The helper writes to the fixed
+    // dev-sidecar.service cgroup path.
     try {
-      require('node:child_process').execSync(`sudo -n sh -c 'echo "${amount}" > ${reclaimFile}'`, { timeout: 5000 })
+      require('node:child_process').execSync(`sudo -n /usr/lib/dev-sidecar/reclaim-memory.sh ${amount}`, { timeout: 5000 })
       return true
     } catch {
       return false
@@ -4363,6 +4380,8 @@ function normalizeCacheEntry (entry) {
     nextCheckAt: entry.nextCheckAt || null,
     failureStreak: normalizeFailureStreak(entry.failureStreak),
     tag: entry.tag || node.tag || '',
+    exitIp: entry.exitIp || entry.exit_ip || '',
+    probeProtocol: entry.probeProtocol || entry.probe_protocol || '',
   }
 }
 
