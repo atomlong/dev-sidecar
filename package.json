@@ -16,8 +16,11 @@
   },
   "pnpm": {
     "overrides": {
+      "electron-builder": "25.1.8",
+      "app-builder-lib": "25.1.8",
+      "dmg-builder": "25.1.8",
+      "electron-builder-squirrel-windows": "25.1.8",
       "axios": ">=1.18.1",
-      "brace-expansion": ">=2.1.0",
       "cross-spawn": ">=7.0.5",
       "dns-packet": ">=5.6.1",
       "form-data": ">=4.0.6",
