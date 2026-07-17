@@ -4,7 +4,6 @@ export default function createMenus (app) {
     { title: 'Git.exe代理', path: '/plugin/git', icon: 'github' },
     { title: 'Xray代理', path: '/plugin/xray', icon: 'rocket' },
     { title: 'PIP加速', path: '/plugin/pip', icon: 'bulb' },
-    { title: '网络检测', path: '/plugin/free-eye', icon: 'eye' },
   ]
   const $global = app.$global || app.config?.globalProperties?.$global
   if ($global?.setting?.overwall) {

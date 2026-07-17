@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.2.0] - 2026-07-17
+
+### Added
+- Synced upstream v2.2.0 (63 commits from docmirror/dev-sidecar). Major upstream features integrated:
+  - TLS 1.3-only default with optional TLS 1.2 toggle (`allowTls12` config). Replaces the fork's previous `NODE_EXTRA_CA_CERTS` workaround with upstream's `REQUEST_CA_BUNDLE` environment variable approach.
+  - HTTP/2 fake server with multiplexing support for browser concurrent requests.
+  - On-demand IP probing with concurrent request scattering — when no tested alive IP is available, untested IPs are rotated in for probing instead of falling back to DNS cache.
+  - Smart IPv6 detection — static NIC scan + runtime `ENETUNREACH` fallback to avoid IPv6 timeouts on networks without IPv6 connectivity.
+  - CSP nonce injection for `'strict-dynamic'` bypass — injected scripts now carry a `nonce` attribute to pass GitHub and other CSP-protected sites.
+  - HTTP/2 pseudo-header filtering and `:authority` → `Host` mapping to prevent header leakage to upstream HTTP/1.1 requests.
+  - Chromium component disabling in Electron main process (PDF viewer, speech API, GPU rasterization, background networking, sync, phishing detection, etc.) to reduce memory and CPU usage.
+  - macOS `zip` build target for auto-update alongside `dmg`.
+  - Locale pruning — only `zh-CN.pak` is kept, saving ~15-20MB per platform.
+  - Duplicate exe cleanup in `after-pack` — removes redundant `EnableLoopback.exe`/`sysproxy.exe` from `app.asar.unpacked` (already provided via `extraResources`).
+  - Architecture-separated update ZIP filenames (`update-{platform}-{arch}-{version}.zip`).
+  - Server duplicate-start guard — if the mitmproxy child process is still alive, `start()` returns early instead of forking a new one.
+  - Startup guard for already-enabled plugins/proxy/server — prevents double-initialization on restart.
+  - Security vulnerability fixes in `pnpm.overrides` (axios, brace-expansion, cross-spawn, dns-packet, form-data, ip, minimist, qs, tough-cookie).
+  - CA certificate path validation in `setup-ca.js` — throws early with a clear error if `certPath` is empty or the file does not exist.
+  - `JsonEditor.vue` component for editing JSON config in the GUI.
+  - Theme system refactor with `variables.scss` for dark/light mode.
+
+### Changed
+- Adopted upstream `util.js`: removed the fork's `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` certificate loading logic (module-level `loadExtraCaCerts` cache, `tls.rootCertificates` merge). Upstream uses TLS 1.3 by default and provides `REQUEST_CA_BUNDLE` as a GUI-configurable environment variable.
+- Adopted upstream `dnsLookup.js`: `setDnsLookupHeader` replaced with `safeHeaderValue` (filters non-ASCII for HTTP/2 header compliance), added on-demand IP probing via `pickNextForProbing`.
+- Merged `server/index.js`: kept fork's V8 flags (`--expose-gc`, `--max-old-space-size` per batch level for OOM prevention) and added upstream's duplicate-start guard + `server.port` tracking.
+- Merged `expose.js`: kept fork's `reclaimStartupMemory()` (cgroup memory reclaim) and added upstream's `!status.xxx.enabled` guards to prevent double-startup.
+- Merged `setup-ca.js`: kept fork's `/usr/lib/dev-sidecar/setup-ca.sh` (sudoers NOPASSWD) and added upstream's path validation.
+- Merged `after-pack.cjs`: kept fork's `ensureNativeRuntimeDependencies` (fadvise-linux, better-sqlite3, bindings) and added upstream's `pruneLocales`, duplicate exe cleanup, and architecture-separated ZIP filenames.
+- Merged `electron-builder.config.cjs`: kept fork's `linuxTargets` (conditional rpm/flatpak) and adopted upstream's macOS `zip` target for CI auto-update.
+- Adopted upstream `background.js`: Chromium component switches, icon path resolution fix for production builds.
+- Adopted upstream `package.json` pnpm overrides (security fixes).
+- Adopted upstream `mitmproxy/package.json` test script (`mocha --exit` to prevent CI hangs).
+- Removed free-eye plugin from GUI router and menu (upstream uses free-eye, this fork uses xray).
+
+### Preserved (fork-specific)
+- Xray plugin with compact v2 SQLite cache, 3-stage gating, egress IP probing, dual-protocol probing, shareLink generation.
+- mitmproxy V8 flags for OOM prevention (`--expose-gc`, `--max-old-space-size` per batch level).
+- cgroup memory reclaim (`reclaimStartupMemory`, `reclaim-memory.sh`).
+- `setup-ca.sh` sudoers NOPASSWD helper.
+- `fadvise-linux` native module for Linux file cache advice.
+- Linux deb service integration (postinst/prerm/sudoers/systemd template).
+- Electron 19 + electron-builder 25 (upstream upgraded to 41/26, deferred).
+
 ## [v2.1.7] - 2026-07-16
 
 ### Changed
