@@ -36,6 +36,11 @@ const serverApi = {
   async start ({ mitmproxyPath, plugins }) {
     if (mitmproxyPath) currentMitmproxyPath = mitmproxyPath
     if (plugins) currentPlugins = plugins
+    // 防止重复启动：如果已有子进程存活，直接返回
+    if (server && server.process && !server.process.killed && server.process.exitCode == null) {
+      log.warn('server is already running, skip start (pid:', server.id, ')')
+      return { port: server.port }
+    }
 
     const allConfig = config.get()
     const serverConfig = lodash.cloneDeep(allConfig.server)
@@ -114,6 +119,7 @@ const serverApi = {
     server = {
       id: serverProcess.pid,
       process: serverProcess,
+      port: serverConfig.port,
       close () {
         serverProcess.send({ type: 'action', event: { key: 'close' } })
       },

@@ -31,7 +31,45 @@ class SpeedTester {
     this.isTesting = false
     this.isTestingBackups = false
 
+    this._probeIndex = 0 // 按需探测的轮转索引
+
     this.test() // 异步：初始化完成后先测速一次
+  }
+
+  // 按需探测：SpeedTester 未就绪时，轮转分配未失败 IP，并发请求自动分散
+  pickNextForProbing () {
+    // 第一轮：优先选未探测、未失败的 IP
+    const fresh = this.backupList.filter(item =>
+      item.status !== 'failed' && !item._probing,
+    )
+    if (fresh.length > 0) {
+      this._probeIndex = this._probeIndex % fresh.length
+      const pick = fresh[this._probeIndex]
+      this._probeIndex++
+      pick._probing = true
+      return pick
+    }
+    // 第二轮：全部都在探测中，允许复用，总比回退到 DNS 缓存好
+    const retry = this.backupList.filter(item => item.status !== 'failed')
+    if (retry.length > 0) {
+      this._probeIndex = this._probeIndex % retry.length
+      return retry[this._probeIndex++]
+    }
+    return null
+  }
+
+  // 按需探测结果反馈：记录 IP 成败，供后续请求决策
+  reportProbeResult (host, success) {
+    const item = this.backupList.find(i => i.host === host)
+    if (!item) return
+    item._probing = false
+    if (success) {
+      item.status = 'success'
+      item.time = item.time || 1
+      this.alive.push(item)
+    } else {
+      item.status = 'failed'
+    }
   }
 
   pickFastAliveIpObj () {

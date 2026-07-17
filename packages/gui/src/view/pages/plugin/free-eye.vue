@@ -1,15 +1,18 @@
 <script>
 import lodash from 'lodash'
 import Plugin from '../../mixins/plugin'
-
+import { ExperimentOutlined } from '@ant-design/icons-vue'
 export default {
   name: 'FreeEye',
   mixins: [Plugin],
+  components: { ExperimentOutlined },
   data () {
     return {
       key: 'plugin.free_eye',
       running: false,
       lastResult: null,
+      showRawLogs: false,
+      showFormattedResults: false,
       summaryColumns: [
         { title: '测试', dataIndex: 'tag', key: 'tag' },
         { title: '状态', dataIndex: 'status', key: 'status', scopedSlots: { customRender: 'status' } },
@@ -132,7 +135,8 @@ export default {
       />
 
       <div class="action-bar">
-        <a-button type="primary" icon="experiment" :loading="running" @click="runTests">
+        <a-button type="primary" :loading="running" @click="runTests">
+          <ExperimentOutlined/>
           运行检测
         </a-button>
         <span v-if="lastResult" class="last-run">最近完成：{{ formatTime(lastResult.finishedAt) }}</span>
@@ -183,19 +187,27 @@ export default {
           </template>
         </a-table>
 
-        <a-collapse class="mb16">
-          <a-collapse-panel key="raw-logs" header="原始日志">
+        <div class="mb16">
+          <a-button class="expand-toggle" block @click="showRawLogs = !showRawLogs">
+            {{ showRawLogs ? '▼' : '▶' }} 原始日志
+          </a-button>
+          <div v-if="showRawLogs" class="expand-content">
             <a-textarea
               class="raw-log-textarea"
               :value="rawLogsText"
               :autosize="{ minRows: 10 }"
               readonly
             />
-          </a-collapse-panel>
-          <a-collapse-panel key="formatted-results" header="格式化结果">
+          </div>
+        </div>
+        <div class="mb16">
+          <a-button class="expand-toggle" block @click="showFormattedResults = !showFormattedResults">
+            {{ showFormattedResults ? '▼' : '▶' }} 格式化结果
+          </a-button>
+          <div v-if="showFormattedResults" class="expand-content">
             <pre class="raw-json">{{ JSON.stringify(lastResult.results, null, 2) }}</pre>
-          </a-collapse-panel>
-        </a-collapse>
+          </div>
+        </div>
       </div>
     </div>
   </ds-container>
@@ -212,7 +224,7 @@ export default {
   margin-bottom: 16px;
 }
 .last-run {
-  color: rgba(255, 255, 255, 0.65);
+  color: var(--text-secondary);
 }
 .summary-output {
   margin: 0;
@@ -220,12 +232,23 @@ export default {
 }
 .raw-json {
   margin: 0;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--bg-highlight);
   padding: 12px;
   border-radius: 4px;
   overflow-x: auto;
 }
 .raw-log-textarea {
   white-space: pre-wrap;
+}
+.expand-toggle {
+  text-align: left;
+  margin-bottom: 0;
+}
+.expand-content {
+  padding: 12px;
+  border: 1px solid #434343;
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  background: rgba(0, 0, 0, 0.15);
 }
 </style>

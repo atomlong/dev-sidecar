@@ -123,11 +123,20 @@ export default defineComponent({
       <!-- 以下两个功能仅windows支持，mac和linux暂不支持 -->
       <a-form-item v-if="isWindows()" label="设置环境变量" :label-col="labelCol" :wrapper-col="wrapperCol">
         <a-checkbox v-model:checked="config.proxy.setEnv">
-          是否同时修改<code>HTTPS_PROXY</code>环境变量（不好用，不建议勾选）
+          是否同时修改<code>HTTPS_PROXY</code>环境变量
         </a-checkbox>
         <div class="form-help">
           当发现某些应用并没有走加速通道或加速报错时，可尝试勾选此选项，并重新开启系统代理开关<br>
           注意：当前已打开的命令行并不会实时生效，需要重新打开一个新的命令行窗口
+        </div>
+      </a-form-item>
+      <a-form-item v-if="isWindows()" label="设置CA证书路径" :label-col="labelCol" :wrapper-col="wrapperCol">
+        <a-checkbox v-model:checked="config.proxy.setCaBundle" :disabled="!config.proxy.setEnv">
+          是否同时设置<code>REQUEST_CA_BUNDLE</code>环境变量
+        </a-checkbox>
+        <div class="form-help">
+          设置为DS的CA证书路径，解决 Python/QT 等程序因不信任自签 CA 证书而报错的问题<br>
+          注意：必须先勾选上面"设置环境变量"才可启用此选项
         </div>
       </a-form-item>
       <a-form-item v-if="isWindows()" label="设置Loopback" :label-col="labelCol" :wrapper-col="wrapperCol">
@@ -219,7 +228,7 @@ export default defineComponent({
       <div>
         <div>1、此设置用于解决OneNote、MicrosoftStore、Outlook等UWP应用无法访问网络的问题。</div>
         <div>2、点击右上方按钮，打开EnableLoopback，然后按下图所示操作即可</div>
-        <img style="margin-top:20px;border:1px solid #eee" width="80%" src="loopback.png">
+        <img style="margin-top:20px;border:1px solid var(--border-color)" width="80%" src="loopback.png">
       </div>
     </a-drawer>
   </ds-container>

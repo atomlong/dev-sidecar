@@ -2,7 +2,7 @@
 import { ipcRenderer } from 'electron'
 import { ProfileOutlined, SyncOutlined, CheckOutlined } from '@ant-design/icons-vue'
 import Plugin from '../mixins/plugin'
-import { colorTheme } from '../composables/theme'
+import { setThemeMode } from '../composables/theme'
 
 export default {
   name: 'Setting',
@@ -194,11 +194,8 @@ export default {
     async applyAfter () {
       let reloadLazy = 10
 
-      let theme = this.config.app.theme
-      if (theme === 'system') {
-        theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-      }
-      colorTheme.value = theme
+      // 应用主题设置
+      setThemeMode(this.config.app.theme)
 
       // 判断远程配置地址是否变更过，如果是则重载远程配置并重启服务
       if (this.config.app.remoteConfig.url !== this.urlBackup || this.config.app.remoteConfig.personalUrl !== this.personalUrlBackup) {
@@ -495,7 +492,7 @@ export default {
       </a-form-item>
       <a-form-item label="最大日志文件大小" :label-col="labelCol" :wrapper-col="wrapperCol">
         <a-input-number ref="maxLogFileSize" v-model:value="config.app.maxLogFileSize" :step="maxLogFileSizeStep" :min="0" spellcheck="false" />
-        <a-select v-model:value="config.app.maxLogFileSizeUnit" class="ml5" @change="onMaxLogFileSizeUnitChange">
+        <a-select v-model:value="config.app.maxLogFileSizeUnit" style="width:80px; margin-left:5px; vertical-align: middle" @change="onMaxLogFileSizeUnitChange">
           <a-select-option v-for="(item) of maxLogFileSizeUnit" :key="item.value" :value="item.value">
             {{ item.label }}
           </a-select-option>

@@ -165,6 +165,13 @@ function updateHandle (app, api, win, beforeQuit, quit, log) {
             log.info(`版本比对结果：isNewVersion('${onlineVersion}', '${curVersion}') = ${isNew}`)
             if (isNew > 0) {
               log.info(`检查更新：发现新版本 '${onlineVersion}'，当前版本号为 '${curVersion}'`)
+
+              // 查找当前平台+架构对应的增量更新包
+              const arch = process.arch === 'ia32' ? 'ia32' : process.arch === 'arm64' ? 'arm64' : 'x64'
+              const platformPrefix = isMac ? `update-mac-${arch}-` : isLinux ? `update-linux-${arch}-` : `update-win-${arch}-`
+              const partAsset = versionData.assets.find(a => a.name && a.name.startsWith(platformPrefix) && a.name.endsWith('.zip'))
+              const partPackage = partAsset ? partAsset.browser_download_url : null
+
               win.webContents.send('update', {
                 key: 'available',
                 value: {
@@ -172,6 +179,7 @@ function updateHandle (app, api, win, beforeQuit, quit, log) {
                   releaseNotes: versionData.body
                     ? (versionData.body.replace(/\r\n/g, '\n').replace(/https:\/\/github.com\/docmirror\/dev-sidecar/g, '').replace(/(?<=(^|\n))[ \t]*(?:#[ #]*)?#\s*/g, '') || '无')
                     : '无',
+                  partPackage,
                 },
               })
             } else {
@@ -194,11 +202,23 @@ function updateHandle (app, api, win, beforeQuit, quit, log) {
             bodyObj = null
           }
 
+          let detail = bodyObj && bodyObj.message ? bodyObj.message : ''
+          if (!detail) {
+            // 尝试从 DS 的 HTML 错误页面提取错误描述
+            const titleMatch = typeof body === 'string' && body.match(/<title>([^<]*)<\/title>/i)
+            if (titleMatch) {
+              detail = titleMatch[1]
+            } else if (response && response.statusMessage) {
+              detail = response.statusMessage
+            } else if (typeof body === 'string') {
+              detail = body.substring(0, 200)
+            }
+          }
           let message
           if (response) {
-            message = `检查更新失败: ${bodyObj && bodyObj.message ? bodyObj.message : response.message}, code: ${response.statusCode}`
+            message = `检查更新失败: ${detail}, code: ${response.statusCode}`
           } else {
-            message = `检查更新失败: ${bodyObj && bodyObj.message ? bodyObj.message : body}`
+            message = `检查更新失败: ${detail || body}`
           }
           win.webContents.send('update', { key: 'error', action: 'checkForUpdate', error: message })
         }

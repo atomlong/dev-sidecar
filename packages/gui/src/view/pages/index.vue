@@ -63,16 +63,36 @@ export default {
     await this.reloadConfig()
     this.status = this.$status
     this.switchBtns = this.createSwitchBtns()
-    this.update = this.$global.update
-    if (!this.update.autoChecked && this.config.app.autoChecked) {
-      this.update.autoChecked = true // 应用启动时，执行一次
-      this.doCheckUpdate(false)
+    // 合并全局更新参数到 data() 中的默认值，避免 $global.update 尚未
+    // 初始化时（update/front.js 在 mount 之后才执行）覆盖为 undefined
+    if (this.$global.update) {
+      Object.assign(this.update, this.$global.update)
     }
+    // 自动检查更新 延后到 mounted 中处理（等待代理服务启动后再执行）
     this.$api.info.get().then((ret) => {
       this.info = ret
     })
   },
   mounted () {
+    // 自动检查更新：等待代理服务启动后再执行，避免代理未就绪时
+    // 直接请求 GitHub API 导致超时或失败
+    const tryAutoCheck = () => {
+      if (!this.config || !this.update) return
+      if (this.update.autoChecked) return
+      if (!this.config.app.autoChecked) return
+      this.update.autoChecked = true
+      this.$watch('status.server.enabled', (enabled) => {
+        if (enabled) {
+          this.doCheckUpdate(false)
+        }
+      }, { immediate: true })
+    }
+    // mounted 时 config 可能尚未加载完毕（created 是 async 的），
+    // 先试一次，不行就等 config 就绪后再试
+    tryAutoCheck()
+    if (!this.config) {
+      this.$watch('config', () => { tryAutoCheck() }, { immediate: true })
+    }
   },
   methods: {
     async modeChange (event) {
@@ -142,8 +162,20 @@ export default {
       return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${milliseconds}`
     },
     async handleCaSetuped () {
-      console.log('this.config.server.setting.rootCaFile.certPath', this.config.server.setting.rootCaFile.certPath)
-      await this.$api.shell.setupCa({ certPath: this.config.server.setting.rootCaFile.certPath })
+      const certPath = this.config?.server?.setting?.rootCaFile?.certPath
+      console.log('certPath:', certPath)
+      if (!certPath) {
+        this.$message.error('证书路径未配置，请先启动代理服务生成 CA 根证书后再试')
+        return
+      }
+      // 获取系统平台类型：Linux 用 shell.setupCa 复制证书，
+      // Windows/macOS 用 Electron 主进程 shell.openPath 避免 cmd.exe 权限问题
+      const platform = await this.$api.info.getSystemPlatform()
+      if (platform === 'linux') {
+        await this.$api.shell.setupCa({ certPath })
+      } else {
+        await this.$api.shell.openPath(certPath)
+      }
       this.setting.rootCa = this.setting.rootCa || {}
       const rootCa = this.setting.rootCa
 
@@ -156,7 +188,7 @@ export default {
       // 删除noTip数据
       // delete rootCa.noTip
 
-      this.$api.setting.save(this.setting)
+      this.$api.setting.save(JSON.parse(JSON.stringify(this.setting)))
     },
     reloadConfig () {
       return this.$api.config.reload().then((ret) => {
@@ -422,23 +454,23 @@ export default {
         height: 100px;
         border-radius: 100px;
         transition: all 0.3s ease;
-        border: 2px solid #d9d9d9;
-        background-color: #fff;
+        border: 2px solid var(--btn-border);
+        background-color: var(--btn-bg);
 
         &:hover {
-          border-color: #40a9ff;
-          box-shadow: 0 0 8px rgba(24, 144, 255, 0.2);
+          border-color: var(--accent-hover);
+          box-shadow: 0 0 8px var(--accent-shadow);
         }
 
         /* 激活状态 */
         &.is-active {
-          background-color: #1890ff;
-          border-color: #1890ff;
-          box-shadow: 0 0 12px rgba(24, 144, 255, 0.4);
+          background-color: var(--accent-color);
+          border-color: var(--accent-color);
+          box-shadow: 0 0 12px var(--accent-shadow);
 
           &:hover {
-            background-color: #40a9ff;
-            border-color: #40a9ff;
+            background-color: var(--accent-hover);
+            border-color: var(--accent-hover);
           }
         }
       }
@@ -452,11 +484,11 @@ export default {
       margin-top: 10px;
       font-size: 14px;
       font-weight: 500;
-      color: #666;
+      color: var(--text-secondary);
       transition: color 0.3s ease;
 
       &.is-active {
-        color: #1890ff;
+        color: var(--accent-color);
         font-weight: 600;
       }
     }
@@ -484,5 +516,10 @@ export default {
 
 div.ant-form-item {
   margin-bottom: 9px;
+}
+
+/* 表单标签固定宽度，防止不同长度文字导致按钮错位 */
+.page_index .ant-form-item-label {
+  flex: 0 0 100px !important;
 }
 </style>

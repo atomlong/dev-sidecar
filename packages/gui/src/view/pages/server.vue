@@ -2,7 +2,7 @@
 import { defineComponent } from 'vue';
 
 import _ from 'lodash'
-import { Vue3JsonEditor } from 'vue3-json-editor'
+import JsonEditor from '@/view/components/JsonEditor.vue'
 import { CheckOutlined, InfoCircleOutlined, PlusOutlined, MinusOutlined, SyncOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import Plugin from '../mixins/plugin'
 
@@ -10,7 +10,7 @@ export default defineComponent({
   name: 'Server',
 
   components: {
-    Vue3JsonEditor,
+    JsonEditor,
     CheckOutlined,
     InfoCircleOutlined,
     PlusOutlined,
@@ -300,6 +300,14 @@ export default defineComponent({
                 如果目标网站证书有问题，但你想强行访问，可以临时关闭此项
               </div>
             </a-form-item>
+            <a-form-item label="允许TLS1.2" :label-col="labelCol" :wrapper-col="wrapperCol">
+              <a-checkbox v-model:checked="config.server.setting.allowTls12">
+                允许使用TLS1.2访问目标网站
+              </a-checkbox>
+              <div class="form-help">
+                ⚠️ 警告：启用后会允许降级到TLS1.2，TLS1.2会泄露目标网站证书，从而暴露访问网站足迹；在网络受到严重监控的环境下有高度隐私风险，除非必须兼容旧站点请勿开启。
+              </div>
+            </a-form-item>
             <a-form-item label="根证书" :label-col="labelCol" :wrapper-col="wrapperCol">
               <a-input-search
                 v-model:value="config.server.setting.rootCaFile.certPath" addon-before="Cert" enter-button="选择"
@@ -333,7 +341,7 @@ export default defineComponent({
         </a-tab-pane>
         <a-tab-pane key="2" tab="拦截设置">
           <div v-if="activeTabKey === '2'" style="height:100%">
-            <Vue3JsonEditor
+            <JsonEditor
               v-model="config.server.intercepts" style="height:100%" mode="code"
               :show-btns="false" :expanded-on-start="true"
             />
@@ -347,7 +355,7 @@ export default defineComponent({
             </a-form-item>
             <hr style="margin-bottom:15px">
             <div>这里指定域名的超时时间：<span class="form-help">（域名配置可使用通配符或正则）</span></div>
-            <Vue3JsonEditor
+            <JsonEditor
               v-model="config.server.setting.timeoutMapping" style="flex-grow:1;min-height:300px;margin-top:10px" mode="code"
               :show-btns="false" :expanded-on-start="true"
             />
@@ -385,7 +393,7 @@ export default defineComponent({
             <div>
               说明：<code>自动兼容程序</code>会自动根据错误信息进行兼容性调整，并将兼容设置保存在 <code>~/.dev-sidecar/automaticCompatibleConfig.json</code> 文件中。但并不是所有的兼容设置都是正确的，所以需要通过以下配置来覆盖错误的兼容设置。
             </div>
-            <Vue3JsonEditor
+            <JsonEditor
               v-model="config.server.compatible" style="flex-grow:1;min-height:300px;margin-top:10px;" mode="code"
               :show-btns="false" :expanded-on-start="true"
             />
@@ -397,7 +405,7 @@ export default defineComponent({
               提示：<code>IP预设置</code>功能，优先级高于 <code>DNS设置</code>
               <span class="form-help">（域名配置可使用通配符或正则）</span>
             </div>
-            <Vue3JsonEditor
+            <JsonEditor
               v-model="config.server.preSetIpList" style="flex-grow:1;min-height:300px;margin-top:10px;" mode="code"
               :show-btns="false" :expanded-on-start="true"
             />
@@ -405,7 +413,7 @@ export default defineComponent({
         </a-tab-pane>
         <a-tab-pane key="7" tab="DNS服务管理">
           <div v-if="activeTabKey === '7'" style="height:100%">
-            <Vue3JsonEditor
+            <JsonEditor
               v-model="config.server.dns.providers" style="height:100%" mode="code"
               :show-btns="false" :expanded-on-start="true"
             />
@@ -544,11 +552,18 @@ export default defineComponent({
     }
   }
 
-  .jsoneditor-vue {
+  .json-editor-wrapper {
+    display: flex;
+    flex-direction: column;
     height: 100%;
+    min-height: 400px;
   }
 
   .ant-tabs {
+    height: 100%;
+  }
+
+  .ant-tabs-content-holder {
     height: 100%;
   }
 

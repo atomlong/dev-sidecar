@@ -70,6 +70,10 @@ if (enableFlatpak && hasExecutable('flatpak') && hasExecutable('flatpak-builder'
   })
 }
 
+// 本地开发自动检测当前平台和架构，CI 构建全部架构
+const isCI = !!process.env.CI
+const localArch = process.arch === 'ia32' ? 'ia32' : process.arch === 'arm64' ? 'arm64' : 'x64'
+
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
   appId: 'dev-sidecar',
@@ -84,6 +88,13 @@ module.exports = {
     output: 'dist_electron',
     buildResources: 'build',
   },
+  asar: {
+    smartUnpack: true,
+  },
+  asarUnpack: [
+    'src/bridge/mitmproxy.js',
+    'dist/icon.png',
+  ],
   files: [
     {
       from: 'dist',
@@ -108,6 +119,7 @@ module.exports = {
     },
     'src/**/*',
     'package.json',
+    // extra/ 在 extraResources 中已复制，此处不需要再打包进 asar
   ],
   extraResources: [
     {
@@ -151,12 +163,16 @@ module.exports = {
   },
   win: {
     icon: 'build/icons/',
-    target: [
-      {
-        target: 'nsis',
-        arch: ['x64', 'ia32', 'arm64'],
-      },
-    ],
+    signAndEditExecutable: isCI, // 本地开发跳过签名
+    target: isCI
+      ? [
+          { target: 'nsis', arch: ['x64'] },
+          { target: 'nsis', arch: ['ia32'] },
+          { target: 'nsis', arch: ['arm64'] },
+        ]
+      : [
+          { target: 'nsis', arch: [localArch] },
+        ],
   },
   linux: {
     icon: 'build/mac/',
@@ -174,10 +190,12 @@ module.exports = {
   },
   mac: {
     icon: './build/mac/icon.icns',
-    target: {
-      target: 'dmg',
-      arch: ['x64', 'arm64'],
-    },
+    target: isCI
+      ? [
+          { target: 'dmg', arch: ['x64', 'arm64'] },
+          { target: 'zip', arch: ['x64', 'arm64'] },
+        ]
+      : { target: 'dmg', arch: [localArch] },
     category: 'public.app-category.developer-tools',
   },
   publish: publishProvider
