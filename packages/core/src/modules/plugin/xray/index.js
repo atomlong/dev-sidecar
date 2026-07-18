@@ -501,19 +501,11 @@ function fetchTextThroughHttpProxy ({ proxyPort, url, timeoutMs = 5000 }) {
   })
 }
 
-async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeProtocol = '' }) {
+async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT }) {
   const perUrlTimeout = 8000
   let lastError = new Error('Egress IP lookup failed')
 
-  // Filter URL list by the node's probeProtocol so egress IP lookup uses
-  // a protocol the node is known to support. If probeProtocol is 'https',
-  // only HTTPS URLs are tried (node only supports port 443). If 'http' or
-  // 'both' (or unknown), all URLs are tried (HTTP first, then HTTPS).
-  const urls = probeProtocol === 'https'
-    ? EGRESS_IP_LOOKUP_URLS.filter(url => url.startsWith('https://'))
-    : EGRESS_IP_LOOKUP_URLS
-
-  for (const lookupUrl of urls) {
+  for (const lookupUrl of EGRESS_IP_LOOKUP_URLS) {
     try {
       const text = await fetchTextThroughHttpProxy({
         proxyPort,
@@ -1573,7 +1565,6 @@ function writeProbedNodeStats ({ xrayDir, cachePath }) {
       country,
       owner: entry.owner || '',
       exitIp: entry.exitIp || '',
-      probeProtocol: entry.probeProtocol || '',
       delay: entry.delay || 0,
       stable: entry.stable === true,
       protocol: (entry.node && (entry.node.protocol || entry.node.type)) || 'unknown',
@@ -1806,7 +1797,7 @@ function applyStage3ProbeResults ({
   }
 }
 
-async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeLifecycle = null, probeProtocol = '' }) {
+async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeLifecycle = null }) {
   if (!node || typeof node !== 'object') {
     return { country: '', owner: '' }
   }
@@ -1855,7 +1846,6 @@ async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeou
       detectEgressAddressThroughProxy({
         proxyPort,
         timeoutMs,
-        probeProtocol,
       }),
       timeoutMs + 1000,
       `Egress metadata lookup timeout after ${timeoutMs}ms`
@@ -1906,7 +1896,6 @@ async function annotateProbeEntries (entries, options = {}) {
           node: entry && entry.node,
           log: logger,
           probeLifecycle: options.probeLifecycle,
-          probeProtocol: entry && entry.probeProtocol,
         })
       } catch (error) {
         logger.warn(`Xray egress metadata 探测失败: delay=${entry && entry.delay}ms, error=${error && error.message}`)
@@ -1940,7 +1929,6 @@ async function annotateProbeEntries (entries, options = {}) {
       owner: resolvedOwner,
       country: resolvedCountry,
       exitIp: (metadata && metadata.exitIp) || (existingEntry && existingEntry.exitIp) || '',
-      probeProtocol: entry && entry.probeProtocol || (existingEntry && existingEntry.probeProtocol) || '',
     }
   })
 }
@@ -2353,71 +2341,15 @@ const Plugin = function (context) {
 
     const configuredProbeUrl = cfg.probeUrl || pluginConfig.probeUrl
 
-    // Derive the alternate protocol URL so both HTTP and HTTPS are always tried.
-    // If the configured probeUrl is HTTP, the alternate is HTTPS (and vice versa).
-    // This ensures nodes that only support port 80 (HTTP) or port 443 (HTTPS)
-    // are both discovered regardless of which protocol the user configured.
-    let alternateProbeUrl = null
-    if (configuredProbeUrl && configuredProbeUrl.startsWith('http://')) {
-      alternateProbeUrl = configuredProbeUrl.replace(/^http:/, 'https:')
-    } else if (configuredProbeUrl && configuredProbeUrl.startsWith('https://')) {
-      alternateProbeUrl = configuredProbeUrl.replace(/^https:/, 'http:')
-    }
-
-    if (!alternateProbeUrl) {
-      return await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: configuredProbeUrl, probeSamples: effectiveProbeSamples })
-    }
-
-    // Determine protocol labels for each pass
-    const primaryProto = configuredProbeUrl.startsWith('https') ? 'https' : 'http'
-    const alternateProto = alternateProbeUrl.startsWith('https') ? 'https' : 'http'
-
-    // Primary probe: probe ALL nodes with the configured probeUrl
-    const primaryResult = await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: configuredProbeUrl, probeSamples: effectiveProbeSamples })
-
-    // Fallback probe: probe ALL nodes with the alternate protocol
-    log.info(`Xray 后台探测: 补充 ${alternateProto.toUpperCase()} 探测全部 ${batchNodes.length} 个节点, probeUrl=${alternateProbeUrl}`)
-
-    const alternateResult = await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: alternateProbeUrl, probeSamples: effectiveProbeSamples })
-
-    // Merge results: a node may appear in primary, alternate, or both.
-    // probeProtocol: 'http' | 'https' | 'both'
-    const entryByFingerprint = new Map()
-    const observedFingerprintSet = new Set()
-
-    for (const entry of primaryResult.entries) {
-      const fp = xrayCache.fingerprintNode(entry.node)
-      if (fp) {
-        entryByFingerprint.set(fp, { ...entry, probeProtocol: primaryProto })
-        observedFingerprintSet.add(fp)
-      }
-    }
-
-    for (const entry of alternateResult.entries) {
-      const fp = xrayCache.fingerprintNode(entry.node)
-      if (fp) {
-        if (entryByFingerprint.has(fp)) {
-          // Node succeeded in both passes
-          entryByFingerprint.get(fp).probeProtocol = 'both'
-        } else {
-          entryByFingerprint.set(fp, { ...entry, probeProtocol: alternateProto })
-        }
-        observedFingerprintSet.add(fp)
-      }
-    }
-
-    // Merge observed fingerprints from both passes
-    for (const fp of primaryResult.observedFingerprints) {
-      observedFingerprintSet.add(fp)
-    }
-    for (const fp of alternateResult.observedFingerprints) {
-      observedFingerprintSet.add(fp)
-    }
-
-    return {
-      entries: [...entryByFingerprint.values()],
-      observedFingerprints: [...observedFingerprintSet],
-    }
+    // Single-pass probe: probe ALL nodes once with the configured probeUrl.
+    // The dual-protocol (HTTP + HTTPS) probing was reverted because:
+    // 1. Probing twice doubled the per-batch latency.
+    // 2. The "probeProtocol" classification was inaccurate — nodes flagged
+    //    as HTTP-only were frequently also reachable over 443 in practice.
+    // 3. Proxying plain HTTP (port 80) traffic has little practical value;
+    //    the vast majority of proxied traffic is HTTPS, so the configured
+    //    probeUrl's protocol is authoritative.
+    return await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: configuredProbeUrl, probeSamples: effectiveProbeSamples })
   }
 
   async function runSingleProbePass ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl, probeSamples }) {

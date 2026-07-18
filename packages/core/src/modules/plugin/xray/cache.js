@@ -186,8 +186,7 @@ function buildCompactNodeRuntimeTableSchemaSql () {
       next_check_at INTEGER,
       failure_streak INTEGER NOT NULL DEFAULT 0,
       tag TEXT,
-      exit_ip TEXT,
-      probe_protocol TEXT
+      exit_ip TEXT
     );
   `
 }
@@ -479,7 +478,6 @@ function createCompactV2Schema (db) {
   // databases created before this column existed (CREATE TABLE IF NOT EXISTS
   // does not add columns to an already-existing table).
   ensureSqliteColumn(db, 'node_runtime_v2', 'exit_ip', 'TEXT')
-  ensureSqliteColumn(db, 'node_runtime_v2', 'probe_protocol', 'TEXT')
   db.exec(buildCompactSubscriptionRefsTableSchemaSql())
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_runtime_next_check_v2
@@ -800,7 +798,7 @@ function readCompactV2CacheRows (db, options = {}) {
   const limit = normalizeSqliteQueryLimit(options.limit)
   const offset = normalizeSqliteQueryOffset(options.offset)
   let sql = `
-    SELECT r.node_id, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip, r.probe_protocol
+    SELECT r.node_id, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip
     FROM node_runtime_v2 r
     JOIN nodes_v2 n ON n.node_id = r.node_id
     ${whereClause}
@@ -869,7 +867,7 @@ function readCompactV2CacheEntriesByRowIds (db, rowIds) {
 
   const placeholders = uniqueRowIds.map(() => '?').join(', ')
   const rows = db.prepare(`
-    SELECT r.node_id AS rowid, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip, r.probe_protocol
+    SELECT r.node_id AS rowid, n.node_json_compressed, r.stable, r.delay, r.country, r.owner, r.source, r.updated_at, r.next_check_at, r.failure_streak, r.tag, r.exit_ip
     FROM node_runtime_v2 r
     JOIN nodes_v2 n ON n.node_id = r.node_id
     WHERE r.node_id IN (${placeholders})
@@ -1273,7 +1271,6 @@ function serializeCacheEntryForSqlite (entry) {
     failureStreak: normalizeFailureStreak(normalizedEntry.failureStreak),
     tag: normalizedEntry.tag || '',
     exitIp: normalizedEntry.exitIp || '',
-    probeProtocol: normalizedEntry.probeProtocol || '',
   }
 }
 
@@ -1360,8 +1357,8 @@ function upsertCompactV2CacheEntry (db, compactEntry) {
   db.prepare(`
     INSERT INTO node_runtime_v2 (
       node_id, stable, delay, country, owner, source,
-      updated_at, next_check_at, failure_streak, tag, exit_ip, probe_protocol
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      updated_at, next_check_at, failure_streak, tag, exit_ip
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(node_id) DO UPDATE SET
       stable = excluded.stable,
       delay = excluded.delay,
@@ -1372,8 +1369,7 @@ function upsertCompactV2CacheEntry (db, compactEntry) {
       next_check_at = excluded.next_check_at,
       failure_streak = excluded.failure_streak,
       tag = excluded.tag,
-      exit_ip = excluded.exit_ip,
-      probe_protocol = excluded.probe_protocol
+      exit_ip = excluded.exit_ip
   `).run(
     nodeId,
     compactEntry.stable,
@@ -1385,8 +1381,7 @@ function upsertCompactV2CacheEntry (db, compactEntry) {
     compactEntry.nextCheckAtEpoch,
     compactEntry.failureStreak,
     compactEntry.tag,
-    compactEntry.exitIp || null,
-    compactEntry.probeProtocol || null
+    compactEntry.exitIp || null
   )
 
   return {
@@ -1474,7 +1469,6 @@ function deserializeCompactV2CacheEntry (row) {
     failureStreak: normalizeFailureStreak(row.failure_streak),
     tag: row.tag || '',
     exitIp: row.exit_ip || '',
-    probeProtocol: row.probe_protocol || '',
   })
 }
 
@@ -2839,7 +2833,6 @@ function normalizeCacheEntry (entry) {
     failureStreak: normalizeFailureStreak(entry.failureStreak),
     tag: entry.tag || node.tag || '',
     exitIp: entry.exitIp || entry.exit_ip || '',
-    probeProtocol: entry.probeProtocol || entry.probe_protocol || '',
   }
 }
 
