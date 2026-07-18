@@ -5,7 +5,6 @@ on:
     branches:
       - run*
       - test*
-      - release*
     paths-ignore:
       - "_script/**"
       - "doc/**"
@@ -20,6 +19,7 @@ permissions:
 jobs:
   npm-run-electron:
     runs-on: ${{ contains(matrix.os, '-arm') && matrix.os || format('{0}-latest', matrix.os) }}
+    timeout-minutes: 30
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
