@@ -44,7 +44,12 @@ All notable changes to this project will be documented in this file.
 - `setup-ca.sh` sudoers NOPASSWD helper.
 - `fadvise-linux` native module for Linux file cache advice.
 - Linux deb service integration (postinst/prerm/sudoers/systemd template).
-- Electron 19 + electron-builder 25 (upstream upgraded to 41/26, deferred).
+- better-sqlite3 native module via `npm:@atomlong/better-sqlite3@12.12.0` alias, loaded from `app.asar.unpacked` at runtime through `__non_webpack_require__` fallback.
+
+### Upgraded (previously deferred)
+- Electron 19.1.9 → 41.3.0 (Chromium 119 → 134, Node 16 → 24).
+- electron-builder 25.1.8 → 26.8.1 (with app-builder-lib, dmg-builder, squirrel-windows pinned to 26.8.1 via pnpm overrides).
+- `preelectron:build` simplified to skip `install-app-deps` (native rebuild handled by `rebuild-core-native.js`); `loadBetterSqlite3` falls back to `__non_webpack_require__` against `app.asar.unpacked` when `require('better-sqlite3')` fails inside the asar archive.
 
 ## [v2.1.7] - 2026-07-16
 
