@@ -38,13 +38,16 @@ All notable changes to this project will be documented in this file.
 - Removed free-eye plugin from GUI router and menu (upstream uses free-eye, this fork uses xray).
 
 ### Preserved (fork-specific)
-- Xray plugin with compact v2 SQLite cache, 3-stage gating, egress IP probing, dual-protocol probing, shareLink generation.
+- Xray plugin with compact v2 SQLite cache, 3-stage gating, egress IP probing, shareLink generation.
 - mitmproxy V8 flags for OOM prevention (`--expose-gc`, `--max-old-space-size` per batch level).
 - cgroup memory reclaim (`reclaimStartupMemory`, `reclaim-memory.sh`).
 - `setup-ca.sh` sudoers NOPASSWD helper.
 - `fadvise-linux` native module for Linux file cache advice.
 - Linux deb service integration (postinst/prerm/sudoers/systemd template).
 - better-sqlite3 native module via `npm:@atomlong/better-sqlite3@12.12.0` alias, loaded from `app.asar.unpacked` at runtime through `__non_webpack_require__` fallback.
+
+### Changed (post-sync)
+- Reverted dual-protocol Stage 3 batch probing back to single-pass probing with the configured `probeUrl`. The dual-protocol (HTTP + HTTPS) probing introduced in v2.1.7 doubled per-batch latency, produced inaccurate `probeProtocol` classification (nodes flagged HTTP-only were frequently also reachable over 443), and proxying plain HTTP (port 80) had little practical value. Removed the `probe_protocol` column from the `node_runtime_v2` SQLite schema, removed `probeProtocol` from `probed-node-stats.json` output, and removed the egress-IP-lookup URL filtering by `probeProtocol` in `detectEgressAddressThroughProxy` (all lookup URLs are now always tried, HTTP first).
 
 ### Upgraded (previously deferred)
 - Electron 19.1.9 → 41.3.0 (Chromium 119 → 134, Node 16 → 24).
