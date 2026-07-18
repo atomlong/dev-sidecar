@@ -94,16 +94,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-builder-cache-
 
-      - name: "Set C++17 compiler flags (Linux / macOS)"
+      - name: "Set C++20 compiler flags (Linux / macOS)"
         if: ${{ matrix.os != 'windows' }}
         run: |
-          echo "CXXFLAGS=-std=c++17" >> $GITHUB_ENV
+          echo "CXXFLAGS=-std=c++20" >> $GITHUB_ENV
           echo "CFLAGS=-std=c11" >> $GITHUB_ENV
 
-      - name: "Set C++17 compiler flags (Windows)"
+      - name: "Set C++20 compiler flags (Windows)"
         if: ${{ matrix.os == 'windows' }}
         run: |
-          echo "CL=/std:c++17" >> $env:GITHUB_ENV
+          echo "CL=/std:c++20" >> $env:GITHUB_ENV
 
       - name: "pnpm install"
         run: |
