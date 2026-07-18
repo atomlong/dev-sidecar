@@ -10,7 +10,7 @@
     "linux"
   ],
   "scripts": {
-    "install": "node-gyp rebuild"
+    "install": "node -e \"if(process.platform==='linux'){require('child_process').execSync('node-gyp rebuild',{stdio:'inherit'})}\""
   },
   "dependencies": {
     "bindings": "^1.5.0",
