@@ -1,6 +1,6 @@
 {
   "name": "@docmirror/mitmproxy",
-  "version": "2.2.1",
+  "version": "2.2.0",
   "private": false,
   "description": "",
   "author": "docmirror.cn",
@@ -10,7 +10,7 @@
   ],
   "main": "src/index.js",
   "scripts": {
-    "test": "mocha --exit test/createUpgradeHandlerTest.js test/lodashTest.js test/matchTest.js test/matchUtilTest.js test/monkeyTest.js test/pacTest.js test/responseReplaceTest.js test/utilTest.js"
+    "test": "mocha --exit"
   },
   "dependencies": {
     "@docmirror/dev-sidecar": "workspace:*",
