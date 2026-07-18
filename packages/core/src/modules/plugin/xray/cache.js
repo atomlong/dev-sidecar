@@ -37,8 +37,21 @@ function loadBetterSqlite3 () {
     betterSqlite3 = require('better-sqlite3')
     betterSqlite3LoadError = null
   } catch (error) {
-    betterSqlite3 = null
-    betterSqlite3LoadError = error
+    // In packaged Electron builds, pnpm alias dependencies are not resolved
+    // into the asar archive by electron-builder. The package is copied to
+    // app.asar.unpacked by after-pack.cjs. Load directly from there.
+    try {
+      const nodePath = require('node:path')
+      const resourcesPath = process.resourcesPath || ''
+      const unpackedPath = nodePath.join(resourcesPath, 'app.asar.unpacked', 'node_modules', 'better-sqlite3')
+      // Use __non_webpack_require__ to bypass webpack's static analysis
+      const dynamicRequire = (typeof __non_webpack_require__ !== 'undefined') ? __non_webpack_require__ : require
+      betterSqlite3 = dynamicRequire(unpackedPath)
+      betterSqlite3LoadError = null
+    } catch (fallbackError) {
+      betterSqlite3 = null
+      betterSqlite3LoadError = error
+    }
   }
   return betterSqlite3
 }

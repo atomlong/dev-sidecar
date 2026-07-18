@@ -20,7 +20,7 @@
     "@docmirror/mitmproxy": "workspace:*",
     "@starknt/sysproxy": "^0.0.3",
     "@vscode/sudo-prompt": "^9.3.2",
-    "better-sqlite3": "github:WiseLibs/better-sqlite3#v12.12.0",
+    "better-sqlite3": "npm:@atomlong/better-sqlite3@12.12.0",
     "fix-path": "^3.0.0",
     "iconv-lite": "^0.6.3",
     "lodash": "^4.18.1",

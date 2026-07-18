@@ -15,7 +15,7 @@ const coreDir = path.resolve(__dirname, '..', '..', 'core')
 const betterSqlite3Dir = path.join(coreDir, 'node_modules', 'better-sqlite3')
 
 if (!fs.existsSync(path.join(betterSqlite3Dir, 'package.json'))) {
-  console.warn('[rebuild-core-native] better-sqlite3 not found in core, skipping')
+  console.warn('[rebuild-core-native] @atomlong/better-sqlite3 not found in core, skipping')
   process.exit(0)
 }
 
