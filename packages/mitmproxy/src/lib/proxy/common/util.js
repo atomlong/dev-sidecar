@@ -56,42 +56,7 @@ const httpAgentCache = {}
 
 let socketId = 0
 
-let httpOverHttpAgent, httpsOverHttpAgent, httpOverHttpsAgent, httpsOverHttpsAgent
-
-// 读取 NODE_EXTRA_CA_CERTS 指向的 PEM 文件中的证书，与 Node 内置根证书合并。
-// Electron 打包应用会忽略 NODE_EXTRA_CA_CERTS 环境变量，这里显式读取并传入 ca 选项绕过该限制。
-// 模块级缓存：CA 文件运行时不变，只加载一次。null=未加载，false=加载失败/未配置，string[]=证书列表
-let extraCaCerts = null
-
-function loadExtraCaCerts () {
-  if (extraCaCerts !== null) return extraCaCerts
-  const caPath = process.env.NODE_EXTRA_CA_CERTS || process.env.SSL_CERT_FILE
-  if (!caPath) {
-    extraCaCerts = false
-    return false
-  }
-  try {
-    const pem = fs.readFileSync(caPath, 'utf8')
-    const certs = []
-    const re = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g
-    let m
-    while ((m = re.exec(pem)) !== null) {
-      certs.push(m[0])
-    }
-    if (certs.length === 0) {
-      log.warn(`NODE_EXTRA_CA_CERTS 指向的文件未找到 PEM 证书: ${caPath}`)
-      extraCaCerts = false
-    } else {
-      // 合并 Node 内置根证书 + 额外 CA：ca 选项会替换内置 CA，需手动追加以保持兼容
-      extraCaCerts = tls.rootCertificates.concat(certs)
-      log.info(`从 NODE_EXTRA_CA_CERTS 加载了 ${certs.length} 个证书（已与 ${tls.rootCertificates.length} 个内置根证书合并）: ${caPath}`)
-    }
-  } catch (e) {
-    log.warn(`读取 NODE_EXTRA_CA_CERTS 失败: ${caPath}, ${e.message}`)
-    extraCaCerts = false
-  }
-  return extraCaCerts
-}
+let httpsOverHttpAgent, httpOverHttpsAgent, httpsOverHttpsAgent
 
 function getTimeoutConfig (hostname, serverSetting) {
   const timeoutMapping = serverSetting.timeoutMapping
@@ -125,6 +90,8 @@ function createHttpsAgent (timeoutConfig, verifySsl) {
       keepAliveTimeout: timeoutConfig.keepAliveTimeout,
       checkServerIdentity,
       rejectUnauthorized: verifySsl,
+      minVersion: allowTls12 ? 'TLSv1.2' : 'TLSv1.3',
+      maxVersion: 'TLSv1.3',
       ...caOption,
     })
 
@@ -134,6 +101,8 @@ function createHttpsAgent (timeoutConfig, verifySsl) {
       keepAliveTimeout: timeoutConfig.keepAliveTimeout,
       checkServerIdentity,
       rejectUnauthorized: false,
+      minVersion: allowTls12 ? 'TLSv1.2' : 'TLSv1.3',
+      maxVersion: 'TLSv1.3',
       ...caOption,
     })
 
@@ -276,10 +245,7 @@ util.getOptionsFromRequest = (req, ssl, externalProxy = null, serverSetting, com
 util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
   // eslint-disable-next-line node/no-deprecated-api
   const urlObj = URL.parse(externalProxyUrl)
-  let protocol = urlObj.protocol || 'http:'
-  if (protocol === 'tunnel:') {
-    protocol = 'http:'
-  }
+  const protocol = urlObj.protocol || 'http:'
   let port = urlObj.port
   if (!port) {
     port = protocol === 'http:' ? 80 : 443
@@ -316,15 +282,15 @@ util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
     }
   } else {
     if (protocol === 'http:') {
-      if (!httpOverHttpAgent) {
-        httpOverHttpAgent = tunnelAgent.httpOverHttp({
-          proxy: {
-            host: hostname,
-            port,
-          },
-        })
-      }
-      return httpOverHttpAgent
+      // if (!httpOverHttpAgent) {
+      //     httpOverHttpAgent = tunnelAgent.httpOverHttp({
+      //         proxy: {
+      //             host: hostname,
+      //             port: port
+      //         }
+      //     })
+      // }
+      return false
     } else {
       if (!httpOverHttpsAgent) {
         httpOverHttpsAgent = tunnelAgent.httpOverHttps({
