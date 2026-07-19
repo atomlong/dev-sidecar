@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
 jobs:
   test-and-upload:
-    runs-on: ${{ format('{0}-latest', matrix.os) }}
+    runs-on: ${{ matrix.runs-on }}
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
@@ -41,6 +41,13 @@ jobs:
           - macos
         node:
           - 22
+        include:
+          - os: windows
+            runs-on: windows-2022
+          - os: ubuntu
+            runs-on: ubuntu-latest
+          - os: macos
+            runs-on: macos-latest
     steps:
       - name: "Checkout"
         uses: actions/checkout@v4.1.7
