@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.2.1] - Unreleased
+## [v2.2.1] - 2026-07-19
 
 ### Fixed
 - Restored `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` certificate loading logic in `packages/mitmproxy/src/lib/proxy/common/util.js` that was inadvertently removed when syncing upstream v2.2.0. The v2.2.0 sync adopted upstream's `util.js` on the assumption that the new `REQUEST_CA_BUNDLE` environment variable approach replaced the fork's `NODE_EXTRA_CA_CERTS` workaround; however, the two solve different problems and are complementary, not substitutes:
