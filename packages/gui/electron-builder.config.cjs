@@ -83,6 +83,14 @@ module.exports = {
   appId: 'dev-sidecar',
   productName: 'dev-sidecar',
   artifactName: 'DevSidecar-${version}-${arch}.${ext}',
+  // Skip electron-builder's built-in native module rebuild (npmRebuild).
+  // - better-sqlite3 is rebuilt for the Electron ABI by
+  //   scripts/rebuild-core-native.js in the postelectron:build hook.
+  // - fadvise-linux is Linux-only and compiled during pnpm install on Linux.
+  // Setting npmRebuild: false prevents electron-builder from invoking
+  // node-gyp for fadvise-linux on Windows/macOS (which lack the VS C++
+  // workload), fixing Windows CI failures.
+  npmRebuild: false,
   asarUnpack: [
     '**/node_modules/better-sqlite3/**/*',
     '!**/node_modules/better-sqlite3/build/node_gyp_bins{,/**/*}',
