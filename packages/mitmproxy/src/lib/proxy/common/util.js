@@ -245,7 +245,12 @@ util.getOptionsFromRequest = (req, ssl, externalProxy = null, serverSetting, com
 util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
   // eslint-disable-next-line node/no-deprecated-api
   const urlObj = URL.parse(externalProxyUrl)
-  const protocol = urlObj.protocol || 'http:'
+  let protocol = urlObj.protocol || 'http:'
+  // tunnel:// 是 DS 的伪协议，表示通过 HTTP CONNECT 隧道转发到本地 Xray 入站端口。
+  // Xray 的入站协议是 http（HTTP 代理），因此 tunnel: 等价于 http:。
+  if (protocol === 'tunnel:') {
+    protocol = 'http:'
+  }
   let port = urlObj.port
   if (!port) {
     port = protocol === 'http:' ? 80 : 443
