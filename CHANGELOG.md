@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.2.1] - Unreleased
+
+### Fixed
+- Restored `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` certificate loading logic in `packages/mitmproxy/src/lib/proxy/common/util.js` that was inadvertently removed when syncing upstream v2.2.0. The v2.2.0 sync adopted upstream's `util.js` on the assumption that the new `REQUEST_CA_BUNDLE` environment variable approach replaced the fork's `NODE_EXTRA_CA_CERTS` workaround; however, the two solve different problems and are complementary, not substitutes:
+  - `REQUEST_CA_BUNDLE` is read by **client applications** (curl, Python requests, etc.) to trust DevSidecar's MITM CA — it does not affect DevSidecar's own outbound HTTPS handshakes.
+  - `NODE_EXTRA_CA_CERTS` is read by Node.js `HttpsAgent` for DevSidecar's **outbound** TLS handshakes to target sites — and the Electron-bundled Node runtime ignores this env var, so the CA list must be read from the PEM file and passed explicitly via the `ca` option.
+  - Without this restoration, DevSidecar on corporate networks with TLS interception (SASE devices) fails outbound HTTPS handshakes with `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` because it does not trust the corporate re-signing CA. The restored `loadExtraCaCerts` reads the PEM file, merges the certificates with Node's built-in root certificates, and passes the combined list via the `ca` option to both `agentkeepalive`'s `HttpsAgent` (verify and `unVerifySsl` variants) and `tunnel-agent`'s `httpsOverHttp`/`httpsOverHttps`. Module-level cache ensures the file is read only once per process.
+
+### Added
+- Added TCP connect timeout retry in `packages/mitmproxy/src/lib/proxy/mitmproxy/createRequestHandler.js`. When `proxyRequestPromise()` rejects with a connection timeout (hardcoded 7s TCP connect timeout), the request is retried up to 2 more times (`MAX_CONNECT_RETRIES = 2`, 3 total attempts). The `RequestCounter` mechanism switches to the next backup IP on each failure via `doCount(ip, true)` → `changeNext`, so each retry attempt targets a different IP. This complements the existing IP-switch-on-next-request behavior by also recovering the current request instead of letting it fail. Only errors whose message contains `连接超时` are retried; all other errors propagate immediately.
+
 ## [v2.2.0] - 2026-07-17
 
 ### Added

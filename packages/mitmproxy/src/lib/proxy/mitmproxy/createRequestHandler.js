@@ -293,7 +293,21 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
         return false
       }
 
-      const proxyRes = await proxyRequestPromise()
+      const MAX_CONNECT_RETRIES = 2 // 连接超时后最多重试 2 次（共 3 次尝试）
+      let proxyRes = null
+      for (let attempt = 0; attempt <= MAX_CONNECT_RETRIES; attempt++) {
+        try {
+          proxyRes = await proxyRequestPromise()
+          break
+        } catch (e) {
+          // 仅在连接超时（7s TCP connect timeout）时重试，其他错误直接抛出
+          if (e && e.message && e.message.includes('连接超时') && attempt < MAX_CONNECT_RETRIES) {
+            log.warn(`连接超时，切换 IP 后重试 ${attempt + 1}/${MAX_CONNECT_RETRIES}: ${url}`)
+            continue
+          }
+          throw e
+        }
+      }
 
       // proxyRes.on('data', (chunk) => {
       //   // log.info('BODY: ')
