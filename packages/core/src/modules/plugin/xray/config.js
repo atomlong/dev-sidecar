@@ -47,7 +47,12 @@ module.exports = {
   subscriptions: [], // 订阅地址列表
   nodes: [], // 手动节点列表
   rules: [], // 路由规则 [{domain: 'openai.com', outboundTag: 'proxy'}]
-  probeUrl: 'https://www.google.com/generate_204',
+  // probeUrl 用于 Xray observatory 探测节点可用性。
+  // 必须用 HTTPS（443）而非 HTTP（80）：许多免费 HTTP 代理节点只支持 80 端口转发，
+  // 不支持 443 的 CONNECT 隧道。用 HTTP 探测会误判这些节点为"可用"，但实际访问
+  // HTTPS 站点（如 chatgpt.com）时会连接被重置。
+  // www.gstatic.com 在大陆可直连（0.1s），适合 CN 节点探测。
+  probeUrl: 'https://www.gstatic.com/generate_204',
   probeInterval: 300,
 
   // Exported so server/index.js and xray/index.js can look up the per-level

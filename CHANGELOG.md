@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.2.2] - 2026-07-19
+
+### Fixed
+- Restored `tunnel:` → `http:` protocol conversion in `packages/mitmproxy/src/lib/proxy/common/util.js` (`getTunnelAgent`) that was lost when syncing upstream v2.2.0. The v2.1.6 code had an explicit `if (protocol === 'tunnel:') { protocol = 'http:' }` mapping because `tunnel://127.0.0.1:10801` is DevSidecar's pseudo-protocol for forwarding HTTPS traffic to the local Xray HTTP inbound via HTTP CONNECT. Without this conversion, `tunnel:` did not match `http:` or `https:`, so `getTunnelAgent` fell through to `httpsOverHttps` — which attempts a TLS handshake to the Xray HTTP inbound port, causing Xray to reject the TLS ClientHello bytes as `malformed HTTP request`. This broke all Xray-tunneled domains (chatgpt.com, openai.com, linux.do) after v2.2.0.
+
+### Changed
+- Changed the Xray plugin's default `probeUrl` from `https://www.google.com/generate_204` to `https://www.gstatic.com/generate_204` in `packages/core/src/modules/plugin/xray/config.js`. The old default (`www.google.com`) is not directly reachable from mainland China, so CN-based proxy nodes could not complete the observatory probe. The new default (`www.gstatic.com`) is reachable from mainland China (~0.1s) and uses HTTPS (port 443), which ensures only nodes that actually support 443 CONNECT tunneling are marked as available. Previously, an HTTP probeUrl (e.g. `http://connect.rom.miui.com/generate_204`) would pass nodes that only support port 80 forwarding, causing `ECONNRESET` when users accessed HTTPS sites through the Xray tunnel.
+
 ## [v2.2.1] - 2026-07-19
 
 ### Fixed
