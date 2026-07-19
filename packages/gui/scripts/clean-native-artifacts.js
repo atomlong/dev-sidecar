@@ -53,4 +53,17 @@ module.exports = {
 if (require.main === module) {
   removeBetterSqliteNodeGypBins()
   removeFadviseLinuxNodeGypBins()
+
+  // On non-Linux platforms, remove fadvise-linux's binding.gyp so that
+  // electron-builder's npmRebuild (which runs node-gyp on all native deps)
+  // skips it instead of failing with "Could not find Visual Studio".
+  // fadvise-linux is Linux-only (os: ["linux"]) and its index.js gracefully
+  // handles the missing native binding on other platforms.
+  if (process.platform !== 'linux') {
+    const fadviseBindingGyp = path.resolve(__dirname, '../../fadvise-linux/binding.gyp')
+    if (fs.existsSync(fadviseBindingGyp)) {
+      fs.rmSync(fadviseBindingGyp, { force: true })
+      console.log('removed fadvise-linux/binding.gyp (non-Linux platform, prevents electron-builder rebuild failure)')
+    }
+  }
 }
