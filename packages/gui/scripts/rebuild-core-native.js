@@ -42,11 +42,16 @@ const env = {
   npm_config_disturl: 'https://electronjs.org/headers',
 }
 
-const result = cp.spawnSync('npx', ['node-gyp', 'rebuild', '--release'], {
+// Resolve the local node-gyp binary from the workspace's node_modules
+// instead of relying on `npx node-gyp` which may pull an older version
+// (e.g. 9.4.1) that cannot find Visual Studio 2022 on Windows CI runners.
+// The workspace pnpm install provides node-gyp@12.x which supports VS 2022.
+const nodeGypBin = require.resolve('node-gyp/bin/node-gyp.js', { paths: [path.resolve(__dirname, '..', '..', '..')] })
+
+const result = cp.spawnSync(process.execPath, [nodeGypBin, 'rebuild', '--release'], {
   cwd: betterSqlite3Dir,
   stdio: 'inherit',
   env,
-  shell: true,
 })
 
 if (result.status !== 0) {
