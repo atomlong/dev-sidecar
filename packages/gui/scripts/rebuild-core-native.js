@@ -42,11 +42,39 @@ const env = {
   npm_config_disturl: 'https://electronjs.org/headers',
 }
 
-// Resolve the local node-gyp binary from the workspace's node_modules
-// instead of relying on `npx node-gyp` which may pull an older version
-// (e.g. 9.4.1) that cannot find Visual Studio 2022 on Windows CI runners.
-// The workspace pnpm install provides node-gyp@12.x which supports VS 2022.
-const nodeGypBin = require.resolve('node-gyp/bin/node-gyp.js', { paths: [path.resolve(__dirname, '..', '..', '..')] })
+// Resolve the local node-gyp@12 binary from the workspace's .pnpm store.
+// `npx node-gyp` and `require.resolve('node-gyp/...')` may resolve to
+// node-gyp@9.4.1 (an older version) which uses VisualStudioFinder
+// that cannot detect Visual Studio 2022 on Windows CI runners.
+// node-gyp@12.x supports VS 2022 correctly.
+const pnpmDir = path.resolve(__dirname, '..', '..', '..', 'node_modules', '.pnpm')
+let nodeGypBin = null
+if (fs.existsSync(pnpmDir)) {
+  const dirs = fs.readdirSync(pnpmDir).filter(d => d.startsWith('node-gyp@'))
+  // Pick the highest version (node-gyp@12.x preferred over 9.x)
+  dirs.sort((a, b) => {
+    const va = parseInt(a.replace('node-gyp@', ''))
+    const vb = parseInt(b.replace('node-gyp@', ''))
+    return vb - va
+  })
+  for (const dir of dirs) {
+    const candidate = path.join(pnpmDir, dir, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js')
+    if (fs.existsSync(candidate)) {
+      nodeGypBin = candidate
+      break
+    }
+  }
+}
+if (!nodeGypBin) {
+  // Fallback: try resolving from node_modules
+  try {
+    nodeGypBin = require.resolve('node-gyp/bin/node-gyp.js')
+  } catch {
+    console.error('[rebuild-core-native] Could not find node-gyp binary')
+    process.exit(1)
+  }
+}
+console.log('[rebuild-core-native] using node-gyp:', nodeGypBin)
 
 const result = cp.spawnSync(process.execPath, [nodeGypBin, 'rebuild', '--release'], {
   cwd: betterSqlite3Dir,
