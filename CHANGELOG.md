@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.2.3] - Unreleased
+## [v2.2.3] - 2026-07-23
 
 ### Fixed
 - Fixed mitmproxy child process crashing with `SIGABRT` (V8 heap OOM) on corporate networks after running for ~1-2 hours under high-concurrency HTTPS traffic. Root cause: 7 `log.error` call sites in `packages/mitmproxy/src/lib/proxy/mitmproxy/createRequestHandler.js` passed the full `rOptions` object to `jsonApi.stringify2(rOptions)`. Because `rOptions` contains the `HttpsAgent` instance (circular references), `JSON.stringify` throws, and `stringify2`'s catch fallback (`return obj`) hands the raw object back to log4js, which then `util.inspect`-expands the entire agent — including every `HttpsAgent.sockets` key. On corporate networks each socket key is `host:port::<full 141-cert PEM>` (because `loadExtraCaCerts` merges `tls.rootCertificates` + the corporate root CA into the `ca` array passed to every agent), so a single error log produces a multi-megabyte string. Under high-concurrency error bursts (e.g. Xray-tunneled `chatgpt.com` requests failing with `EPROTO`), dozens of these dumps accumulate in the V8 heap faster than GC can reclaim them, exhausting the 96 MB old-space cap and aborting the process. Added a `safeROptionsForLog(rOptions)` helper that extracts only scalar fields (`protocol`, `method`, `hostname`, `port`, `path`, `servername`, `headers`, etc.) and strips `agent`/`socket`/`ca`; all 7 call sites now log `jsonApi.stringify2(safeROptionsForLog(rOptions))`, which serializes cleanly to a small JSON string with no fallback to the raw object. This keeps `MemoryHigh` at 512 MB (service template) / ≤300 MB (user constraint) viable without raising the V8 heap cap.
