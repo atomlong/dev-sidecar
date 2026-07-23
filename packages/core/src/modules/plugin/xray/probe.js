@@ -1,5 +1,6 @@
 const { spawn } = require('node:child_process')
 const http = require('node:http')
+const { moveProcessToIsolatedCgroup, cleanupIsolatedCgroup } = require('./util.cgroup')
 
 function getObservatoryStatusMap (metrics) {
   const observatory = metrics && (metrics.observatory || metrics.burstObservatory || metrics.Observatory || metrics.BurstObservatory)
@@ -200,6 +201,19 @@ function startXrayProcess ({ binPath, configPath, log, purpose = 'probe' }) {
     throw new Error('Failed to start Xray probe process')
   }
 
+  // Move the probe process into an isolated cgroup so its file cache (from
+  // reading the 800MB+ SQLite cache) does NOT count against dev-sidecar's
+  // MemoryHigh limit. This is critical for cold-boot memory: without this,
+  // xray probe file pages (~137MB) stack with the service's anon memory and
+  // push memory.current to ~230MB against a 280MB limit.
+  const isolatedCgroup = moveProcessToIsolatedCgroup(child.pid)
+  if (isolatedCgroup) {
+    child.__isolatedCgroup = isolatedCgroup
+    if (log && typeof log.debug === 'function') {
+      log.debug(`[Xray Probe] 已将探测进程 PID=${child.pid} 移至隔离 cgroup: ${isolatedCgroup}`)
+    }
+  }
+
   if (log && typeof log.info === 'function') {
     const label = purpose === 'egress'
       ? 'Xray 出口元数据探测进程'
@@ -226,6 +240,13 @@ function startXrayProcess ({ binPath, configPath, log, purpose = 'probe' }) {
     }
     if (text && log && typeof log.debug === 'function') {
       log.debug(`[Xray Probe Error] ${text}`)
+    }
+  })
+
+  // Clean up the isolated cgroup when the probe process exits
+  child.on('close', () => {
+    if (child.__isolatedCgroup) {
+      cleanupIsolatedCgroup()
     }
   })
 

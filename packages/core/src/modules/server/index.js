@@ -91,25 +91,13 @@ const serverApi = {
     }
     // Pass V8 flags to the mitmproxy child process via execArgv.
     // --expose-gc exposes global.gc for explicit GC during stage3 cache refresh.
-    // --max-old-space-size caps V8 old space per batch level. Note: Node.js fork
-    // accepts bare V8 flags in execArgv (verified), but does NOT accept
-    // --js-flags=... (causes SIGKILL exit 9 because Node.js doesn't recognize
-    // the Chromium-specific --js-flags switch).
-    //   Keep STAGE3_MAX_OLD_SPACE_BY_LEVEL in sync with
-    //   STAGE3_BATCH_LEVEL_TABLE in modules/plugin/xray/config.js.
-    //   level 1 (64):   48 MB   — low-memory devices (Raspberry Pi)
-    //   level 2 (128):  80 MB   — default, steady heap ~15 MB
-    //   level 3 (256):  128 MB  — moderate throughput
-    //   level 4 (512):  256 MB  — high throughput
-    //   level 5 (1024): 512 MB  — max coverage
-    const STAGE3_MAX_OLD_SPACE_BY_LEVEL = { 1: 48, 2: 80, 3: 128, 4: 256, 5: 512 }
-    const rawBatchLevel = Number.parseInt(allConfig.plugin?.xray?.cacheRefreshBatchLevel, 10)
-    const batchLevel = Number.isInteger(rawBatchLevel) && rawBatchLevel >= 1 && rawBatchLevel <= 5
-      ? rawBatchLevel
-      : 2
-    const maxOldSpaceSize = STAGE3_MAX_OLD_SPACE_BY_LEVEL[batchLevel]
+    // --max-old-space-size caps V8 old space of the mitmproxy child process.
+    // Note: this only affects the mitmproxy Node.js child process, NOT the xray
+    // probe binary (which is a Go executable spawned separately and moved to an
+    // isolated cgroup). mitmproxy steady-state heap is ~15MB, so 96MB gives 6x
+    // headroom — sufficient for all throughput levels.
     const serverProcess = fork(mitmproxyPath, [runningConfigPath], {
-      execArgv: ['--expose-gc', `--max-old-space-size=${maxOldSpaceSize}`],
+      execArgv: ['--expose-gc', '--max-old-space-size=96'],
     })
     server = {
       id: serverProcess.pid,

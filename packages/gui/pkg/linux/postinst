@@ -59,12 +59,47 @@ update-ca-certificates
 CA_EOF
 chmod 0755 "$HELPER_DIR/setup-ca.sh"
 
+cat > "$HELPER_DIR/xray-probe-cgroup.sh" <<'XRAY_CGROUP_EOF'
+#!/bin/bash
+# Manage isolated cgroup for xray probe processes.
+# Moves a probe PID into /sys/fs/cgroup/system.slice/dev-sidecar-xray-probe.scope
+# so its file cache (from reading 800MB+ SQLite) does NOT count against
+# dev-sidecar.service's MemoryHigh limit. Critical for cold-boot memory.
+# Called by dev-sidecar at runtime via sudo (NOPASSWD sudoers rule).
+# Usage:
+#   xray-probe-cgroup.sh create <pid>   # create cgroup + move PID
+#   xray-probe-cgroup.sh cleanup        # remove empty cgroup after probe exits
+SCOPE_PATH="/sys/fs/cgroup/system.slice/dev-sidecar-xray-probe.scope"
+ACTION="$1"
+case "$ACTION" in
+  create)
+    PID="$2"
+    if [ -z "$PID" ]; then
+      echo "Usage: xray-probe-cgroup.sh create <pid>" >&2
+      exit 1
+    fi
+    mkdir -p "$SCOPE_PATH" 2>/dev/null || true
+    echo "max" > "$SCOPE_PATH/memory.high" 2>/dev/null || true
+    echo "$PID" > "$SCOPE_PATH/cgroup.procs" 2>/dev/null || true
+    ;;
+  cleanup)
+    rmdir "$SCOPE_PATH" 2>/dev/null || true
+    ;;
+  *)
+    echo "Usage: xray-probe-cgroup.sh [create <pid>|cleanup]" >&2
+    exit 1
+    ;;
+esac
+XRAY_CGROUP_EOF
+chmod 0755 "$HELPER_DIR/xray-probe-cgroup.sh"
+
 # --- Install sudoers drop-in ---
 cat > "$SUDOERS_FILE" <<SUDOERS_EOF
 # Managed by dev-sidecar package — do not edit manually.
 # Allows the service user to run dev-sidecar helper scripts without a password.
 $DS_USER ALL=(root) NOPASSWD: $HELPER_DIR/reclaim-memory.sh *
 $DS_USER ALL=(root) NOPASSWD: $HELPER_DIR/setup-ca.sh *
+$DS_USER ALL=(root) NOPASSWD: $HELPER_DIR/xray-probe-cgroup.sh *
 SUDOERS_EOF
 chmod 0440 "$SUDOERS_FILE"
 

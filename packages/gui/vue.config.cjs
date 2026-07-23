@@ -88,6 +88,11 @@ module.exports = defineConfig({
       },
       chainWebpackMainProcess (config) {
         config.entry('mitmproxy').add(path.join(__dirname, 'src/bridge/mitmproxy.js'))
+        // service-entry is a standalone webpack bundle for pure-Node service mode
+        // (ELECTRON_RUN_AS_NODE=1). Webpack bundles @docmirror/dev-sidecar and all
+        // its deps inline; only native modules (better-sqlite3, fadvise-linux, etc.)
+        // stay external and are loaded from the asar's node_modules at runtime.
+        config.entry('service-entry').add(path.join(__dirname, 'src/service-entry.cjs'))
       },
     },
   },

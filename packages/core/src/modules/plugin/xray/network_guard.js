@@ -25,7 +25,11 @@ function requestLocalNetworkCanary (url, timeoutMs = DEFAULT_LOCAL_NETWORK_CHECK
       resolve(Boolean(result))
     }
 
-    const request = client.get(url, (res) => {
+    // canary 请求只需检测网络连通性，不需要验证 SSL 证书。
+    // 公司网络常有 SSL 拦截（中间人代理），Node.js 内嵌 CA 库不含公司 CA，
+    // 导致证书验证失败误判为网络离线。放宽验证不影响安全性——
+    // 这些请求不传输敏感数据，只检测 TCP/TLS 连通性。
+    const request = client.get(url, { rejectUnauthorized: false }, (res) => {
       const statusCode = Number(res.statusCode || 0)
       res.resume()
       finish(statusCode >= 200 && statusCode < 400)

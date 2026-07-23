@@ -7,11 +7,16 @@ After=network-online.target
 Type=simple
 User=__DS_USER__
 Group=__DS_GROUP__
-Environment=DISPLAY=:0
 Environment=DEV_SIDECAR_SERVICE_MODE=true
+# Run the Electron binary as pure Node.js (no chromium subprocess overhead).
+# This eliminates GPU process, NetworkService, and zygote — saving ~20MB RSS
+# and ~50MB file cache on cold boot. The service-entry.js is a webpack bundle
+# at the asar root (like mitmproxy.js) that loads core with all JS deps
+# inlined; only native modules are loaded from the asar's node_modules.
+Environment=ELECTRON_RUN_AS_NODE=1
 RuntimeDirectory=dev-sidecar
 RuntimeDirectoryMode=0755
-ExecStart=/opt/dev-sidecar/@docmirrordev-sidecar-gui
+ExecStart=/opt/dev-sidecar/@docmirrordev-sidecar-gui /opt/dev-sidecar/resources/app.asar/service-entry.js
 Restart=on-failure
 RestartSec=15
 RemainAfterExit=yes
@@ -21,9 +26,19 @@ TimeoutStopSec=10
 # Soft memory limit: kernel reclaims file cache (including mmap pages) when
 # cgroup memory exceeds this, preventing peak spikes from Electron binary
 # page cache. Does NOT trigger OOM kill — only throttles and reclaims.
-# Default 512M allows Stage3 batch levels 1-4; reduce to 280M for low-memory
-# devices or increase for high-throughput level 5.
-MemoryHigh=512M
+# 280M fits cold-boot peak (~250MB) + headroom; raise for high-throughput
+# Stage3 batch level 5 or lower for very constrained devices.
+MemoryHigh=280M
+# Startup memory high: allows a higher peak during boot/shutdown phase.
+# Cold boot loads ~218MB app.asar + mitmproxy + SQLite from disk into
+# cgroup file cache, pushing peak to ~282MB. StartupMemoryHigh=300M lets
+# this peak through without throttling, then systemd switches to MemoryHigh
+# once the service is active.
+StartupMemoryHigh=300M
+# Disable Linux core dumps (WSL2 crash dumps are controlled by .wslconfig
+# MaxCrashDumpCount=-1; this LimitCORE=0 prevents native core files on bare
+# metal Linux, which can be 100GB+ for Electron processes on SIGABRT).
+LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target

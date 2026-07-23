@@ -14,6 +14,28 @@ const dnsLookup = require('./dnsLookup')
 const MAX_SLOW_TIME = 8000 // 超过此时间 则认为太慢了
 const WWW_AUTH_HEADER_RE = /^www-authenticate$/i
 
+// 日志安全的 rOptions 视图：只保留标量字段，剔除 agent/socket/ca 等含巨型证书 PEM 或
+// 循环引用的字段。stringify2 在 JSON.stringify 失败时 fallback 返回原始对象（含 agent），
+// log4js 随即 util.inspect 递归展开 HttpsAgent.sockets（每个 socket key 是完整 141 证书
+// PEM），单次 error log 产出 MB 级字符串，高并发错误路径下撑爆 V8 堆导致 SIGABRT。
+function safeROptionsForLog (rOptions) {
+  if (!rOptions) {
+    return rOptions
+  }
+  return {
+    protocol: rOptions.protocol,
+    method: rOptions.method,
+    hostname: rOptions.hostname,
+    host: rOptions.host,
+    port: rOptions.port,
+    path: rOptions.path,
+    url: rOptions.url,
+    servername: rOptions.servername,
+    rejectUnauthorized: rOptions.rejectUnauthorized,
+    headers: rOptions.headers,
+  }
+}
+
 // create requestHandler function
 module.exports = function createRequestHandler (createIntercepts, middlewares, externalProxy, dnsConfig, setting, compatibleConfig) {
   // return
@@ -192,7 +214,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             }
             const cost = Date.now() - start
             const errorMsg = `连接超时: ${url}, cost: ${cost} ms`
-            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(rOptions))
+            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(safeROptionsForLog(rOptions)))
             countSlow(isDnsIntercept, `连接超时, cost: ${cost} ms`)
             proxyReq.destroy(new Error(errorMsg))
           }, 7000)
@@ -207,7 +229,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             if (connectionTimer) { clearTimeout(connectionTimer); connectionTimer = null }
             const cost = Date.now() - start
             const errorMsg = `代理请求超时: ${url}, cost: ${cost} ms`
-            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(rOptions))
+            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(safeROptionsForLog(rOptions)))
             countSlow(isDnsIntercept, `代理请求超时, cost: ${cost} ms`)
             proxyReq.end()
             proxyReq.destroy()
@@ -222,7 +244,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
               isDnsIntercept.tester.reportProbeResult(isDnsIntercept.ip, false)
             }
             const cost = Date.now() - start
-            log.error(`代理请求错误: ${url}, cost: ${cost} ms, error:`, e, ', rOptions:', jsonApi.stringify2(rOptions))
+            log.error(`代理请求错误: ${url}, cost: ${cost} ms, error:`, e, ', rOptions:', jsonApi.stringify2(safeROptionsForLog(rOptions)))
             countSlow(isDnsIntercept, `代理请求错误: ${e.message}`)
             if (e.code === 'ENETUNREACH' && isDnsIntercept && isDnsIntercept.ip) {
               reportIPv6Error(isDnsIntercept.ip)
@@ -237,7 +259,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           proxyReq.on('aborted', () => {
             const cost = Date.now() - start
             const errorMsg = `代理请求被取消: ${url}, cost: ${cost} ms`
-            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(rOptions))
+            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(safeROptionsForLog(rOptions)))
 
             if (cost > MAX_SLOW_TIME) {
               countSlow(isDnsIntercept, `代理请求被取消，且请求太慢, cost: ${cost} ms > ${MAX_SLOW_TIME} ms`)
@@ -261,7 +283,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           req.on('aborted', () => {
             const cost = Date.now() - start
             const errorMsg = `请求被取消: ${url}, cost: ${cost} ms`
-            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(rOptions))
+            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(safeROptionsForLog(rOptions)))
             proxyReq.destroy()
             if (res.writableEnded) {
               return
@@ -270,13 +292,13 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           })
           req.on('error', (e) => {
             const cost = Date.now() - start
-            log.error(`请求错误: ${url}, cost: ${cost} ms, error:`, e, ', rOptions:', jsonApi.stringify2(rOptions))
+            log.error(`请求错误: ${url}, cost: ${cost} ms, error:`, e, ', rOptions:', jsonApi.stringify2(safeROptionsForLog(rOptions)))
             reject(e)
           })
           req.on('timeout', () => {
             const cost = Date.now() - start
             const errorMsg = `请求超时: ${url}, cost: ${cost} ms`
-            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(rOptions))
+            log.error(errorMsg, ', rOptions:', jsonApi.stringify2(safeROptionsForLog(rOptions)))
             reject(new Error(errorMsg))
           })
           req.pipe(proxyReq)

@@ -45,15 +45,8 @@ gen
 *.lnk
 .venv
 /index.js
-
-# Private files (not for public repo)
-.cline/
-.clinerules/
-.clineignore
-openspec/
-submit.sh
-CLAUDE.md
-.github/copilot-instructions.md
-.github/instructions/
-.github/memory-bank/
-.github/prompts/
+/expose.js
+/probe.js
+/service-entry.js
+/util.cgroup.js
+/.codebase-memory/

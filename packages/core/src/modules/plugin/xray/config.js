@@ -3,8 +3,8 @@
 // stage3 explicit-GC threshold are pinned per-level so operators cannot
 // desync them by picking an arbitrary batchSize.
 const STAGE3_BATCH_LEVEL_TABLE = {
-  1: { batchSize: 64,   maxOldSpaceSizeMB: 48,  stage3GcThresholdMB: 32  },
-  2: { batchSize: 128,  maxOldSpaceSizeMB: 80,  stage3GcThresholdMB: 56  },
+  1: { batchSize: 64,   maxOldSpaceSizeMB: 64,  stage3GcThresholdMB: 44  },
+  2: { batchSize: 128,  maxOldSpaceSizeMB: 96,  stage3GcThresholdMB: 68  },
   3: { batchSize: 256,  maxOldSpaceSizeMB: 128, stage3GcThresholdMB: 96  },
   4: { batchSize: 512,  maxOldSpaceSizeMB: 256, stage3GcThresholdMB: 192 },
   5: { batchSize: 1024, maxOldSpaceSizeMB: 512, stage3GcThresholdMB: 384 },
@@ -34,8 +34,8 @@ module.exports = {
   // 等级越高，单批探测节点越多，吞吐越高但内存占用越大。
   // V8 old-space 上限与 stage3 显式 GC 阈值按等级精确映射，避免用户自定义任意 batchSize 导致 GC 参数失配。
   // stage3 GC 阈值 ≈ maxOldSpace 的 70-75%，留缓冲让显式 GC 在 V8 被迫 GC 前清理。
-  //   level 1 (64):  max-old-space=48MB,  stage3 GC 阈值=32MB   — 低内存设备（树莓派）
-  //   level 2 (128): max-old-space=80MB,  stage3 GC 阈值=56MB   — 默认，实测稳态 heap ~15MB
+  //   level 1 (64):  max-old-space=64MB,  stage3 GC 阈值=44MB   — 低内存设备（树莓派）
+  //   level 2 (128): max-old-space=96MB,  stage3 GC 阈值=68MB   — 默认，实测稳态 heap ~15MB
   //   level 3 (256): max-old-space=128MB, stage3 GC 阈值=96MB   — 中等吞吐
   //   level 4 (512): max-old-space=256MB, stage3 GC 阈值=192MB  — 高吞吐（需 ≥512M cgroup MemoryHigh）
   //   level 5 (1024):max-old-space=512MB, stage3 GC 阈值=384MB  — 极速覆盖（需 ≥1G cgroup MemoryHigh）

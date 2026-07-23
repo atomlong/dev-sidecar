@@ -16,7 +16,13 @@ const executor = {
     return true
   },
   async linux (exec, { certPath }) {
-    const cmds = [`sudo /usr/lib/dev-sidecar/setup-ca.sh ${certPath}`]
+    if (!certPath) {
+      throw new Error('证书路径为空，无法安装根证书。请确认证书文件已生成。')
+    }
+    if (!fs.existsSync(certPath)) {
+      throw new Error(`证书文件不存在: ${certPath}`)
+    }
+    const cmds = [`sudo -n /usr/lib/dev-sidecar/setup-ca.sh ${certPath}`]
     await exec(cmds)
     return true
   },

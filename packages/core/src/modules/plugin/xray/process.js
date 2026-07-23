@@ -1,5 +1,6 @@
 const { spawn } = require('child_process')
 const log = require('../../../utils/util.log.core')
+const { moveProcessToIsolatedCgroup, cleanupIsolatedCgroup } = require('./util.cgroup')
 
 let child = null
 let isExpectedExit = false
@@ -33,6 +34,17 @@ const api = {
         child = null
         reject(new Error(msg))
         return
+      }
+
+      // Move the main Xray process into an isolated cgroup so its file cache
+      // (GeoIP dat/mmdb, config, outbound TLS) does NOT count against
+      // dev-sidecar's MemoryHigh limit. Same rationale as probe processes:
+      // on cold boot the system page cache is empty and Xray's mmap/read
+      // of geoip.dat + geosite.dat (~5.6MB) + config pages are freshly
+      // charged to the service cgroup, contributing to the startup peak.
+      const isolatedCgroup = moveProcessToIsolatedCgroup(child.pid)
+      if (isolatedCgroup) {
+        log.info(`Xray 已移至隔离 cgroup: ${isolatedCgroup}`)
       }
 
       log.info(`Xray 已启动, PID: ${child.pid}`)
@@ -81,6 +93,10 @@ const api = {
     // 简单等待进程结束
     // 实际应该监听 close 事件，但这里简化处理
     child = null
+    // Clean up the isolated cgroup scope after the main Xray process exits.
+    // The scope is shared with probe processes; cleanup is best-effort
+    // (rmdir fails if other probe processes are still running in it).
+    cleanupIsolatedCgroup()
   },
 
   async restart (binPath, configPath) {
