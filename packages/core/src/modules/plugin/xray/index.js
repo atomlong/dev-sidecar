@@ -2508,6 +2508,38 @@ const Plugin = function (context) {
           limit: bootstrapCandidateLimit,
           probedOnly: true,
         })
+        // 在 SQLite 读取之前回收：冷启动时 D-Bus + gsettings + 配置加载已累积
+        // ~100MB file cache，如果不清空，readCacheEntriesForStartup 读取 SQLite
+        // 索引页+数据页会叠加到 280MB（MemoryHigh），peak 在回收之前就形成了。
+        if (process.platform === 'linux') {
+          xrayCache.dropSqliteFileCache(cachePath)
+          // 按 cgroup 当前存量动态回收：冷启动时 D-Bus + 配置加载累积 ~100MB+
+          // file cache，固定 150M 不够；目标压到 ~30MB 给后续 SQLite 读取留 headroom。
+          const localCgroupPath = getCurrentProcessCgroupPath()
+          const beforeFile = localCgroupPath ? path.join(localCgroupPath, 'memory.current') : ''
+          if (beforeFile && fs.existsSync(beforeFile)) {
+            try {
+              const beforeBytes = Number.parseInt(fs.readFileSync(beforeFile, 'utf8').trim(), 10)
+              const beforeMB = Math.round(beforeBytes / 1024 / 1024)
+              const reclaimTarget = Math.min(Math.max(beforeBytes - 30 * 1024 * 1024, 100 * 1024 * 1024), 300 * 1024 * 1024)
+              const reclaimMB = Math.round(reclaimTarget / 1024 / 1024)
+              const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
+              if (reclaimed) {
+                log.info(`Xray 启动预检查 SQLite 读取前内存回收完成: ${reclaimMB}M (before=${beforeMB}MB)`)
+              }
+            } catch {
+              const reclaimed = xrayCache.reclaimCgroupMemory(150 * 1024 * 1024)
+              if (reclaimed) {
+                log.info('Xray 启动预检查 SQLite 读取前内存回收完成: 150M (fallback)')
+              }
+            }
+          } else {
+            const reclaimed = xrayCache.reclaimCgroupMemory(150 * 1024 * 1024)
+            if (reclaimed) {
+              log.info('Xray 启动预检查 SQLite 读取前内存回收完成: 150M (fallback)')
+            }
+          }
+        }
         const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
           ...stableFallbackQuery,
         })
@@ -2530,13 +2562,13 @@ const Plugin = function (context) {
           const cgroupFile = cgroupPath ? path.join(cgroupPath, 'memory.current') : ''
           try {
             const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
-            if (Number.isFinite(currentBytes) && currentBytes > 150 * 1024 * 1024) {
-              const reclaimTarget = Math.min(currentBytes - 100 * 1024 * 1024, 200 * 1024 * 1024)
-              if (reclaimTarget > 0) {
-                const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
-              }
-            } else {
-            }
+            const currentMB = Math.round(currentBytes / 1024 / 1024)
+            // 无条件回收：启动预检查读取 SQLite 拉入的 file cache 会在后续
+            // D-Bus + mitmproxy fork + probe 叠加下把 peak 推到 280MB。
+            // 即使 currentBytes 不高，也要把 file cache 压下来给后续操作留空间。
+            const reclaimTarget = Math.min(Math.max(currentBytes - 80 * 1024 * 1024, 50 * 1024 * 1024), 200 * 1024 * 1024)
+            const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
+            log.info(`Xray 启动预检查后内存回收: currentMB=${currentMB}, reclaimMB=${Math.round(reclaimTarget / 1024 / 1024)}, reclaimed=${reclaimed}`)
           } catch (reclaimError) {
           }
         }
@@ -2967,6 +2999,18 @@ const Plugin = function (context) {
       const cacheRefreshInterval = getCacheRefreshIntervalSeconds(cfg) * 1000
       const cacheBatchTimeout = getCacheBatchTimeoutSeconds(cfg) * 1000
 
+      // 在 countCacheEntries 之前回收：Stage1 启动期间读取配置/缓存已累积
+      // ~100MB file cache，如果不清空，countCacheEntries 的索引扫描再拉入
+      // ~168MB 会叠加到 280MB（MemoryHigh），peak 在 reclaim 之前就形成了。
+      // 先清空再扫描，让 countCacheEntries 从低基线开始。
+      if (process.platform === 'linux') {
+        xrayCache.dropSqliteFileCache(cachePath, [], { label: 'stage3-before-count' })
+        const reclaimed = xrayCache.reclaimCgroupMemory(150 * 1024 * 1024)
+        if (reclaimed) {
+          log.info('Xray stage3 计数前内存回收完成: 150M')
+        }
+      }
+
       const dueBefore = xrayCache.formatLocalTimestamp(new Date(roundStartedAt))
       const stage3BatchLevel = resolveStage3BatchLevel(cfg)
       const batchSize = stage3BatchLevel.batchSize
@@ -2979,6 +3023,28 @@ const Plugin = function (context) {
       })
       const maxDueRowId = maxDueRowIds.length > 0 ? maxDueRowIds[0] : 0
       const plannedBatchCount = totalDueCandidateCount === 0 ? 0 : Math.ceil(totalDueCandidateCount / batchSize)
+
+      // Drop SQLite file cache immediately after the initial count + maxRowId
+      // query. countCacheEntries does a full-table-scan over the 800MB+ cache
+      // to count due nodes, pulling ~168MB of file pages into the service
+      // cgroup. Without this early drop, the file cache stacks with the
+      // mitmproxy fork's anon memory (~112MB) and pushes memory.peak to 280MB
+      // (MemoryHigh limit) before the per-batch guardrail at line ~3078 runs.
+      // Dropping here keeps the peak under ~130MB during the batch loop.
+      if (totalDueCandidateCount > 0) {
+        xrayCache.dropSqliteFileCache(cachePath, [], { label: 'stage3-initial-count' })
+        if (process.platform === 'linux') {
+          // memory.reclaim 权限为 root-only (--w------- root root)，
+          // 服务用户直接写会 EACCES。reclaimCgroupMemory 内部有 sudo fallback
+          // (reclaim-memory.sh NOPASSWD sudoers 规则)。
+          const reclaimed = xrayCache.reclaimCgroupMemory(150 * 1024 * 1024)
+          if (reclaimed) {
+            log.info('Xray stage3 初始计数后内存回收完成: 150M')
+          } else {
+            log.warn('Xray stage3 初始计数后内存回收失败')
+          }
+        }
+      }
 
       if (totalDueCandidateCount === 0) {
         log.info('Xray 缓存周期探测: 当前没有到期的可探测节点')

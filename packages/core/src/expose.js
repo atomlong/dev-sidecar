@@ -1,6 +1,6 @@
 const lodash = require('lodash')
-const fs = require('node:fs')
-const childProcess = require('node:child_process')
+const fs = require('fs')
+const childProcess = require('child_process')
 const config = require('./config-api')
 const event = require('./event')
 const modules = require('./modules')
@@ -26,18 +26,25 @@ function reclaimStartupMemory () {
     return false
   }
 
+  // 回收 200M：电脑冷启动后系统页缓存为空，Electron 二进制 + asar + chromium + xray
+  // 首次加载产生 ~200MB file cache，100M 不够覆盖。200M 能把 file cache 压到接近 0，
+  // 给后续 mitmproxy fork + Xray Stage3 探测留出 cgroup 空间，避免冷启动峰值顶到
+  // MemoryHigh 上限触发内核疯狂回收（实测 high 事件 110 次）。
   try {
-    fs.writeFileSync(reclaimFile, '100M')
+    fs.writeFileSync(reclaimFile, '200M')
+    log.info('启动前 cgroup 内存回收完成: 200M (memory.reclaim)')
     return true
   } catch {
     try {
       childProcess.execFileSync('sudo', [
         '-n',
         '/usr/lib/dev-sidecar/reclaim-memory.sh',
-        '100M',
+        '200M',
       ], { timeout: 5000 })
+      log.info('启动前 cgroup 内存回收完成: 200M (reclaim-memory.sh)')
       return true
-    } catch {
+    } catch (e) {
+      log.warn('启动前 cgroup 内存回收失败:', e.message)
       return false
     }
   }
@@ -93,6 +100,34 @@ async function startup ({ mitmproxyPath }) {
       await proxy.start()
     } catch (err) {
       log.error('开启系统代理失败：', err)
+    }
+  }
+  // 回收 mitmproxy fork + gsettings/D-Bus 产生的 file cache。
+  // 冷启动时这些操作从磁盘加载大量文件进 cgroup file cache（~80MB），
+  // 如果不清掉，后续 Xray 插件读 SQLite 800MB 时会叠加到 282MB（MemoryHigh）。
+  // 热启动时这些文件已在系统页缓存（不计入 cgroup），所以热启动 peak 更低。
+  if (process.platform === 'linux') {
+    try {
+      const cgroupPath = getCurrentProcessCgroupPath()
+      const currentFile = cgroupPath ? `${cgroupPath}/memory.current` : ''
+      if (currentFile && fs.existsSync(currentFile)) {
+        const currentBytes = Number.parseInt(fs.readFileSync(currentFile, 'utf8').trim(), 10)
+        const currentMB = Math.round(currentBytes / 1024 / 1024)
+        // 冷启动：mitmproxy fork + D-Bus 从磁盘加载产生 ~180MB cgroup file cache。
+        // 热启动：文件已在系统页缓存（不计入 cgroup），currentBytes 较低 (~87MB)。
+        // 按 currentBytes 动态回收，目标压到 ~30MB 以下，给后续 SQLite 读取留 headroom。
+        // reclaimTarget 受 100M 下限、350M 上限保护，确保冷热启动一致触发。
+        if (Number.isFinite(currentBytes) && currentBytes > 60 * 1024 * 1024) {
+          const reclaimTarget = Math.min(Math.max(currentBytes - 30 * 1024 * 1024, 100 * 1024 * 1024), 350 * 1024 * 1024)
+          const reclaimMB = Math.round(reclaimTarget / 1024 / 1024)
+          childProcess.execFileSync('sudo', ['-n', '/usr/lib/dev-sidecar/reclaim-memory.sh', `${reclaimMB}M`], { timeout: 5000 })
+          log.info(`代理启动后 cgroup 内存回收完成: ${reclaimMB}M (before=${currentMB}MB)`)
+        } else {
+          log.info(`代理启动后 cgroup 内存跳过回收: current=${currentMB}MB (<=60MB)`)
+        }
+      }
+    } catch {
+      // best-effort
     }
   }
   try {

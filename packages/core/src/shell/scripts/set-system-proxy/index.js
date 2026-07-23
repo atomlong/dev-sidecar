@@ -452,6 +452,23 @@ const executor = {
     }
   },
   async linux (exec, params = {}) {
+    // 检测是否有桌面环境：gsettings 代理只对 GNOME 桌面应用（Firefox 等）生效。
+    // 无头服务器/WSL2 无桌面环境下，gsettings 调用会派生 dbus-launch + dbus-daemon
+    // + dconf-service 三个进程（~6MB RSS），且代理设置无人读取——纯属浪费。
+    // 检测条件：gsettings 命令不存在，或 X server socket 不可达 → 跳过。
+    if (!fs.existsSync('/usr/bin/gsettings')) {
+      log.info('跳过 gsettings 系统代理设置：gsettings 未安装')
+      return true
+    }
+    // systemd service 可能设了 DISPLAY=:0 但实际无 X server。
+    // 检测 X server socket 是否存在（/tmp/.X11-unix/X0 对应 DISPLAY=:0）。
+    const display = process.env.DISPLAY || ':0'
+    const displayNum = display.replace(/^:/, '').split('.')[0]
+    const xSocket = `/tmp/.X11-unix/X${displayNum}`
+    if (!fs.existsSync(xSocket)) {
+      log.info(`跳过 gsettings 系统代理设置：无桌面环境（${xSocket} 不存在）`)
+      return true
+    }
     const { ip, port } = params
     if (ip != null) { // 设置代理
       // 延迟加载config

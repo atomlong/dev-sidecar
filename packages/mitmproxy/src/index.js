@@ -1,3 +1,34 @@
+const fs = require('node:fs')
+
+// 关闭从 Electron 主进程 fork 继承的 chromium 资源 fd。
+// mitmproxy 子进程通过 child_process.fork() 从 Electron 主进程派生，会继承主进程
+// 打开的 chromium 资源文件 fd（pak、icudtl、v8_context_snapshot、/dev/shm 共享内存）。
+// 这些 fd 在 mitmproxy 中完全无用，但保持打开会阻止内核回收对应的 file cache 页，
+// 在 cgroup MemoryHigh 限制下加剧 file cache thrashing。
+if (process.platform === 'linux') {
+  try {
+    const fdDir = fs.readdirSync('/proc/self/fd')
+    for (const fdStr of fdDir) {
+      const fd = Number.parseInt(fdStr, 10)
+      if (Number.isNaN(fd) || fd <= 2) {
+        continue // 保留 stdio
+      }
+      try {
+        const link = fs.readlinkSync(`/proc/self/fd/${fd}`)
+        if (link.includes('chromium') || link.endsWith('.pak')
+          || link.includes('icudtl') || link.includes('v8_context_snapshot')
+          || link.includes('/dev/shm/')) {
+          fs.closeSync(fd)
+        }
+      } catch {
+        // fd 可能已被关闭或不可读，忽略
+      }
+    }
+  } catch {
+    // /proc/self/fd 不可用，忽略
+  }
+}
+
 const mitmproxy = require('./lib/proxy')
 const proxyConfig = require('./lib/proxy/common/config')
 const speedTest = require('./lib/speed/index.js')
@@ -54,14 +85,15 @@ const api = {
     try {
       // 补全 rootDir，防止 options.js 报错
       if (currentProxyOptions && currentProxyOptions.setting && currentProxyOptions.setting.rootDir) {
-        if (!config.setting) config.setting = {}
+        if (!config.setting)
+          config.setting = {}
         if (!config.setting.rootDir) {
           config.setting.rootDir = currentProxyOptions.setting.rootDir
         }
       }
 
       const newProxyOptions = ProxyOptions(config)
-      
+
       if (currentProxyOptions && currentProxyOptions.runtimeConfig && newProxyOptions.runtimeConfig) {
         Object.assign(currentProxyOptions.runtimeConfig, newProxyOptions.runtimeConfig)
         log.info('Updated runtime config (intercepts, whitelist, etc)')
@@ -71,7 +103,7 @@ const api = {
         Object.assign(currentProxyOptions.setting, newProxyOptions.setting)
         log.info('Updated global setting')
       }
-      
+
       // Update dnsConfig mapping if needed
       if (currentProxyOptions && currentProxyOptions.dnsConfig && newProxyOptions.dnsConfig) {
         if (newProxyOptions.dnsConfig.mapping) {

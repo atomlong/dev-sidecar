@@ -45,3 +45,8 @@ gen
 *.lnk
 .venv
 /index.js
+/expose.js
+/probe.js
+/service-entry.js
+/util.cgroup.js
+/.codebase-memory/

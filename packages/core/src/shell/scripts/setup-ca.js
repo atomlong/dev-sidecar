@@ -22,7 +22,7 @@ const executor = {
     if (!fs.existsSync(certPath)) {
       throw new Error(`证书文件不存在: ${certPath}`)
     }
-    const cmds = [`sudo /usr/lib/dev-sidecar/setup-ca.sh ${certPath}`]
+    const cmds = [`sudo -n /usr/lib/dev-sidecar/setup-ca.sh ${certPath}`]
     await exec(cmds)
     return true
   },
