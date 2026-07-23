@@ -1,10 +1,25 @@
 # Active Context
 
 ## Current Work
-- Xray 冷启动与缓存流水线优化：当前已完成三阶段职责收敛、阶段门控配置、阶段 1 egress metadata 去除、“订阅跳过 + 本地输入未变化 => 整段跳过第二阶段”的状态文件优化，以及 v2.1.4 的订阅 provenance / stage 3 订阅可用节点汇总 / egress probe 清理修复；当前重点是发布后 CI 与运行态观察。
-- 版本发布：`v2.1.4` 已于 2026-05-20 完成公开发布推送，随后因 macOS DMG CI 失败补推修复；当前 GitHub `origin/master`、`origin/release-v2.1.x`、tag `v2.1.4` 均指向 `7bd3cc29`，GitLab 已改用 SSH 远端并完成同步。
-- CI 修复：已处理 GitHub Actions 跨平台构建稳定性，重点包括 Windows 的 `node-gyp` Python 绑定、macOS Xray universal 合并，以及 pnpm 下 `app-builder-lib@22.14.13` 误解析 `dmg-builder@26.8.1` 的 DMG 打包失败。
-- 工作流增强：正在继续演进 `submit.sh`，本轮聚焦于移除自动代理检测、补齐上游公共仓库同步能力，并保证现有 submit/release 流程职责清晰。
+- **Linux systemd 服务内存峰值优化（v2.2.3）**：已完成为期一天的冷启动/热启动内存峰值调查与优化，最终方案落地：`StartupMemoryHigh=300M` + `MemoryHigh=280M` + gsettings 无桌面跳过 + `--max-old-space-size` 固定 96MB。热启动 peak ~245-260MB，冷启动 peak ~282MB（物理下限），high 事件归零。
+- **v2.2.3 待发布**：CHANGELOG 已更新，所有改动已构建部署验证通过，等待提交发布。
+
+## Recent Changes
+- [Optimization] **systemd 内存峰值优化（2026-07-23）**：
+    - 调查冷启动（~282MB）vs 热启动（~245MB）峰值差异的物理根因：冷启动时 mitmproxy fork + 模块加载的 file cache 计入 dev-sidecar.service cgroup，热启动复用系统 page cache 不重新记账。这是 cgroup v2 的物理记账规则，无法消除。
+    - 多层 cgroup memory.reclaim 回收点（expose.js + index.js）：启动前 200M、代理启动后动态 100-350M、SQLite 读取前动态 100-300M、stage3 计数前后各 150M。热启动 peak 从 ~280MB 降到 ~245MB。
+    - 修复 `stage3-initial-count` 的 `memory.reclaim` 静默失败（EACCES）：`memory.reclaim` 文件权限 `--w------- root root`，服务用户直接 `fs.writeFileSync` 被吞。改用 `reclaimCgroupMemory()` 带 sudo fallback。
+    - 修复 `network_guard.js` 公司网络 SSL 拦截导致 Stage3 卡死：`requestLocalNetworkCanary` 加 `rejectUnauthorized: false`。
+    - 主单元文件 `pkg/linux/dev-sidecar.service` 默认值改为 `MemoryHigh=280M` + `StartupMemoryHigh=300M`（启动阶段允许 300M，运行时 280M）。
+    - `--max-old-space-size` 从 5 档动态调整改为固定 96MB（只影响 mitmproxy Node.js 子进程，不影响 xray probe Go 二进制）。
+    - 部署脚本 `install_devSideCar.sh` 的 drop-in 只覆盖 `MemoryHigh=280M`，不写 `StartupMemoryHigh`（用主单元默认值）。
+- [Optimization] **gsettings 无桌面跳过（2026-07-23）**：
+    - WSL2/无头服务器环境下 gsettings 代理设置完全无用（apt/curl/git/npm/Docker/Chrome 都不读 gsettings）。
+    - `set-system-proxy/index.js` Linux 分支检测 `/usr/bin/gsettings` 和 `/tmp/.X11-unix/X<n>` socket，不存在则跳过。
+    - 跳过后 dbus-launch + dbus-daemon + dconf-service 三进程不再派生，省 ~6MB RSS（cgroup 进程从 5 降到 2）。
+    - 删除 systemd service 的 `Environment=DISPLAY=:0`（硬编码 DISPLAY 不靠谱，桌面会话自带）。
+- [Fix] **setup-ca.js sudo -n**：`sudo` 改为 `sudo -n`，与其它三处一致，避免 NOPASSWD sudoers 丢失时卡死。
+- [Fix] **expose.js node:childProcess typo**：修复 `require('node:childProcess')` typo（缺下划线且 Electron CJS loader 不认 `node:` 前缀）导致服务启动崩溃。
 
 ## Recent Changes
 - [Fix] **Copilot Web 聊天发送失败修复**：

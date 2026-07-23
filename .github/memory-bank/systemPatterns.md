@@ -83,3 +83,37 @@ flowchart TD
 - `subscriptionSyncLowWatermark` 的判断依赖 SQLite `countCacheEntries()` 与 stable/maxDelay/country/owner 过滤，目标是统计“对第一阶段真正有意义的有效缓存数”。
 - Probe 进程日志需要区分批次探测与出口元数据探测；残留 egress probe 排查时先看父进程清理链路、cmdline、socket 和 PID 状态，避免只靠延长超时掩盖问题。
 - egress metadata 查询必须有两层退出保障：单次 HTTP proxy 请求使用 `AbortController` + hard timeout，整个 `detectEgressAddressThroughProxy()` 调用再由外层绝对超时保护，确保 `finally { controller.stop() }` 有机会执行。
+
+## Linux cgroup 内存管理模式 (v2.2.3)
+
+### systemd service 配置
+- `pkg/linux/dev-sidecar.service` 默认值：`MemoryHigh=280M` + `StartupMemoryHigh=300M`
+- `StartupMemoryHigh` 在启动阶段生效（允许冷启动 ~282MB 峰值不触发 throttling），service 进入 active 后自动切换到 `MemoryHigh`
+- 部署脚本 `install_devSideCar.sh` 的 drop-in `10-devsidecar-setup.conf` 覆盖 `MemoryHigh=280M`（环境特定），不覆盖 `StartupMemoryHigh`（用主单元默认 300M）
+
+### cgroup v2 page cache 记账规则
+- page cache 按**首次触发 read 的进程所属 cgroup**记账
+- 热启动：文件已在系统 page cache（之前跑过），复用不重新记账 → dev-sidecar cgroup 不涨
+- 冷启动：文件不在 page cache，从磁盘读入 → 计入 dev-sidecar cgroup → peak 更高
+- `memory.reclaim` 是同步立即生效的，但被回收的 file pages 会被后续 read 重新读入（`workingset_refault_file` 计数器反映）
+
+### xray probe cgroup 隔离
+- `probe.js` spawn xray 后立即 `moveProcessToIsolatedCgroup(pid)` 移到 `dev-sidecar-xray-probe.scope`
+- xray probe 的 file cache（读 SQLite 800MB+）不计入 dev-sidecar.service 的 MemoryHigh
+- helper 脚本 `/usr/lib/dev-sidecar/xray-probe-cgroup.sh`，sudoers NOPASSWD
+
+### 多层 memory.reclaim 回收点
+- `expose.js` `reclaimStartupMemory()`：启动前 200M
+- `expose.js` proxy.start() 后：动态 100-350M（基于 `memory.current`）
+- `xray/index.js` SQLite 读取前：动态 100-300M
+- `xray/index.js` stage3 计数前后：各 150M
+- 所有回收通过 `reclaimCgroupMemory()` 调用（`cache.js`），有 sudo fallback（`sudo -n /usr/lib/dev-sidecar/reclaim-memory.sh`）
+
+### gsettings 无桌面跳过
+- `set-system-proxy/index.js` Linux 分支检测 `/usr/bin/gsettings` 和 `/tmp/.X11-unix/X<n>` socket
+- 无桌面环境跳过 gsettings → 不派生 dbus-launch/dbus-daemon/dconf-service → 省 ~6MB RSS
+- WSL2/无头服务器下所有工具（apt/curl/git/npm/Docker/Chrome）都不读 gsettings 代理
+
+### mitmproxy V8 堆
+- `--max-old-space-size=96` 固定值（mitmproxy 稳态堆 ~15MB，6 倍余量）
+- 只影响 mitmproxy Node.js 子进程，不影响 xray probe（Go 二进制，隔离 cgroup）

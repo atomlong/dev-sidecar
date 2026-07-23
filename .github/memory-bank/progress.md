@@ -1,11 +1,25 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.1.4 (Released on 2026-05-20; tag moved to CI-fix commit `7bd3cc29`)
+- **Current Version**: 2.2.3 (Unreleased; all changes built and deployed for verification)
+- **Previous Released**: 2.2.2 (2026-07-19)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
 ## Completed Features
+- [x] **Linux systemd 内存峰值优化 (v2.2.3)**:
+    - 多层 cgroup memory.reclaim 回收（expose.js + xray/index.js）：热启动 peak 从 ~280MB 降到 ~245MB。
+    - `StartupMemoryHigh=300M` + `MemoryHigh=280M`：冷启动 peak 282MB 不被 throttled，运行时 280M 限制稳态。
+    - `--max-old-space-size` 固定 96MB（删除 5 档动态调整）。
+    - gsettings 无桌面跳过：WSL2/无头服务器不调 gsettings，省 dbus 三进程 ~6MB RSS。
+    - 删除 systemd service 的 `Environment=DISPLAY=:0`。
+    - 修复 `stage3-initial-count` memory.reclaim EACCES 静默失败。
+    - 修复 `network_guard.js` 公司网络 SSL 拦截导致 Stage3 卡死。
+    - 修复 `setup-ca.js` sudo 缺 `-n`。
+    - 修复 `expose.js` `node:childProcess` typo 导致服务启动崩溃。
+- [x] **v2.2.2 Copilot Web 聊天修复**: WebSocket upgrade 路径复用普通请求的 DNS 逻辑，修复 `DnsUtil.hasDnsLookup` TypeError。
+- [x] **v2.2.0 纯 Node 服务模式**: `service-entry.cjs` + `ELECTRON_RUN_AS_NODE=1`，消除 chromium 子进程开销。
+- [x] **Xray probe cgroup 隔离**: probe 进程移到 `dev-sidecar-xray-probe.scope`，file cache 不计入 dev-sidecar.service。
 - [x] **CI Build Stability**:
     - GitHub Actions 工作流已显式固定 `node-gyp` 使用 `actions/setup-python` 安装的 Python 3.10，降低 Windows 平台因 Python 3.12 缺少 `distutils` 导致的原生模块重编译失败风险。
     - 已定位 macOS `universal` 打包失败根因为：Xray 的 macOS 二进制在进入 electron-builder 的 universal 合并流程前需要按实际架构状态处理；若是 fat/universal 需要先裁剪，若本身已是目标单架构则不能再无条件执行 `lipo -thin`。

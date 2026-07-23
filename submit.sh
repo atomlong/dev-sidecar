@@ -2094,21 +2094,29 @@ attempt_public_cherry_pick() {
         return 0
     fi
 
-    log_warn "Cherry-pick failed for $commit. Retrying with strategy '$strategy' ..."
+    log_warn "Cherry-pick failed for $commit. Retrying with per-file strategy '$strategy' ..."
     git cherry-pick --abort || true
 
-    if git cherry-pick -x -X "$strategy" --allow-empty "$commit"; then
-        log_info "Cherry-pick succeeded with strategy '$strategy': $commit"
+    # NOTE: We intentionally do NOT use `cherry-pick -X ours` here.
+    # `-X ours` is a merge strategy OPTION that resolves conflict hunks by
+    # taking "our" side, but still applies non-conflicting parts of the patch.
+    # When both branches have different implementations of the same symbol
+    # (e.g. master has a v2.1.6 loadExtraCaCerts, develop has a v2.2.1 one),
+    # `-X ours` keeps master's conflicted declaration AND merges develop's
+    # non-conflicted function body, producing DUPLICATE declarations that
+    # cause SyntaxError at runtime (seen 3 times during v2.2.1/v2.2.2 release).
+    # Instead, retry with `--no-commit` and resolve conflicted FILES entirely
+    # via `git checkout --ours` (per-file, no partial merge).
+    if git cherry-pick -x --no-commit --allow-empty "$commit" 2>/dev/null; then
+        # No conflicts (or rerere resolved them all).
+        git commit --no-edit --allow-empty
+        log_info "Cherry-pick succeeded (no conflicts): $commit"
         return 0
     fi
 
-    if continue_public_cherry_pick_if_resolved "$commit"; then
-        log_info "rerere/strategy auto-resolved commit: $commit"
-        return 0
-    fi
-
+    # Conflicts remain — resolve each conflicted file entirely from "our" side.
     if resolve_unmerged_public_paths_with_strategy "$strategy" && continue_public_cherry_pick_if_resolved "$commit"; then
-        log_info "Force auto-resolved commit with strategy '$strategy': $commit"
+        log_info "Force auto-resolved commit with per-file strategy '$strategy': $commit"
         return 0
     fi
 
