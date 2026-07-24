@@ -219,10 +219,18 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             proxyReq.destroy(new Error(errorMsg))
           }, 7000)
           proxyReq.once('socket', (socket) => {
-            socket.once('connect', () => {
+            // keep-alive 复用已连接的 socket 时不会触发 'connect' 事件，
+            // 需要检查 socket.writable（已连接可写）直接清除定时器，
+            // 否则 connectionTimer 7 秒后误超时，导致 git clone 等连续请求间歇失败。
+            if (socket.writable && !socket.connecting) {
               clearTimeout(connectionTimer)
               connectionTimer = null
-            })
+            } else {
+              socket.once('connect', () => {
+                clearTimeout(connectionTimer)
+                connectionTimer = null
+              })
+            }
           })
 
           proxyReq.on('timeout', () => {
