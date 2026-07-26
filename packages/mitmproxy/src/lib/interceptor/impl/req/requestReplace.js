@@ -104,7 +104,7 @@ module.exports = {
     res.setHeader('DS-RequestReplace-Interceptor', actions)
 
     const url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${req.url}`
-    log.info('requestReplace intercept:', url)
+    log.debug('requestReplace intercept:', url)
   },
   is (interceptOpt) {
     return !!interceptOpt.requestReplace

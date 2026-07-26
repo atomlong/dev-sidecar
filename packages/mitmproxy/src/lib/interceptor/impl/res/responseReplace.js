@@ -110,7 +110,7 @@ module.exports = {
 
     if (actions) {
       res.setHeader('DS-ResponseReplace-Interceptor', actions)
-      log.info(`response intercept: ${actions}`)
+      log.debug(`response intercept: ${actions}`)
     }
   },
   is (interceptOpt) {

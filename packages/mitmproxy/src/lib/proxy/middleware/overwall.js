@@ -206,7 +206,7 @@ function createOverwallMiddleware (overWallConfig) {
       } else {
         rOptions.port = port || (rOptions.protocol === 'https:' ? 443 : 80)
       }
-      log.info('OverWall:', rOptions.hostname, '➜', proxyTarget)
+      log.debug('OverWall:', rOptions.hostname, '➜', proxyTarget)
       if (context.requestCount) {
         log.debug('OverWall choice:', JSON.stringify(context.requestCount))
       }

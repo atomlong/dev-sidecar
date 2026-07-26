@@ -30,7 +30,7 @@ module.exports = {
       res.end()
 
       const url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${req.url}`
-      log.info('success intercept:', url)
+      log.debug('success intercept:', url)
       return true // true代表请求结束
     } else {
       const response = interceptOpt.success
@@ -84,7 +84,7 @@ module.exports = {
       res.end()
 
       const url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${req.url}`
-      log.info('success intercept:', url, ', response:', JSON.stringify(response))
+      log.debug('success intercept:', url, ', response:', JSON.stringify(response))
       return true // true代表请求结束
     }
   },

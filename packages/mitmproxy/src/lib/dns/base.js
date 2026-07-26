@@ -100,18 +100,18 @@ module.exports = class BaseDNS {
           if (options.ipChecker) {
             if (options.ipChecker(ip)) {
               ipCache.doCount(ip, false)
-              log.info(`[DNS-over-${this.dnsType} '${this.dnsName}'] 获取IP地址缓存: ${hostname} -> ${ip}（测试通过）`)
+              log.debug(`[DNS-over-${this.dnsType} '${this.dnsName}'] 获取IP地址缓存: ${hostname} -> ${ip}（测试通过）`)
               return ip
             } else {
-              log.info(`[DNS-over-${this.dnsType} '${this.dnsName}'] 获取IP地址缓存: ${hostname} -> ${ip}（测试不通过）-> ${hostname}`)
+              log.debug(`[DNS-over-${this.dnsType} '${this.dnsName}'] 获取IP地址缓存: ${hostname} -> ${ip}（测试不通过）-> ${hostname}`)
               return hostname
             }
           } else {
-            log.info(`[DNS-over-${this.dnsType} '${this.dnsName}'] 获取IP地址缓存: ${hostname} -> ${ip}`)
+            log.debug(`[DNS-over-${this.dnsType} '${this.dnsName}'] 获取IP地址缓存: ${hostname} -> ${ip}`)
             return ip
           }
         } else {
-          log.info(`[DNS-over-${this.dnsType} '${this.dnsName}'] 未获取到IP地址缓存: ${hostname}`)
+          log.debug(`[DNS-over-${this.dnsType} '${this.dnsName}'] 未获取到IP地址缓存: ${hostname}`)
         }
       } else {
         ipCache = new IpCache(hostname)
@@ -134,7 +134,7 @@ module.exports = class BaseDNS {
       ipCache.setBackupList(ipList)
 
       const ip = ipCache.value
-      log.info(`[DNS-over-${this.dnsType} '${this.dnsName}'] ${hostname} ➜ ${ip} (${Date.now() - t} ms), ipList: ${JSON.stringify(ipList)}, ipCache:`, JSON.stringify(ipCache))
+      log.debug(`[DNS-over-${this.dnsType} '${this.dnsName}'] ${hostname} ➜ ${ip} (${Date.now() - t} ms), ipList: ${JSON.stringify(ipList)}, ipCache:`, JSON.stringify(ipCache))
 
       if (options.ipChecker) {
         if (ip != null && ip !== hostname && options.ipChecker(ip)) {
@@ -168,7 +168,7 @@ module.exports = class BaseDNS {
 
         if (hostnamePreSetIpList.length > 0) {
           hostnamePreSetIpList.isPreSet = true
-          log.info(`[DNS-over-PreSet '${this.dnsName}'] 获取到该域名的预设IP列表： ${hostname} - ${JSON.stringify(hostnamePreSetIpList)}`)
+          log.debug(`[DNS-over-PreSet '${this.dnsName}'] 获取到该域名的预设IP列表： ${hostname} - ${JSON.stringify(hostnamePreSetIpList)}`)
           return hostnamePreSetIpList
         }
       }
@@ -204,9 +204,9 @@ module.exports = class BaseDNS {
 
       const ret = response.answers.filter(item => item.type === type).map(item => item.data)
       if (ret.length === 0) {
-        log.info(`[DNS-over-${this.dnsType} '${this.dnsName}'] 没有该域名的IPv${options.family}地址: ${hostname}, cost: ${cost} ms`)
+        log.debug(`[DNS-over-${this.dnsType} '${this.dnsName}'] 没有该域名的IPv${options.family}地址: ${hostname}, cost: ${cost} ms`)
       } else {
-        log.info(`[DNS-over-${this.dnsType} '${this.dnsName}'] 获取到该域名的IPv${options.family}地址： ${hostname} - ${JSON.stringify(ret)}, cost: ${cost} ms`)
+        log.debug(`[DNS-over-${this.dnsType} '${this.dnsName}'] 获取到该域名的IPv${options.family}地址： ${hostname} - ${JSON.stringify(ret)}, cost: ${cost} ms`)
       }
 
       return ret

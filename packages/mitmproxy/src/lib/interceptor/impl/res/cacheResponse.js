@@ -72,7 +72,7 @@ module.exports = {
         } else {
           const url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${req.url}`
           res.setHeader('DS-Cache-Response-Interceptor', `skip: ${maxAgeMatch[1]} > ${maxAge}`)
-          log.info(`cache response intercept: skip: ${maxAgeMatch[1]} > ${maxAge}, url: ${url}`)
+          log.debug(`cache response intercept: skip: ${maxAgeMatch[1]} > ${maxAge}, url: ${url}`)
           return
         }
       }

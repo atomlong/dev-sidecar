@@ -25,7 +25,7 @@ module.exports = {
       res.end()
 
       const url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${req.url}`
-      log.info('abort intercept:', url)
+      log.debug('abort intercept:', url)
       return true // true代表请求结束
     } else {
       const response = interceptOpt.abort
@@ -76,7 +76,7 @@ module.exports = {
       res.end()
 
       const url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${req.url}`
-      log.info('abort intercept:', url, ', response:', JSON.stringify(response))
+      log.debug('abort intercept:', url, ', response:', JSON.stringify(response))
       return true // true代表请求结束
     }
   },

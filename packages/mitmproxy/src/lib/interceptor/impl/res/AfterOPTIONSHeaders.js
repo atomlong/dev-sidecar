@@ -36,7 +36,7 @@ module.exports = {
 
     // 替换响应头
     if (responseReplaceApi.replaceResponseHeaders({ ...headers }, res, proxyRes)) {
-      log.info('AfterOPTIONSHeaders intercept:', JSON.stringify(headers))
+      log.debug('AfterOPTIONSHeaders intercept:', JSON.stringify(headers))
       res.setHeader('DS-AfterOPTIONSHeaders-Interceptor', '1')
     } else {
       res.setHeader('DS-AfterOPTIONSHeaders-Interceptor', '0')

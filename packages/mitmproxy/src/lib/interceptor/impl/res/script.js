@@ -96,7 +96,7 @@ module.exports = {
       }
 
       res.setHeader('DS-Script-Interceptor', 'true')
-      log.info(`script response intercept: insert script ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${rOptions.path}`, ', head:', tags)
+      log.debug(`script response intercept: insert script ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${rOptions.path}`, ', head:', tags)
       return {
         head: `${tags}\r\n`,
       }
@@ -124,7 +124,7 @@ module.exports = {
           // 绝对地址
           const scriptKey = `${SCRIPT_PROXY_URL_PRE + scriptUrl.replace('.js', '').replace(/[\W_]+/g, '_')}.js` // 伪脚本地址：移除 script 中可能存在的特殊字符，并转为相对地址
           scriptProxy[scriptKey] = scriptUrl
-          log.info(`替换${name}配置值：'${scriptUrl}' -> '${scriptKey}'`)
+          log.debug(`替换${name}配置值：'${scriptUrl}' -> '${scriptKey}'`)
           if (typeof replaceScriptUrlFun === 'function') {
             replaceScriptUrlFun(scriptKey)
           }
@@ -212,7 +212,7 @@ module.exports = {
 
             const obj = {}
             obj[scriptKey] = hostnameConfig[scriptKey]
-            log.info(`域名 '${hostnamePattern}' 拦截配置中，新增目标脚本地址的响应头替换配置:`, JSON.stringify(obj, null, '\t'))
+            log.debug(`域名 '${hostnamePattern}' 拦截配置中，新增目标脚本地址的响应头替换配置:`, JSON.stringify(obj, null, '\t'))
           }
         }
       }

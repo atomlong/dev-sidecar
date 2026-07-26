@@ -91,18 +91,18 @@ function matchHostname (hostMap, hostname, action) {
   // 域名快速匹配：直接匹配（优先级最高）
   let value = hostMap.origin[hostname]
   if (value != null) {
-    log.info(`matchHostname: ${action}: '${hostname}' -> { "${hostname}": ${JSON.stringify(value)} }`)
+    log.debug(`matchHostname: ${action}: '${hostname}' -> { "${hostname}": ${JSON.stringify(value)} }`)
     return value // 快速匹配成功
   }
   // 域名快速匹配：三种前缀通配符匹配
   value = hostMap.origin[`*.${hostname}`]
   if (value != null) {
-    log.info(`matchHostname: ${action}: '${hostname}' -> { "*.${hostname}": ${JSON.stringify(value)} }`)
+    log.debug(`matchHostname: ${action}: '${hostname}' -> { "*.${hostname}": ${JSON.stringify(value)} }`)
     return value // 快速匹配成功
   }
   value = hostMap.origin[`*${hostname}`]
   if (value != null) {
-    log.info(`matchHostname: ${action}: '${hostname}' -> { "*${hostname}": ${JSON.stringify(value)} }`)
+    log.debug(`matchHostname: ${action}: '${hostname}' -> { "*${hostname}": ${JSON.stringify(value)} }`)
     return value // 快速匹配成功
   }
 
@@ -115,7 +115,7 @@ function matchHostname (hostMap, hostname, action) {
     // 正则表达式匹配
     if (hostname.match(regexp)) {
       value = hostMap[regexp]
-      log.info(`matchHostname: ${action}: '${hostname}' -> { "${regexp}": ${JSON.stringify(value)} }`)
+      log.debug(`matchHostname: ${action}: '${hostname}' -> { "${regexp}": ${JSON.stringify(value)} }`)
       return value
     }
   }
@@ -205,7 +205,7 @@ function matchHostnameAll (hostMap, hostname, action) {
 
   if (!lodash.isEmpty(values)) {
     mergeApi.deleteNullItems(values)
-    log.info(`matchHostname-all: ${action}: '${hostname}':`, JSON.stringify(values))
+    log.debug(`matchHostname-all: ${action}: '${hostname}':`, JSON.stringify(values))
     return values
   } else {
     log.debug(`matchHostname-all: ${action}: '${hostname}' Not-Matched`)

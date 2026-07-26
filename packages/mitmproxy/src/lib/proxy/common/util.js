@@ -77,7 +77,7 @@ function createHttpsAgent (timeoutConfig, verifySsl) {
   if (!httpsAgentCache[key]) {
     // 证书回调函数
     const checkServerIdentity = (host, cert) => {
-      log.info(`checkServerIdentity: ${host}, CN: ${cert.subject.CN}, C: ${cert.subject.C || cert.issuer.C}, ST: ${cert.subject.ST || cert.issuer.ST}, bits: ${cert.bits}`)
+      log.debug(`checkServerIdentity: ${host}, CN: ${cert.subject.CN}, C: ${cert.subject.C || cert.issuer.C}, ST: ${cert.subject.ST || cert.issuer.ST}, bits: ${cert.bits}`)
     }
 
     // 显式加载 NODE_EXTRA_CA_CERTS（Electron 打包应用会忽略该环境变量）

@@ -99,7 +99,7 @@ module.exports = {
     res.end()
 
     const url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${req.url}`
-    log.info('cache intercept:', url)
+    log.debug('cache intercept:', url)
     return true
   },
   is (interceptOpt) {

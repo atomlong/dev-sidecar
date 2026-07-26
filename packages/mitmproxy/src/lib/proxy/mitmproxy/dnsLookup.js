@@ -62,7 +62,7 @@ module.exports = {
         const aliveIpObj = tester.pickFastAliveIpObj()
         if (aliveIpObj && isValidIpAddress(aliveIpObj.host)) {
           const addressFamily = getAddressFamily(aliveIpObj.host)
-          log.info(`----- ${action}: ${hostname}, use alive ip from dns '${aliveIpObj.dns}': ${aliveIpObj.host}${target} -----`)
+          log.debug(`----- ${action}: ${hostname}, use alive ip from dns '${aliveIpObj.dns}': ${aliveIpObj.host}${target} -----`)
           if (res) {
             const dnsLabel = aliveIpObj.dns === '预设IP' ? 'PreSet' : safeHeaderValue(aliveIpObj.dns)
             res.setHeader('DS-DNS-Lookup', `IpTester: ${aliveIpObj.host} ${dnsLabel}`)
@@ -70,7 +70,7 @@ module.exports = {
           respondLookup(callback, aliveIpObj.host, addressFamily, all)
           return
         } else {
-          log.info(`----- ${action}: ${hostname}, no valid alive ip${target}, tester: { "ready": ${tester.ready}, "backupList": ${JSON.stringify(tester.backupList)} }`)
+          log.debug(`----- ${action}: ${hostname}, no valid alive ip${target}, tester: { "ready": ${tester.ready}, "backupList": ${JSON.stringify(tester.backupList)} }`)
         }
       }
 
@@ -81,7 +81,7 @@ module.exports = {
         const probe = tester.pickNextForProbing()
         if (probe && isValidIpAddress(probe.host)) {
           const addressFamily = getAddressFamily(probe.host)
-          log.info(`----- ${action}: ${hostname}, use probing ip: ${probe.host} (family: ${addressFamily})${target} -----`)
+          log.debug(`----- ${action}: ${hostname}, use probing ip: ${probe.host} (family: ${addressFamily})${target} -----`)
           if (isDnsIntercept) { isDnsIntercept.tester = tester }
           respondLookup(callback, probe.host, addressFamily, all)
           return
@@ -97,7 +97,7 @@ module.exports = {
             isDnsIntercept.ip = ip
             if (tester) isDnsIntercept.tester = tester
           }
-          log.info(`----- ${action}: ${hostname}, use ip from dns '${dns.dnsName}': ${ip}(family: ${addressFamily})${target} -----`)
+          log.debug(`----- ${action}: ${hostname}, use ip from dns '${dns.dnsName}': ${ip}(family: ${addressFamily})${target} -----`)
           if (res) {
             const dnsLabel = dns.dnsName === '预设IP' ? 'PreSet' : safeHeaderValue(dns.dnsName)
             res.setHeader('DS-DNS-Lookup', `DNS: ${ip} (IPv${addressFamily}) ${dnsLabel}`)
@@ -108,7 +108,7 @@ module.exports = {
           if (ip != null && ip !== hostname && !isValidIpAddress(ip)) {
             log.warn(`----- ${action}: ${hostname}, dns returned invalid ip '${ip}'${target}, fallback to default DNS`)
           }
-          log.info(`----- ${action}: ${hostname}, use default DNS: ${hostname}${target}, options:`, options, ', dns:', dns)
+          log.debug(`----- ${action}: ${hostname}, use default DNS: ${hostname}${target}, options:`, options, ', dns:', dns)
           defaultDns.lookup(hostname, options, callback)
         }
       }).catch((err) => {
