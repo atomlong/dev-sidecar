@@ -21,7 +21,7 @@ module.exports = {
     const unVerifySslStr = unVerifySsl ? ', unVerifySsl' : ''
     res.setHeader('DS-Interceptor', `sni: ${interceptOpt.sni}${unVerifySslStr}`)
 
-    log.info(`sni intercept: sni replace servername: ${rOptions.hostname} ➜ ${rOptions.servername}${unVerifySslStr}`)
+    log.debug(`sni intercept: sni replace servername: ${rOptions.hostname} ➜ ${rOptions.servername}${unVerifySslStr}`)
     return true
   },
   is (interceptOpt) {

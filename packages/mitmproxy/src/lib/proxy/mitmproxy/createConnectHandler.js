@@ -39,7 +39,7 @@ module.exports = function createConnectHandler (sslConnectInterceptor, middlewar
     if (isSslConnect(sslConnectInterceptors, req, cltSocket, head)) {
       // 需要拦截，代替目标服务器，让客户端连接DS在本地启动的代理服务
       fakeServerCenter.getServerPromise(hostname, port, ssl, compatibleConfig).then((serverObj) => {
-        log.info(`----- fakeServer connect: ${localIP}:${serverObj.port} ➜ ${req.url} -----`)
+        log.debug(`----- fakeServer connect: ${localIP}:${serverObj.port} ➜ ${req.url} -----`)
         connect(req, cltSocket, head, localIP, serverObj.port, null, false, hostname)
       }, (e) => {
         log.error(`----- fakeServer getServerPromise error: ${hostname}:${port}, error:`, e)
@@ -47,7 +47,7 @@ module.exports = function createConnectHandler (sslConnectInterceptor, middlewar
         log.error(`----- fakeServer getServerPromise error: ${hostname}:${port}, error:`, e)
       })
     } else {
-      log.info(`不拦截请求，直连目标服务器: ${hostname}:${port}, headers:`, jsonApi.stringify2(req.headers))
+      log.debug(`不拦截请求，直连目标服务器: ${hostname}:${port}, headers:`, jsonApi.stringify2(req.headers))
       connect(req, cltSocket, head, hostname, port, dnsConfig, true)
     }
   }
@@ -127,7 +127,7 @@ function connect (req, cltSocket, head, hostname, port, dnsConfig = null, isDire
       proxySocket.setTimeout(0)
 
       if (!isDirect) {
-        log.info(`Proxy connect start: ${hostport}`)
+        log.debug(`Proxy connect start: ${hostport}`)
       } else {
         log.debug('Direct connect start:', hostport)
       }

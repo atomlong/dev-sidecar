@@ -90,7 +90,7 @@ module.exports = function createUpgradeHandler (createIntercepts, middlewares, e
 
         function onFree () {
           const finalUrl = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${rOptions.path}`
-          log.info('发起代理Upgrade请求:', finalUrl, (rOptions.servername ? `, sni: ${rOptions.servername}` : ''), ', headers:', jsonApi.stringify2(rOptions.headers))
+          log.debug('发起代理Upgrade请求:', finalUrl, (rOptions.servername ? `, sni: ${rOptions.servername}` : ''), ', headers:', jsonApi.stringify2(rOptions.headers))
 
           const isDnsIntercept = {}
           if (dnsConfig && dnsConfig.dnsMap) {
@@ -99,7 +99,7 @@ module.exports = function createUpgradeHandler (createIntercepts, middlewares, e
               const dns = dnsConfig.dnsMap.ForSNI
               if (dns) {
                 dnsAndFamily = { dns }
-                log.info(`域名 ${rOptions.hostname} 在dns中未配置，但使用了 sni: ${rOptions.servername}, 必须使用dns，现默认使用 '${dns.dnsName}' DNS.`)
+                log.debug(`域名 ${rOptions.hostname} 在dns中未配置，但使用了 sni: ${rOptions.servername}, 必须使用dns，现默认使用 '${dns.dnsName}' DNS.`)
               } else {
                 log.warn(`域名 ${rOptions.hostname} 在dns中未配置，但使用了 sni: ${rOptions.servername}，且DNS服务管理中，也未指定SNI默认使用的DNS。`)
               }
@@ -111,7 +111,7 @@ module.exports = function createUpgradeHandler (createIntercepts, middlewares, e
               }
               log.debug(`域名 ${rOptions.hostname} DNS: ${dnsAndFamily.dns.dnsName}, family: ${rOptions.family || 4}`)
             } else {
-              log.info(`域名 ${rOptions.hostname} 在DNS中未配置`)
+              log.debug(`域名 ${rOptions.hostname} 在DNS中未配置`)
             }
           }
 
@@ -121,7 +121,7 @@ module.exports = function createUpgradeHandler (createIntercepts, middlewares, e
             const compatibleConfig = compatible.getRequestCompatibleConfig(rOptions, rOptions.compatibleConfig)
             if (compatibleConfig && compatibleConfig.rejectUnauthorized != null && agentOptions.rejectUnauthorized !== compatibleConfig.rejectUnauthorized) {
               if (compatibleConfig.rejectUnauthorized === false && rOptions.agent.unVerifySslAgent) {
-                log.info(`【自动兼容程序】${rOptions.hostname}:${rOptions.port}: 设置 'rOptions.agent.options.rejectUnauthorized = ${compatibleConfig.rejectUnauthorized}'`)
+                log.debug(`【自动兼容程序】${rOptions.hostname}:${rOptions.port}: 设置 'rOptions.agent.options.rejectUnauthorized = ${compatibleConfig.rejectUnauthorized}'`)
                 rOptions.agent = rOptions.agent.unVerifySslAgent
               }
             }

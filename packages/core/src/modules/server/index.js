@@ -12,6 +12,12 @@ let server = null
 let currentPlugins = null
 let currentMitmproxyPath = null
 
+// 自愈状态：mitmproxy 子进程异常退出 (SIGABRT/SIGSEGV/非零退出) 时自动重启。
+// 主进程不感知子进程崩溃，systemd 的 Restart=on-failure 也只看主进程，
+// 没有 respawn 的话代理端口直接死亡，浏览器全部 Connection refused。
+let intentionalStop = false // kill/close/restart 主动调用时的正常退出，不自愈
+const respawnState = { count: 0, firstCrashTime: null } // 30 秒滑动窗口内最多 3 次
+
 function fireStatus (status) {
   event.fire('status', { key: 'server.enabled', value: status })
 }
@@ -115,6 +121,31 @@ const serverApi = {
     })
     serverProcess.on('exit', (code, signal) => {
       log.warn(`server process exit, code: ${code}, signal:`, signal)
+      // 主动 kill/close/restart 触发的正常退出，不自愈
+      if (intentionalStop) {
+        intentionalStop = false
+        return
+      }
+      // 异常崩溃自愈：30 秒滑动窗口内最多 3 次，超过则放弃避免重启风暴
+      const now = Date.now()
+      if (respawnState.firstCrashTime == null || now - respawnState.firstCrashTime > 30000) {
+        respawnState.firstCrashTime = now
+        respawnState.count = 0
+      }
+      respawnState.count += 1
+      if (respawnState.count > 3) {
+        log.error(`server process 自愈放弃：30 秒内已重启 ${respawnState.count - 1} 次仍崩溃 (code=${code}, signal=${signal})，等待手动介入`)
+        fireStatus(false)
+        event.fire('error', { key: 'server', value: 'respawn_exceeded', message: 'mitmproxy 崩溃自愈次数超限' })
+        return
+      }
+      log.warn(`server process 异常退出 (code=${code}, signal=${signal})，自愈重启中 (尝试 ${respawnState.count}/3)...`)
+      server = null
+      serverApi.start({ mitmproxyPath: currentMitmproxyPath, plugins: currentPlugins }).then(() => {
+        log.warn(`server process 自愈重启成功 (第 ${respawnState.count} 次)`)
+      }).catch((err) => {
+        log.error('server process 自愈重启失败:', err)
+      })
     })
     serverProcess.on('uncaughtException', (err, origin) => {
       log.error('server process uncaughtException:', err)
@@ -138,6 +169,7 @@ const serverApi = {
   },
   async kill () {
     if (server) {
+      intentionalStop = true
       server.process.kill('SIGINT')
       await sleep(1000)
     }

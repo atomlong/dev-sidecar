@@ -134,7 +134,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
         function onFree () {
           url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${rOptions.path}`
           const start = Date.now()
-          log.info('发起代理请求:', url, (rOptions.servername ? `, sni: ${rOptions.servername}` : ''), ', headers:', jsonApi.stringify2(rOptions.headers))
+          log.debug('发起代理请求:', url, (rOptions.servername ? `, sni: ${rOptions.servername}` : ''), ', headers:', jsonApi.stringify2(rOptions.headers))
 
           const isDnsIntercept = {}
           if (dnsConfig && dnsConfig.dnsMap) {
@@ -143,7 +143,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
               const dns = dnsConfig.dnsMap.ForSNI
               if (dns) {
                 dnsAndFamily = { dns }
-                log.info(`域名 ${rOptions.hostname} 在dns中未配置，但使用了 sni: ${rOptions.servername}, 必须使用dns，现默认使用 '${dnsAndFamily.dnsName}' DNS.`)
+                log.debug(`域名 ${rOptions.hostname} 在dns中未配置，但使用了 sni: ${rOptions.servername}, 必须使用dns，现默认使用 '${dnsAndFamily.dnsName}' DNS.`)
               } else {
                 log.warn(`域名 ${rOptions.hostname} 在dns中未配置，但使用了 sni: ${rOptions.servername}，然而DNS服务管理中，并未指定SNI默认使用的DNS。`)
               }
@@ -156,10 +156,10 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
               log.debug(`域名 ${rOptions.hostname} DNS: ${dnsAndFamily.dns.dnsName}, family: ${rOptions.family || 4}`)
               res.setHeader('DS-DNS', dnsAndFamily.dns.dnsName === '预设IP' ? 'PreSet' : dnsAndFamily.dns.dnsName.replace(/[^\x20-\x7E]/g, ''))
             } else {
-              log.info(`域名 ${rOptions.hostname} 在DNS中未配置`)
+              log.debug(`域名 ${rOptions.hostname} 在DNS中未配置`)
             }
           } else {
-            log.info(`域名 ${rOptions.hostname} DNS配置不存在`)
+            log.debug(`域名 ${rOptions.hostname} DNS配置不存在`)
           }
 
           // rOptions.sigalgs = 'RSA-PSS+SHA256:RSA-PSS+SHA512:ECDSA+SHA256'
@@ -177,7 +177,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             const compatibleConfig = compatible.getRequestCompatibleConfig(rOptions, rOptions.compatibleConfig)
             if (compatibleConfig && compatibleConfig.rejectUnauthorized != null && agentOptions.rejectUnauthorized !== compatibleConfig.rejectUnauthorized) {
               if (compatibleConfig.rejectUnauthorized === false && rOptions.agent.unVerifySslAgent) {
-                log.info(`【自动兼容程序】${rOptions.hostname}:${rOptions.port}: 设置 'rOptions.agent.options.rejectUnauthorized = ${compatibleConfig.rejectUnauthorized}'`)
+                log.debug(`【自动兼容程序】${rOptions.hostname}:${rOptions.port}: 设置 'rOptions.agent.options.rejectUnauthorized = ${compatibleConfig.rejectUnauthorized}'`)
                 rOptions.agent = rOptions.agent.unVerifySslAgent
                 res.setHeader('DS-Compatible', 'unVerifySsl')
               }
@@ -188,9 +188,9 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           proxyReq = (rOptions.protocol === 'https:' ? https : http).request(rOptions, (proxyRes) => {
             const cost = Date.now() - start
             if (rOptions.protocol === 'https:') {
-              log.info(`代理请求返回: 【${proxyRes.statusCode}】${url}, cost: ${cost} ms`)
+              log.debug(`代理请求返回: 【${proxyRes.statusCode}】${url}, cost: ${cost} ms`)
             } else {
-              log.info(`请求返回: 【${proxyRes.statusCode}】${url}, cost: ${cost} ms`)
+              log.debug(`请求返回: 【${proxyRes.statusCode}】${url}, cost: ${cost} ms`)
             }
 
             // 按需探测反馈：IP 连接成功

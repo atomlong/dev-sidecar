@@ -47,7 +47,7 @@ module.exports = {
     res.writeHead(200, headers)
     res.end()
 
-    log.info('options intercept:', (rOptions.original || rOptions).url)
+    log.debug('options intercept:', (rOptions.original || rOptions).url)
     return true // true代表请求结束
   },
   is (interceptOpt) {

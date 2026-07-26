@@ -143,7 +143,7 @@ module.exports = {
     const proxyTarget = doProxy(proxyConf, rOptions, req, interceptOpt, matched, hostnameMatched, context)
 
     if (context.requestCount) {
-      log.info('proxy choice:', JSON.stringify(context.requestCount))
+      log.debug('proxy choice:', JSON.stringify(context.requestCount))
     }
 
     if (interceptOpt.sni) {
@@ -161,20 +161,20 @@ module.exports = {
 
       const unVerifySslStr = unVerifySsl ? ', unVerifySsl' : ''
       res.setHeader('DS-Interceptor', `proxy: ${proxyTarget}, sni: ${interceptOpt.sni}${unVerifySslStr}`)
-      log.info(`proxy intercept: hostname: ${originHostname}, target: ${proxyTarget}, sni replace servername: ${rOptions.servername}${unVerifySslStr}`)
+      log.debug(`proxy intercept: hostname: ${originHostname}, target: ${proxyTarget}, sni replace servername: ${rOptions.servername}${unVerifySslStr}`)
     } else if (interceptOpt.unVerifySsl === true) {
       const agentOptions = rOptions.agent && rOptions.agent.options ? rOptions.agent.options : {}
       if (agentOptions.rejectUnauthorized && rOptions.agent && rOptions.agent.unVerifySslAgent) {
         rOptions.agent = rOptions.agent.unVerifySslAgent
         res.setHeader('DS-Interceptor', `proxy: ${proxyTarget}, unVerifySsl`)
-        log.info(`proxy intercept: hostname: ${originHostname}, target: ${proxyTarget}, unVerifySsl`)
+        log.debug(`proxy intercept: hostname: ${originHostname}, target: ${proxyTarget}, unVerifySsl`)
       } else {
         res.setHeader('DS-Interceptor', `proxy: ${proxyTarget}, already unVerifySsl`)
-        log.info(`proxy intercept: hostname: ${originHostname}, target: ${proxyTarget}, already unVerifySsl`)
+        log.debug(`proxy intercept: hostname: ${originHostname}, target: ${proxyTarget}, already unVerifySsl`)
       }
     } else {
       res.setHeader('DS-Interceptor', `proxy: ${proxyTarget}`)
-      log.info(`proxy intercept: hostname: ${originHostname}, target：${proxyTarget}`)
+      log.debug(`proxy intercept: hostname: ${originHostname}, target：${proxyTarget}`)
     }
 
     return true

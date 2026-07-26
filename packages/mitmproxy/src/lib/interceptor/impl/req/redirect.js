@@ -28,7 +28,7 @@ module.exports = {
     res.end()
 
     const url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${req.url}`
-    log.info(`redirect intercept: ${url} ➜ ${redirect}`)
+    log.debug(`redirect intercept: ${url} ➜ ${redirect}`)
     return true // true代表请求结束
   },
   is (interceptOpt) {
