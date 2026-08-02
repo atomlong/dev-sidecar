@@ -562,9 +562,8 @@ function getCacheRefreshBatchSize (cfg) {
   return resolveStage3BatchLevel(cfg).batchSize
 }
 
-// Resolve the stage3 batch level (1-5) to its { batchSize, maxOldSpaceSizeMB,
-// stage3GcThresholdMB } tuple. Falls back to the default level when the user
-// value is missing or out of range.
+// Resolve the stage3 batch level (1-5) to its { batchSize, stage3GcThresholdMB }
+// tuple. Falls back to the default level when the user value is missing or out of range.
 function resolveStage3BatchLevel (cfg) {
   const table = pluginConfig.STAGE3_BATCH_LEVEL_TABLE
   const defaultLevel = pluginConfig.STAGE3_BATCH_LEVEL_DEFAULT
@@ -2168,7 +2167,9 @@ const Plugin = function (context) {
         return
       }
 
-      const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, cfg.probeUrl, cfg.probeInterval, {
+      // Observatory 用 observatoryProbeUrl（严格探测），Stage3 用 probeUrl（宽松探测）
+      const observatoryProbeUrl = cfg.observatoryProbeUrl || cfg.probeUrl
+      const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, observatoryProbeUrl, cfg.probeInterval, {
         observatoryEnableConcurrency: true,
       })
       writeJsonFile(currentLiveConfigPath, liveConfig)
@@ -2258,7 +2259,7 @@ const Plugin = function (context) {
       return
     }
 
-    const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, cfg.probeUrl, cfg.probeInterval, {
+    const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
       observatoryEnableConcurrency: true,
     })
     writeJsonFile(currentLiveConfigPath, liveConfig)
@@ -2643,7 +2644,7 @@ const Plugin = function (context) {
           log.info(`Xray 预置节点已注入: manualNodes=${manualStartupNodes.length}, combinedStartupNodes=${startupNodes.length}`)
         }
 
-        const liveConfig = genConfig(port, startupNodes, cfg.rules, cfg.probeUrl, cfg.probeInterval, {
+        const liveConfig = genConfig(port, startupNodes, cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
           observatoryEnableConcurrency: true,
         })
         writeJsonFile(liveConfigPath, liveConfig)
