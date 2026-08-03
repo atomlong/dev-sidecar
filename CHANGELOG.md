@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.2.4] - Unreleased
+## [v2.2.4] - 2026-08-03
 
 ### Fixed
 - Fixed `tunnel://127.0.0.1:0` (port 0 placeholder for xray) always failing with `ECONNREFUSED 127.0.0.1` even after `setting.xrayPort` was set. Root cause: `getTunnelAgent` in `packages/mitmproxy/src/lib/proxy/common/util.js` used global single-variable caches (`httpsOverHttpAgent`, `httpsOverHttpsAgent`, `httpOverHttpsAgent`) — the first call (before xray started, port still 0) cached a dead agent that was reused forever, ignoring the port 0 → xrayPort replacement done by `doProxy`. Replaced with a Map cache keyed by `${agentType}:${hostname}:${port}`, so port 0 and port 10801 get separate agents. Verified: `tunnel://127.0.0.1:0` now works correctly, port is auto-replaced by `setting.xrayPort` at runtime.
