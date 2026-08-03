@@ -118,171 +118,7 @@
   --ant-sider-bg: #1e1f22;
 }
 
-/* ==================== 暗色主题专用样式 ==================== */
-[data-theme='dark'] {
-  /* 表格 */
-  .ant-table {
-    background-color: var(--bg-primary);
-    color: var(--text-primary);
-  }
-  .ant-table-thead > tr > th {
-    background-color: var(--bg-highlight);
-    color: var(--text-primary);
-    border-bottom-color: var(--border-color);
-  }
-  .ant-table-tbody > tr > td {
-    border-bottom-color: var(--border-color);
-  }
-  .ant-table-tbody > tr:hover > td {
-    background-color: var(--bg-highlight) !important;
-  }
-
-  /* 描述列表 */
-  .ant-descriptions-bordered {
-    .ant-descriptions-item-label,
-    .ant-descriptions-item-content {
-      background-color: var(--bg-primary);
-      border-color: var(--border-color);
-    }
-    .ant-descriptions-item-label {
-      background-color: var(--bg-highlight);
-    }
-  }
-
-  /* 折叠面板 */
-  .ant-collapse {
-    background-color: var(--bg-primary);
-    border-color: var(--border-color);
-    > .ant-collapse-item {
-      border-bottom-color: var(--border-color);
-      > .ant-collapse-header {
-        background-color: var(--bg-highlight);
-        color: var(--text-primary);
-      }
-      > .ant-collapse-content {
-        background-color: var(--bg-primary);
-        color: var(--text-primary);
-        border-top-color: var(--border-color);
-      }
-    }
-  }
-
-  /* 标签 */
-  .ant-tag-red {
-    background-color: #4f4749;
-    border-color: #4f4749;
-    color: #bf8285;
-  }
-  .ant-tag-green {
-    background-color: #505f5f;
-    border-color: #505f5f;
-    color: #90cb9f;
-  }
-  .ant-tag-orange {
-    background-color: #5a5750;
-    border-color: #5a5750;
-    color: #cfa572;
-  }
-  .ant-tag:not(.ant-tag-red):not(.ant-tag-green):not(.ant-tag-orange) {
-    background-color: #5a5a5a;
-    border-color: #5a5a5a;
-    color: #ccc;
-  }
-
-  /* 警告/消息提示 */
-  .ant-alert-warning {
-    background-color: var(--bg-highlight);
-    border-color: var(--bg-highlight);
-    color: var(--text-primary);
-    .ant-alert-close-icon .anticon-close {
-      color: var(--text-primary);
-    }
-  }
-  .ant-alert-info {
-    background-color: var(--bg-highlight);
-    border-color: var(--bg-highlight);
-    color: var(--text-primary);
-  }
-
-  /* 菜单 */
-  .ant-menu {
-    background-color: var(--bg-primary);
-    color: var(--text-primary);
-  }
-  .ant-menu-item:hover,
-  .ant-menu-submenu .ant-menu-submenu-title:hover,
-  .ant-menu:not(.ant-menu-horizontal) .ant-menu-item-selected {
-    background-color: var(--bg-highlight);
-    color: var(--accent-color);
-    span { color: var(--accent-color); }
-  }
-
-  /* 开关 */
-  .ant-switch:not(.ant-switch-checked) {
-    background-color: var(--btn-bg);
-    &:hover { opacity: 0.8; }
-  }
-
-  /* 卡片（IP测速） */
-  .ant-card {
-    background-color: var(--bg-tertiary);
-    border-color: var(--bg-tertiary);
-    .ant-card-head { border-bottom-color: #929292; }
-  }
-
-  /* 输入框、下拉框 */
-  .ant-input,
-  .ant-input-number-input,
-  .ant-input-number,
-  .ant-input-group-addon {
-    background-color: var(--bg-tertiary);
-    border-color: #aaa;
-    color: var(--text-primary);
-    &:hover, &:focus { border-color: #eee; }
-  }
-  .ant-select:not(.ant-select-customize-input) .ant-select-selector {
-    background-color: var(--bg-tertiary) !important;
-    border-color: #aaa !important;
-    color: var(--text-primary) !important;
-    &:hover { border-color: #eee !important; }
-  }
-  .ant-select-focused:not(.ant-select-customize-input) .ant-select-selector {
-    border-color: #eee !important;
-    box-shadow: 0 0 0 2px rgb(255 255 255 / 35%) !important;
-  }
-
-  /* 下拉面板 */
-  .ant-select-dropdown {
-    background-color: var(--btn-bg);
-    .ant-select-item { color: var(--text-primary); }
-    .ant-select-item-option-active:not(.ant-select-item-option-disabled),
-    .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
-      background-color: var(--bg-tertiary);
-    }
-  }
-
-  /* 弹窗/对话框/抽屉 */
-  .ant-modal-content, .ant-modal-header,
-  .ant-drawer-content, .ant-drawer-header {
-    background-color: var(--bg-primary);
-    color: var(--text-primary);
-  }
-  .ant-modal-title, .ant-drawer-title { color: var(--text-primary); }
-  .ant-modal-close-x, .ant-drawer-close { color: var(--text-primary); }
-  .ant-modal-footer { border-top-color: var(--border-color); }
-  .ant-drawer-body { background-color: var(--bg-primary); color: var(--text-primary); }
-
-  /* 全局提示 */
-  .ant-message-notice-content {
-    background-color: var(--btn-bg);
-    color: var(--text-primary);
-  }
-
-  /* 表单标签 */
-  .ant-form-item-label > label {
-    color: var(--text-primary);
-  }
-}
+/* ==================== 通用样式（使用 CSS 变量）==================== */
 
 /* 基础布局 */
 .ds_layout,
@@ -553,26 +389,15 @@ hr {
   }
 }
 
-/* 危险按钮（ant-design-vue 4.x 使用 ant-btn-danger 类名） */
-.ant-btn-dangerous,
-.ant-btn-danger {
-  &.ant-btn {
-    background-color: #a61d24 !important;
-    border-color: #a61d24 !important;
-    color: #fff !important;
+/* 危险按钮 */
+.ant-btn-dangerous {
+  span {
+    color: #ff4d4f;
+  }
 
-    span {
-      color: #fff !important;
-    }
-
-    &:hover {
-      background-color: #c7252e !important;
-      border-color: #c7252e !important;
-
-      span {
-        color: #fff !important;
-      }
-    }
+  &:hover span,
+  &:focus span {
+    color: #ff7875;
   }
 }
 

@@ -54,6 +54,14 @@ module.exports = defineConfig({
         fs: false,
       },
     },
+    plugins: [
+      // @ljharb 系列包最近覆盖发布，新增的 tsconfig.json extends "@ljharb/tsconfig"
+      // 该包是 dev 依赖，pnpm 不安装，webpack 打包时报 Module not found。
+      // 这里用 IgnorePlugin 忽略对 @ljharb/tsconfig 的解析。
+      new webpack.IgnorePlugin({
+        resourceRegExp: /@ljharb\/tsconfig/,
+      }),
+    ],
     module: {
       rules: [
         {

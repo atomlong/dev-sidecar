@@ -6,6 +6,7 @@ const event = require('./event')
 const modules = require('./modules')
 const shell = require('./shell')
 const status = require('./status')
+const instance = require('./modules/instance')
 const log = require('./utils/util.log.core')
 const { getCurrentProcessCgroupPath } = require('./modules/plugin/xray/util.cgroup')
 
@@ -208,6 +209,7 @@ const api = {
   server,
   proxy,
   plugin,
+  instance,
   log,
 }
 module.exports = {

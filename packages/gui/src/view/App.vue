@@ -22,7 +22,6 @@ export default {
       config: undefined,
       configReadyPromise: null,
       selectedKeys: [],
-      openKeys: ['/plugin'],
       menus: [],
       hideSearchBar: true,
       searchBarIsFocused: false,
@@ -115,11 +114,20 @@ export default {
     const initialThemeMode = appConfig.theme || 'dark'
     this.cleanupTheme = initTheme(initialThemeMode)
 
+    // 将暗色模式类名同步到 body，确保 Teleport 渲染到 body 的组件
+    // （Select 下拉面板、Modal、Drawer、Message 等）也能应用暗色主题
+    if (theme === 'dark') {
+      document.body.classList.add('theme-dark')
+    } else {
+      document.body.classList.remove('theme-dark')
+    }
+
     // 设置默认选中的菜单项
     this.updateSelectedKeys(this.$route.fullPath)
   },
 
   beforeUnmount() {
+    document.body.classList.remove('theme-dark')
     ipcRenderer.removeListener('config.changed', this.onConfigChanged)
     // 清理主题监听器
     if (this.cleanupTheme) {
