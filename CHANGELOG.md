@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.2.5] - Unreleased
+
+Synced upstream `docmirror/dev-sidecar` master (29 commits). Upstream introduced a CLI rewrite (native `ds-cli` binary with SEA packaging), single-instance mutex, and Linux/macOS environment-variable proxy support. All fork-specific changes (CA cert passthrough, Xray plugin, keep-alive socket fix, log.debug hot-path demotion, conditional linuxTargets, native module rebuild, CSS variable theme) were preserved. The fork's desktop-detection logic in `set-system-proxy` was merged with upstream's env-var support so that headless servers now write proxy env vars (previously the early `return true` skipped them).
+
+### Added
+- **CLI rewritten as native `ds-cli` binary** (upstream). The CLI (`packages/cli/`) was rewritten from a plain Node script into a native command-line tool `ds-cli` with Sea-of-Nodejs (SEA) packaging support. New `packages/cli/scripts/build.js` performs incremental builds with SHA256 checksums and parallel downloads, auto-cleans stale build products while preserving the `node-bin` cache, dynamically fetches the Node.js supported platform list, and displays OS type/version/arch. New `.github/workflows/build-cli.yml` CI workflow builds the CLI binary. New `packages/cli/README.md` documents SEA packaging and cross-compilation. `packages/cli/src/sea-entry.js` is the SEA entry point; `packages/cli/.gitignore` ignores build products except `sea-config.json`.
+- **CLI new commands** (upstream): `proxy on/off` (fork worker sets system proxy immediately), `plugin start/stop` (persists to `config.json`, takes effect on restart), `service install/uninstall` (boot autostart), `help` (command form `ds-cli help` only, `--help`/`-h` removed), `status` (shows running instance and plugin state), `start`/`stop`/`restart`. Workers split into `proxy-worker.js`, `plugin-worker.js`, `free-eye-worker.js`. `packages/cli/src/user_config.json5` removed (no longer shipped as a static template).
+- **CLI/GUI single-instance mutex** via `proper-lockfile` long-lock (`packages/core/src/modules/instance/index.js`, 140 lines). `packages/core/src/expose.js` exposes `api.instance`. GUI `background.js` acquires the lock on `app.whenReady()` and writes instance info (`type: 'gui'`, pid, command, startTime) to `running.json`; if another instance holds the lock, the GUI quits with an error. CLI does the same on `start`/`proxy on`/`plugin start`. `packages/core/test/instanceTest.js` (153 lines) covers acquire/release/write/cleanup.
+- **Linux/macOS environment-variable proxy support** (upstream). `packages/core/src/shell/scripts/set-system-proxy/index.js` gained `writeProxyEnvFile` / `addProxyEnvToShellProfile` / `removeProxyEnvFromShellProfile` helpers and a `setEnv` param. When `setEnv` is true, the proxy env vars (`http_proxy`, `https_proxy`, `no_proxy`) are written to a file and appended to the detected shell profile (`~/.bashrc` / `~/.zshrc`), independent of `gsettings` — so CLI tools (curl, git, npm) on headless servers pick up the proxy even without a desktop. macOS uses the same env-var file mechanism alongside `networksetup`.
+- **Plugin status events** (upstream). `overwall` and `pip` plugins now fire `event.fire('status', ...)` on start/close and log `开启/关闭【X】代理成功`. `overwall` gained a `status: { enabled: false }` block. `packages/core/src/modules/server/index.js` emits `status.server.enabled` events. `packages/gui/src/view/pages/proxy.vue` reads the new status.
+- **CLI test suite** (upstream). 60+ new Mocha test cases: `packages/cli/test/{gui,index,plugin,proxy,service,start,status}.test.js` covering proxy on/off, config persistence, shell detection, service/help/version/unknown commands.
+
+### Changed
+- **`set-system-proxy` complementary merge** (fork + upstream). The fork's desktop-detection logic (skip `gsettings` when `/usr/bin/gsettings` is absent or the X server socket `/tmp/.X11-unix/X*` does not exist, to avoid spawning dbus-launch + dbus-daemon + dconf-service on headless servers) was refactored from an early `return true` into a `hasDesktop` flag. Upstream's env-var support (`writeProxyEnvFile` + `addProxyEnvToShellProfile`) now runs **unconditionally**; `gsettings` calls are guarded by `if (!hasDesktop) return true` after env vars are written. This fixes a regression where the fork's early return skipped env-var setup on headless servers, leaving CLI tools unable to use the proxy.
+- **Duplicate `version` keys in package.json** (`packages/cli`, `packages/core`, `packages/mitmproxy`) cleaned up after conflict resolution (the `ours`/`theirs` merge left duplicate `"version": "2.2.4"` lines). Versions kept at `2.2.4` (will bump to `2.2.5` on release).
+- **`packages/core/src/expose.js`**: `startup()` now checks `!status.server.enabled` before calling `server.start()`, preventing a duplicate-start when the server is already running.
+- **`packages/core/package.json`**: added `proper-lockfile: ^4.1.2` dependency.
+- **Root `package.json`**: merged fork's `electron-builder` 25.1.8 / `app-builder-lib` / `dmg-builder` / `electron-builder-squirrel-windows` pins with upstream's security overrides (`axios`, `brace-expansion`, `cross-spawn`, `dns-packet`, `form-data`, `hoek`, `ip`, `minimist`, `qs`, `tough-cookie`).
+- **`packages/gui/src/view/composables/theme.js`**: adopted upstream's `document.body.setAttribute('data-theme', theme)` sync (complements the fork's `classList.add('theme-dark')` in `App.vue`, which was deduplicated from 13 accidental copies to 1).
+- **`README.md`**: upstream revised the mirror website section.
+
+### Fixed
+- **GUI process detection false positives** (upstream). `packages/cli/src/commands/gui.js` and `status.js` no longer misreport a running GUI when matching unrelated processes.
+- **`status.json` periodic writes removed** (upstream). Replaced with event-driven status updates merged into `running.json`, eliminating the separate `status.json` file and its timer.
+
 ## [v2.2.4] - 2026-08-03
 
 ### Fixed
