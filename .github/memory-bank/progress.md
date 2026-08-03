@@ -1,12 +1,19 @@
 # Progress
 
 ## Status
-- **Current Version**: 2.2.3 (Unreleased; all changes built and deployed for verification)
+- **Current Version**: 2.2.4 (Unreleased; all changes built and deployed for verification)
 - **Previous Released**: 2.2.2 (2026-07-19)
 - **Development Branch**: `develop`
 - **Stable Branch**: `master`
 
 ## Completed Features
+- [x] **v2.2.4 tunnel agent 缓存修复 + observatoryProbeUrl**:
+    - `getTunnelAgent` 全局单变量缓存改为 Map 缓存（key 含 `agentType` 前缀），修复 `tunnel://127.0.0.1:0` 的 port 0 dead agent 被永久复用导致 `ECONNREFUSED` 的问题。
+    - 新增 `observatoryProbeUrl` 配置项，Stage1/observatory 运行时探测可独立于 Stage3 的 `probeUrl`，支持用 `chatgpt.com` 严格探测过滤坏节点。
+    - 修正 `STAGE3_BATCH_LEVEL_TABLE` 注释：`batchSize = 64 << (level-1)`；`maxOldSpaceSizeMB` 只用于 xray probe，mitmproxy 写死 96MB。
+    - 移除 dead `maxOldSpaceSizeMB` 字段（v2.2.3 后无代码引用）。
+    - mitmproxy SIGABRT 修复：57 个热路径 `log.info` 降级为 `log.debug`。
+    - mitmproxy 子进程崩溃自愈：`serverProcess.on('exit')` 检测异常退出并自动 re-fork。
 - [x] **Linux systemd 内存峰值优化 (v2.2.3)**:
     - 多层 cgroup memory.reclaim 回收（expose.js + xray/index.js）：热启动 peak 从 ~280MB 降到 ~245MB。
     - `StartupMemoryHigh=300M` + `MemoryHigh=280M`：冷启动 peak 282MB 不被 throttled，运行时 280M 限制稳态。

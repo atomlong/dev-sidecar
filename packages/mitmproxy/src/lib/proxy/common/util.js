@@ -56,7 +56,9 @@ const httpAgentCache = {}
 
 let socketId = 0
 
-let httpsOverHttpAgent, httpOverHttpsAgent, httpsOverHttpsAgent
+// Tunnel agent 缓存，按 `${hostname}:${port}` 区分，避免 port 0 的 agent 缓存
+// 覆盖 port 10801 的 agent（xrayPort 动态替换场景）
+const tunnelAgentCache = {}
 
 function getTimeoutConfig (hostname, serverSetting) {
   const timeoutMapping = serverSetting.timeoutMapping
@@ -261,10 +263,16 @@ util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
   const extraCerts = loadExtraCaCerts()
   const caOption = Array.isArray(extraCerts) ? { ca: extraCerts } : {}
 
+  // cacheKey 包含 agent 类型，避免同 host:port 不同协议组合返回错误 agent
+  const agentType = requestIsSSL
+    ? (protocol === 'http:' ? 'httpsOverHttp' : 'httpsOverHttps')
+    : 'httpOverHttps'
+  const cacheKey = `${agentType}:${hostname}:${port}`
+
   if (requestIsSSL) {
     if (protocol === 'http:') {
-      if (!httpsOverHttpAgent) {
-        httpsOverHttpAgent = tunnelAgent.httpsOverHttp({
+      if (!tunnelAgentCache[cacheKey]) {
+        tunnelAgentCache[cacheKey] = tunnelAgent.httpsOverHttp({
           ...caOption,
           proxy: {
             host: hostname,
@@ -272,10 +280,10 @@ util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
           },
         })
       }
-      return httpsOverHttpAgent
+      return tunnelAgentCache[cacheKey]
     } else {
-      if (!httpsOverHttpsAgent) {
-        httpsOverHttpsAgent = tunnelAgent.httpsOverHttps({
+      if (!tunnelAgentCache[cacheKey]) {
+        tunnelAgentCache[cacheKey] = tunnelAgent.httpsOverHttps({
           ...caOption,
           proxy: {
             host: hostname,
@@ -283,29 +291,21 @@ util.getTunnelAgent = (requestIsSSL, externalProxyUrl) => {
           },
         })
       }
-      return httpsOverHttpsAgent
+      return tunnelAgentCache[cacheKey]
     }
   } else {
     if (protocol === 'http:') {
-      // if (!httpOverHttpAgent) {
-      //     httpOverHttpAgent = tunnelAgent.httpOverHttp({
-      //         proxy: {
-      //             host: hostname,
-      //             port: port
-      //         }
-      //     })
-      // }
       return false
     } else {
-      if (!httpOverHttpsAgent) {
-        httpOverHttpsAgent = tunnelAgent.httpOverHttps({
+      if (!tunnelAgentCache[cacheKey]) {
+        tunnelAgentCache[cacheKey] = tunnelAgent.httpOverHttps({
           proxy: {
             host: hostname,
             port,
           },
         })
       }
-      return httpOverHttpsAgent
+      return tunnelAgentCache[cacheKey]
     }
   }
 }

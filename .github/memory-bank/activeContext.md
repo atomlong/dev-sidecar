@@ -1,11 +1,26 @@
 # Active Context
 
 ## Current Work
-- **Linux systemd 服务内存峰值优化（v2.2.3）**：已完成为期一天的冷启动/热启动内存峰值调查与优化，最终方案落地：`StartupMemoryHigh=300M` + `MemoryHigh=280M` + gsettings 无桌面跳过 + `--max-old-space-size` 固定 96MB。热启动 peak ~245-260MB，冷启动 peak ~282MB（物理下限），high 事件归零。
-- **v2.2.3 待发布**：CHANGELOG 已更新，所有改动已构建部署验证通过，等待提交发布。
+- **v2.2.4 tunnel agent 缓存修复 + observatoryProbeUrl**：已修复 `tunnel://127.0.0.1:0` 的 port 0 dead agent 缓存问题，新增 `observatoryProbeUrl` 配置项，所有改动已构建部署验证通过，等待提交发布。
+- **Copilot WebSocket + xray + Vercel 解决方案**：copilot.microsoft.com 被 CF 1009 地理封锁，通过 Vercel 代理 HTTP + xray 代理 WebSocket + Vercel 函数改写响应（460→200, isBlocked→false）三层绕过。Windows 浏览器已验证可聊天。
 
 ## Recent Changes
-- [Optimization] **systemd 内存峰值优化（2026-07-23）**：
+- [Fix] **getTunnelAgent 缓存修复（2026-08-03）**：
+    - `packages/mitmproxy/src/lib/proxy/common/util.js` 中 `getTunnelAgent` 的全局单变量缓存（`httpsOverHttpAgent` 等）改为 Map 缓存，key = `${agentType}:${hostname}:${port}`。
+    - 根因：xray 启动前第一次请求缓存了 port 0 的 dead agent，xrayPort 设置后仍返回旧 agent，导致 `ECONNREFUSED 127.0.0.1`。
+    - 修复后 `tunnel://127.0.0.1:0` 正常工作，port 0 被 doProxy 自动替换为 `setting.xrayPort`。
+- [Added] **observatoryProbeUrl 配置项（2026-08-03）**：
+    - `packages/core/src/modules/plugin/xray/config.js` 新增 `observatoryProbeUrl`，用于 Stage1/observatory 运行时探测。
+    - Stage3 仍用 `probeUrl`（宽松），Stage1 用 `observatoryProbeUrl`（严格，如 `chatgpt.com`）。
+    - 3 处 `genConfig()` 调用改为 `cfg.observatoryProbeUrl || cfg.probeUrl`。
+- [Changed] **注释修正 + dead 字段移除（2026-08-03）**：
+    - `STAGE3_BATCH_LEVEL_TABLE` 注释：`batchSize = 64 << (level-1)`（原 `N*64` 对 level 5 算出 320 而非 1024）。
+    - 移除 dead `maxOldSpaceSizeMB` 字段（v2.2.3 后无代码引用）。
+    - 修正 mitmproxy max-old-space 注释：只用于 xray probe，mitmproxy 写死 96MB。
+- [Fix] **mitmproxy SIGABRT + 自愈（v2.2.4）**：
+    - 57 个热路径 `log.info` 降级为 `log.debug`，防止 V8 heap OOM。
+    - `serverProcess.on('exit')` 检测异常退出并自动 re-fork mitmproxy 子进程。
+- [Optimization] **systemd 内存峰值优化（v2.2.3）**：
     - 调查冷启动（~282MB）vs 热启动（~245MB）峰值差异的物理根因：冷启动时 mitmproxy fork + 模块加载的 file cache 计入 dev-sidecar.service cgroup，热启动复用系统 page cache 不重新记账。这是 cgroup v2 的物理记账规则，无法消除。
     - 多层 cgroup memory.reclaim 回收点（expose.js + index.js）：启动前 200M、代理启动后动态 100-350M、SQLite 读取前动态 100-300M、stage3 计数前后各 150M。热启动 peak 从 ~280MB 降到 ~245MB。
     - 修复 `stage3-initial-count` 的 `memory.reclaim` 静默失败（EACCES）：`memory.reclaim` 文件权限 `--w------- root root`，服务用户直接 `fs.writeFileSync` 被吞。改用 `reclaimCgroupMemory()` 带 sudo fallback。
