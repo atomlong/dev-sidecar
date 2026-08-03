@@ -6,6 +6,7 @@ const event = require('./event')
 const modules = require('./modules')
 const shell = require('./shell')
 const status = require('./status')
+const instance = require('./modules/instance')
 const log = require('./utils/util.log.core')
 const { getCurrentProcessCgroupPath } = require('./modules/plugin/xray/util.cgroup')
 
@@ -88,7 +89,7 @@ server.start = newServerStart
 async function startup ({ mitmproxyPath }) {
   const conf = config.get()
   reclaimStartupMemory()
-  if (conf.server.enabled) {
+  if (conf.server.enabled && !status.server.enabled) {
     try {
       await server.start({ mitmproxyPath })
     } catch (err) {
@@ -208,6 +209,7 @@ const api = {
   server,
   proxy,
   plugin,
+  instance,
   log,
 }
 module.exports = {

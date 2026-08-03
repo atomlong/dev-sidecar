@@ -197,6 +197,11 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
             if (isDnsIntercept && isDnsIntercept.tester) {
               isDnsIntercept.tester.reportProbeResult(isDnsIntercept.ip, true)
             }
+
+            // 按需探测反馈：IP 连接成功
+            if (isDnsIntercept && isDnsIntercept.tester) {
+              isDnsIntercept.tester.reportProbeResult(isDnsIntercept.ip, true)
+            }
             // log.info('request:', proxyReq, proxyReq.socket)
 
             if (cost > MAX_SLOW_TIME) {

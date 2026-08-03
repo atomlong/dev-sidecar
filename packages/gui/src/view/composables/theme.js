@@ -25,6 +25,8 @@ function getSystemTheme() {
 function applyThemeToDOM(theme) {
   appliedTheme.value = theme
   document.documentElement.setAttribute('data-theme', theme)
+  // 同步到 body，确保 Teleport 渲染的组件（Select下拉、Modal、Drawer等）也能应用主题
+  document.body.setAttribute('data-theme', theme)
 }
 
 /**
