@@ -44,10 +44,38 @@ async function acquireLock ({ log } = {}) {
   return release
 }
 
+// 检查给定 PID 是否存活且确实是 dev-sidecar 进程（避免 PID 复用误判）
+function isDevSidecarPid (pid) {
+  if (!pid || isNaN(pid)) {
+    return false
+  }
+  // Linux: 读 /proc/<pid>/cmdline 验证进程名
+  try {
+    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+    return cmdline.includes('dev-sidecar') || cmdline.includes('service-entry') || cmdline.includes('@docmirrordev-sidecar')
+  } catch {}
+  // 非 Linux 或读取失败：退化为仅检查 PID 存活
+  try {
+    return process.kill(pid, 0)
+  } catch {
+    return false
+  }
+}
+
 // 检查锁是否被新鲜持有（非阻塞，用于启动前的友好提示）
 async function isLocked () {
   try {
-    return await lockfile.check(getLockPath(), { lockfilePath: getLockPath(), realpath: false, stale: 10000 })
+    const locked = await lockfile.check(getLockPath(), { lockfilePath: getLockPath(), realpath: false, stale: 10000 })
+    if (!locked) {
+      return false
+    }
+    // 锁存在，但需验证持有锁的进程是否真是 dev-sidecar（防 PID 复用误判）
+    const instance = readInstance()
+    if (instance && instance.pid) {
+      return isDevSidecarPid(instance.pid)
+    }
+    // 有锁但无实例信息，保守返回 true
+    return true
   } catch {
     return false
   }

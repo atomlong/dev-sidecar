@@ -62,11 +62,21 @@ if (!fs.existsSync(mitmproxyPath)) {
 }
 
 // --- Prevent double-launch via PID file ---
+// 检查 PID 是否存活且确实是 dev-sidecar 进程（避免 PID 复用导致误判）
 const userBasePath = configLoader.getUserBasePath()
 const pidFile = path.join(userBasePath, 'service.pid')
+function isDevSidecarProcess (pid) {
+  try {
+    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+    return cmdline.includes('dev-sidecar') || cmdline.includes('service-entry') || cmdline.includes('@docmirrordev-sidecar')
+  } catch {
+    // 非 Linux 或读取失败，退化为仅检查 PID 存活
+    return process.kill(pid, 0)
+  }
+}
 try {
   const existingPid = fs.readFileSync(pidFile, 'utf8').trim()
-  if (existingPid && process.kill(existingPid, 0)) {
+  if (existingPid && isDevSidecarProcess(existingPid)) {
     log.error(`service-entry.cjs: another instance is already running (PID ${existingPid}), exiting`)
     process.exit(1)
   }
