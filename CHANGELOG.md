@@ -26,6 +26,7 @@ Synced upstream `docmirror/dev-sidecar` master (29 commits). Upstream introduced
 ### Fixed
 - **GUI process detection false positives** (upstream). `packages/cli/src/commands/gui.js` and `status.js` no longer misreport a running GUI when matching unrelated processes.
 - **`status.json` periodic writes removed** (upstream). Replaced with event-driven status updates merged into `running.json`, eliminating the separate `status.json` file and its timer.
+- **Instance PID reuse false positive** (fork fix for upstream regression). `service-entry.cjs` and `instance.isLocked()` only checked if a PID was alive (`process.kill(pid, 0)`), without verifying the process was actually dev-sidecar. When a stale `service.pid` was reused by an unrelated process (e.g. `kiro-go` at PID 234), the instance check always passed, causing systemd to fail restarting dev-sidecar in an infinite loop (81 restarts observed on a corporate network). Fix: `isDevSidecarProcess()` in `service-entry.cjs` and `isDevSidecarPid()` in `instance/index.js` now read `/proc/<pid>/cmdline` and check for `dev-sidecar`/`service-entry`/`@docmirrordev-sidecar` keywords; non-Linux falls back to `process.kill(pid, 0)`. Added 2 test cases to `instanceTest.js`.
 
 ## [v2.2.4] - 2026-08-03
 
