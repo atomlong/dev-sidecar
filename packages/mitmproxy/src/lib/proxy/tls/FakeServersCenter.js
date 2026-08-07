@@ -126,7 +126,7 @@ module.exports = class FakeServersCenter {
             key: keyPem,
             cert: certPem,
             SNICallback: (hostname, done) => {
-              log.info(`fakeServer SNICallback: ${hostname}:${port}`)
+              log.debug(`fakeServer SNICallback: ${hostname}:${port}`)
               done(null, secureContext)
             },
           })

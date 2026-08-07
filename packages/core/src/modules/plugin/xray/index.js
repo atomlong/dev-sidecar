@@ -27,6 +27,10 @@ const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT = 100
 const STAGE2_SUBSCRIPTION_ACCEPTED_FLUSH_NODE_COUNT_LARGE = 50
 const CACHE_SIZE_LIMIT_BYTES = 1 * 1024 * 1024 * 1024
 const CACHE_SIZE_TARGET_BYTES = Math.floor(CACHE_SIZE_LIMIT_BYTES * 0.9)
+// Stage3 duration 超过 cacheRefreshInterval 时,强制下一轮至少冷却 30 分钟。
+// 防止 stage3 完成立刻触发新一轮 → cleanupOutdatedToSizeLimit 同步循环阻塞
+// main thread → SIGCHLD 无法 dispatch → mitmproxy 崩溃后无 respawn。
+const STAGE3_OVERRUN_COOLDOWN_MS = 30 * 60 * 1000
 const LARGE_SUBSCRIPTION_BYTES_THRESHOLD = 5 * 1024 * 1024
 const LARGE_SUBSCRIPTION_NODE_THRESHOLD = 50000
 const STAGE2_GC_HEAP_USED_THRESHOLD_BYTES = 96 * 1024 * 1024
@@ -2311,7 +2315,17 @@ const Plugin = function (context) {
       return intervalMs
     }
 
-    return Math.max(0, roundStartedAt + intervalMs - Date.now())
+    const rawDelay = Math.max(0, roundStartedAt + intervalMs - Date.now())
+    // Sanity check: 如果 stage3 duration 超过 cacheRefreshInterval(rawDelay=0,
+    // 立刻进下一轮),强制至少 STAGE3_OVERRUN_COOLDOWN_MS 冷却。
+    // 否则 stage3 一完成立刻触发新一轮,新一轮的 stage2 cache-only 路径会再次
+    // 进入 cleanupOutdatedToSizeLimit 的 while+incremental_vacuum 同步循环,
+    // main thread 阻塞几十分钟,SIGCHLD 无法 dispatch → mitmproxy 崩溃后无 respawn。
+    if (rawDelay < STAGE3_OVERRUN_COOLDOWN_MS) {
+      log.warn(`Xray stage3 duration 超过 cacheRefreshInterval (${intervalMs}ms),强制冷却 ${STAGE3_OVERRUN_COOLDOWN_MS}ms 防止立即触发下一轮`)
+      return STAGE3_OVERRUN_COOLDOWN_MS
+    }
+    return rawDelay
   }
 
   async function ensureLocalNetworkAvailabilityForRefresh ({ generation, batchIndex, log }) {
@@ -2803,7 +2817,7 @@ const Plugin = function (context) {
 
       const cacheSizeBeforeStage2 = xrayCache.getSqliteCacheSizeBytes(cachePath)
       if (cacheSizeBeforeStage2 >= CACHE_SIZE_LIMIT_BYTES) {
-        const cleanupResult = xrayCache.cleanupOutdatedToSizeLimit(cachePath, CACHE_SIZE_TARGET_BYTES)
+        const cleanupResult = await xrayCache.cleanupOutdatedToSizeLimit(cachePath, CACHE_SIZE_TARGET_BYTES)
         if (cleanupResult) {
           log.warn(`Xray 节点缓存过大，已清理过期节点: tombstones=${cleanupResult.deletedTombstones}, nodes=${cleanupResult.deletedNodes}, sizeBefore=${cleanupResult.sizeBefore}, sizeAfter=${cleanupResult.sizeAfter}, limit=${CACHE_SIZE_LIMIT_BYTES}`)
         }

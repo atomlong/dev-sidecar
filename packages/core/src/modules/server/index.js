@@ -119,10 +119,14 @@ const serverApi = {
     // --max-old-space-size caps V8 old space of the mitmproxy child process.
     // Note: this only affects the mitmproxy Node.js child process, NOT the xray
     // probe binary (which is a Go executable spawned separately and moved to an
-    // isolated cgroup). mitmproxy steady-state heap is ~15MB, so 96MB gives 6x
-    // headroom — sufficient for all throughput levels.
+    // isolated cgroup).
+    // v2.2.4 设 96MB 是按 omniroute 流量测的"稳态 ~15MB,6 倍余量",但换 sub2api
+    // 流量叠加公司网 SASE(141-cert PEM ca chain,每个 https socket ca option 是全 chain)
+    // + FakeServersCenter LRU 256 个 http2.createSecureServer + forge cert/key,
+    // 在 sub2api 高并发 huggingface.co SNI 突发下 live object 实测可超 94.5MB
+    // (pooled:0.0, mark-compact ineffective → SIGABRT)。提到 192MB 留 12 倍余量。
     const serverProcess = fork(mitmproxyPath, [runningConfigPath], {
-      execArgv: ['--expose-gc', '--max-old-space-size=96'],
+      execArgv: ['--expose-gc', '--max-old-space-size=192'],
     })
     server = {
       id: serverProcess.pid,

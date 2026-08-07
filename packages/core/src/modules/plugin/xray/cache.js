@@ -1845,7 +1845,16 @@ function getSqliteCacheSizeBytes (cacheFilePath) {
   }
 }
 
-function cleanupOutdatedToSizeLimit (cacheFilePath, targetBytes) {
+// 突发清理(batchYieldEvery) 后交还 event loop 一次 tick:
+// better-sqlite3 是同步绑定,长时间在 main thread 跑 DELETE + incremental_vacuum
+// 会阻塞 libuv event loop,导致 child_process.fork 的 SIGCHLD 无法 dispatch,
+// 子进程崩溃后 exit 事件永远收不到 → respawn 链路失效。
+// 每跑 batchYieldEvery 个 batch 后 close db → setImmediate → reopen db,
+// 让 event loop tick 一次,处理 pending SIGCHLD/IPC/timeout。
+const CLEANUP_BATCH_YIELD_EVERY = 4
+const yieldToEventLoop = () => new Promise(resolve => setImmediate(resolve))
+
+async function cleanupOutdatedToSizeLimit (cacheFilePath, targetBytes) {
   let db = null
   try {
     db = openSqliteCache(cacheFilePath)
@@ -1867,17 +1876,18 @@ function cleanupOutdatedToSizeLimit (cacheFilePath, targetBytes) {
     const hasNodeRuntimeV2 = hasTable(db, 'node_runtime_v2')
 
     // Step 1: clear outdated tombstones (cheap, preserves fingerprints for Stage2 skip)
-    const selectOldestTombstone = db.prepare('SELECT hash FROM outdated ORDER BY outdated_at ASC LIMIT 1024')
-    const removeTombstone = db.prepare('DELETE FROM outdated WHERE hash = ?')
-    const deleteTombstoneBatch = db.transaction((hashes) => {
-      for (const hash of hashes) {
-        removeTombstone.run(hash)
-      }
-    })
-
-    const sizeBefore = getSqliteDatabaseSizeBytes(db)
+    let sizeBefore = getSqliteDatabaseSizeBytes(db)
     let deletedTombstones = 0
+    let batchSinceYield = 0
     while (getSqliteDatabaseSizeBytes(db) > normalizedTargetBytes) {
+      const selectOldestTombstone = db.prepare('SELECT hash FROM outdated ORDER BY outdated_at ASC LIMIT 1024')
+      const removeTombstone = db.prepare('DELETE FROM outdated WHERE hash = ?')
+      const deleteTombstoneBatch = db.transaction((hashes) => {
+        for (const hash of hashes) {
+          removeTombstone.run(hash)
+        }
+      })
+
       const hashes = selectOldestTombstone.all().map(row => row && row.hash).filter(Boolean)
       if (hashes.length === 0) {
         break
@@ -1885,6 +1895,18 @@ function cleanupOutdatedToSizeLimit (cacheFilePath, targetBytes) {
       deleteTombstoneBatch(hashes)
       deletedTombstones += hashes.length
       maybeRunIncrementalVacuum(db)
+
+      batchSinceYield += 1
+      if (batchSinceYield >= CLEANUP_BATCH_YIELD_EVERY) {
+        batchSinceYield = 0
+        db.close()
+        db = null
+        await yieldToEventLoop()
+        db = openSqliteCache(cacheFilePath)
+        if (!db) {
+          break
+        }
+      }
     }
 
     // Step 2: if still over target, evict oldest-due nodes (next_check_at ASC = least recently probed)
@@ -1919,6 +1941,18 @@ function cleanupOutdatedToSizeLimit (cacheFilePath, targetBytes) {
         deleteNodeById(nodeIds)
         deletedNodes += nodeIds.length
         maybeRunIncrementalVacuum(db)
+
+        batchSinceYield += 1
+        if (batchSinceYield >= CLEANUP_BATCH_YIELD_EVERY) {
+          batchSinceYield = 0
+          db.close()
+          db = null
+          await yieldToEventLoop()
+          db = openSqliteCache(cacheFilePath)
+          if (!db) {
+            break
+          }
+        }
       }
     }
 

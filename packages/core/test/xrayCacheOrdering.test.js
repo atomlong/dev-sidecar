@@ -355,7 +355,7 @@ describe('xray cache ordering', () => {
   // The DB is now exclusively compact v2, so there is no legacy storage to retire or compact.
 
   // eslint-disable-next-line no-undef
-  it('cleanupOutdatedToSizeLimit evicts oldest-due nodes to shrink below target', function () {
+  it('cleanupOutdatedToSizeLimit evicts oldest-due nodes to shrink below target', async function () {
     // Writing 600 vless nodes with a large random remark takes ~1.2s; allow
     // extra headroom over the default 2s mocha timeout.
     this.timeout(10000)
@@ -403,7 +403,7 @@ describe('xray cache ordering', () => {
 
       // Target half of current size to force real eviction.
       const targetBytes = Math.floor(sizeBefore / 2)
-      const result = xrayCache.cleanupOutdatedToSizeLimit(cachePath, targetBytes)
+      const result = await xrayCache.cleanupOutdatedToSizeLimit(cachePath, targetBytes)
       assert.ok(result, 'cleanup should return a result object')
       assert.strictEqual(typeof result.deletedNodes, 'number')
       assert.ok(result.deletedNodes > 0, `should have evicted nodes, got deletedNodes=${result.deletedNodes}`)
@@ -420,7 +420,7 @@ describe('xray cache ordering', () => {
   })
 
   // eslint-disable-next-line no-undef
-  it('cleanupOutdatedToSizeLimit reports deletedTombstones and deletedNodes separately', () => {
+  it('cleanupOutdatedToSizeLimit reports deletedTombstones and deletedNodes separately', async () => {
     if (!sqliteAvailable) {
       return
     }
@@ -439,7 +439,7 @@ describe('xray cache ordering', () => {
       })))
 
       // No tombstones, no oversize: cleanup should be a no-op returning zero counts.
-      const result = xrayCache.cleanupOutdatedToSizeLimit(cachePath, 1024 * 1024 * 1024)
+      const result = await xrayCache.cleanupOutdatedToSizeLimit(cachePath, 1024 * 1024 * 1024)
       assert.ok(result)
       assert.strictEqual(result.deletedTombstones, 0)
       assert.strictEqual(result.deletedNodes, 0)
