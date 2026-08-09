@@ -174,5 +174,23 @@ describe('instance', function () {
         await release()
       }
     })
+
+    it('should sync plugin.xray port fields to running.json', async function () {
+      const release = await instance.acquireLock()
+      try {
+        event.fire('status', { key: 'plugin.xray.enabled', value: true })
+        event.fire('status', { key: 'plugin.xray.port', value: 10801 })
+        event.fire('status', { key: 'plugin.xray.apiPort', value: 45021 })
+        event.fire('status', { key: 'plugin.xray.metricsPort', value: 45022 })
+        await sleep(400)
+        const data = JSON.parse(fs.readFileSync(instance.getRunningJsonPath(), 'utf-8'))
+        assert.isTrue(data.app.status.plugin.xray.enabled)
+        assert.strictEqual(data.app.status.plugin.xray.port, 10801)
+        assert.strictEqual(data.app.status.plugin.xray.apiPort, 45021)
+        assert.strictEqual(data.app.status.plugin.xray.metricsPort, 45022)
+      } finally {
+        await release()
+      }
+    })
   })
 })

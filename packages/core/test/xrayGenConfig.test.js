@@ -74,6 +74,36 @@ describe('xray gen_config', () => {
     })
   })
 
+  describe('metrics block', () => {
+    it('generates metrics block when metricsPort is set', () => {
+      const config = genConfig(10801, [createNode('1.2.3.4', 1080)], [], 'https://example.com', 60, {
+        metricsPort: 45022,
+        observatoryEnableConcurrency: true,
+      })
+
+      assert.ok(config.metrics, 'metrics block should be present')
+      assert.strictEqual(config.metrics.tag, 'metrics')
+      assert.strictEqual(config.metrics.listen, '127.0.0.1:45022')
+    })
+
+    it('omits metrics block when metricsPort is null', () => {
+      const config = genConfig(10801, [createNode('1.2.3.4', 1080)], [], 'https://example.com', 60, {
+        metricsPort: null,
+        observatoryEnableConcurrency: true,
+      })
+
+      assert.strictEqual(config.metrics, undefined)
+    })
+
+    it('omits metrics block when metricsPort is not provided', () => {
+      const config = genConfig(10801, [createNode('1.2.3.4', 1080)], [], 'https://example.com', 60, {
+        observatoryEnableConcurrency: true,
+      })
+
+      assert.strictEqual(config.metrics, undefined)
+    })
+  })
+
   describe('outbound tags', () => {
     it('assigns proxy_0, proxy_1, ... tags to nodes', () => {
       const nodes = [createNode('1.1.1.1', 1080), createNode('2.2.2.2', 1080)]
