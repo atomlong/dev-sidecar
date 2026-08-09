@@ -125,6 +125,14 @@ async function main () {
   DevSidecar.api.event.register('error', (event) => {
     log.error('service-entry.cjs: error event:', event)
   })
+  // Sync *.enabled and plugin.xray ports to running.json for runtime debugging
+  // (service mode skips acquireLock, so watchStatusEvents is not auto-registered)
+  try {
+    DevSidecar.api.instance.watchStatusEvents({ log })
+    log.info('service-entry.cjs: watchStatusEvents registered')
+  } catch (err) {
+    log.error('service-entry.cjs: failed to register watchStatusEvents:', err)
+  }
 
   // Reload user config (merges defaults + remote + user overrides)
   DevSidecar.api.config.reload()
