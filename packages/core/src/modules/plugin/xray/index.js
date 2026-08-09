@@ -17,6 +17,7 @@ const networkGuard = require('./network_guard')
 const probe = require('./probe')
 const geoip = require('./geoip')
 const cgroupUtil = require('./util.cgroup')
+const xrayApi = require('./xray_api')
 const { getXrayExePath } = require('../../../shell/scripts/extra-path/index')
 
 const STAGE2_CACHE_SYNC_CHUNK_SIZE = 2000
@@ -2087,11 +2088,15 @@ const Plugin = function (context) {
   let api = null
   const transientProbeControllers = new Set()
   let currentLivePort = 0
+  let currentLiveApiPort = 0
   let currentLiveConfigPath = ''
   let currentLiveConfigBakPath = ''
   let currentBinPath = ''
   let liveConfigHasProxyNodes = false
   let isStageRunning = false
+  // Track live node-to-tag mapping for API-based hot refresh (Phase 2)
+  const currentLiveNodeTags = new Map() // fingerprint -> tag
+  let nextProxyTagIndex = 0
 
   function registerTransientProbeController (controller) {
     if (controller && typeof controller.stop === 'function') {
@@ -2173,11 +2178,24 @@ const Plugin = function (context) {
 
       // Observatory 用 observatoryProbeUrl（严格探测），Stage3 用 probeUrl（宽松探测）
       const observatoryProbeUrl = cfg.observatoryProbeUrl || cfg.probeUrl
+      if (!currentLiveApiPort) {
+        currentLiveApiPort = await portFinder.findFreePort()
+      }
       const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, observatoryProbeUrl, cfg.probeInterval, {
+        apiPort: currentLiveApiPort,
         observatoryEnableConcurrency: true,
       })
       writeJsonFile(currentLiveConfigPath, liveConfig)
       liveConfigHasProxyNodes = true
+      // Rebuild live node-to-tag mapping after cold start regen
+      currentLiveNodeTags.clear()
+      selectedNodes.forEach((node, i) => {
+        const fp = xrayCache.fingerprintNode(node)
+        if (fp) {
+          currentLiveNodeTags.set(fp, `proxy_${i}`)
+        }
+      })
+      nextProxyTagIndex = selectedNodes.length
       log.info(`Xray Stage3 后自动重生成 live config: proxyNodes=${selectedNodes.length}, freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length} -> ${currentLiveConfigPath}`)
 
       try {
@@ -2225,8 +2243,8 @@ const Plugin = function (context) {
       }
     }
 
-    // If all existing nodes are still good, no need to restart
-    if (keptNodes.length === currentConfigNodes.length && keptNodes.length >= startupNodeLimit) {
+    // If enough existing nodes are still good, no need to restart
+    if (keptNodes.length >= startupNodeLimit) {
       return
     }
 
@@ -2263,11 +2281,94 @@ const Plugin = function (context) {
       return
     }
 
+    // Try API-based hot refresh (zero downtime) if available
+    const selectedFingerprints = new Set(selectedNodes.map(node => xrayCache.fingerprintNode(node)).filter(Boolean))
+    const canUseApi = currentLiveApiPort > 0 && currentBinPath
+
+    if (canUseApi) {
+      // Snapshot current state for rollback if API fails mid-way
+      const savedNodeTags = new Map(currentLiveNodeTags)
+      const savedNextIndex = nextProxyTagIndex
+
+      // Compute diff: tags to remove (bad/removed nodes) and nodes to add (new nodes)
+      const tagsToRemove = []
+      for (const [fp, tag] of currentLiveNodeTags) {
+        if (!selectedFingerprints.has(fp)) {
+          tagsToRemove.push(tag)
+        }
+      }
+      const nodesToAdd = []
+      for (const node of selectedNodes) {
+        const fp = xrayCache.fingerprintNode(node)
+        if (fp && !currentLiveNodeTags.has(fp)) {
+          const tag = `proxy_${nextProxyTagIndex++}`
+          const outbound = parser.sanitizeNodeForCurrentXray(JSON.parse(JSON.stringify(node)))
+          outbound.tag = tag
+          nodesToAdd.push({ node, tag, fp, outbound })
+        }
+      }
+
+      if (tagsToRemove.length === 0 && nodesToAdd.length === 0) {
+        return
+      }
+
+      try {
+        // Add new nodes first (observatory will probe them before they're selectable)
+        if (nodesToAdd.length > 0) {
+          await xrayApi.addOutbounds(currentBinPath, currentLiveApiPort, nodesToAdd.map(n => n.outbound))
+          for (const n of nodesToAdd) {
+            currentLiveNodeTags.set(n.fp, n.tag)
+          }
+          log.info(`Xray Stage3 后API热刷新: 添加 ${nodesToAdd.length} 个节点`)
+        }
+        // Then remove bad nodes (existing connections to them continue, new ones go to fresh nodes)
+        if (tagsToRemove.length > 0) {
+          const results = await xrayApi.removeOutbounds(currentBinPath, currentLiveApiPort, tagsToRemove)
+          for (const r of results) {
+            if (r.success) {
+              for (const [fp, tag] of currentLiveNodeTags) {
+                if (tag === r.tag) {
+                  currentLiveNodeTags.delete(fp)
+                  break
+                }
+              }
+            } else {
+              log.warn(`Xray Stage3 后API热刷新: 移除节点 ${r.tag} 失败: ${r.error}`)
+            }
+          }
+          log.info(`Xray Stage3 后API热刷新: 移除 ${tagsToRemove.length} 个节点`)
+        }
+        liveConfigHasProxyNodes = currentLiveNodeTags.size > 0
+        log.info(`Xray Stage3 后API热刷新完成: liveNodes=${currentLiveNodeTags.size}, kept=${keptNodes.length}, added=${nodesToAdd.length}, removed=${tagsToRemove.length}`)
+        return
+      } catch (error) {
+        log.warn(`Xray Stage3 后API热刷新失败，回退到重启: ${error.message}`)
+        // Rollback in-memory state; restart path will rebuild from selectedNodes
+        currentLiveNodeTags.clear()
+        savedNodeTags.forEach((tag, fp) => currentLiveNodeTags.set(fp, tag))
+        nextProxyTagIndex = savedNextIndex
+        // Fall through to restart-based refresh below
+      }
+    }
+
+    // Fallback: genConfig + restart (Phase 1 behavior)
+    if (!currentLiveApiPort) {
+      currentLiveApiPort = await portFinder.findFreePort()
+    }
     const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
+      apiPort: currentLiveApiPort,
       observatoryEnableConcurrency: true,
     })
     writeJsonFile(currentLiveConfigPath, liveConfig)
     liveConfigHasProxyNodes = selectedNodes.length > 0
+    currentLiveNodeTags.clear()
+    selectedNodes.forEach((node, i) => {
+      const fp = xrayCache.fingerprintNode(node)
+      if (fp) {
+        currentLiveNodeTags.set(fp, `proxy_${i}`)
+      }
+    })
+    nextProxyTagIndex = selectedNodes.length
     log.info(`Xray Stage3 后热刷新 live config: proxyNodes=${selectedNodes.length}, kept=${keptNodes.length}, fresh=${selectedNodes.length - keptNodes.length} -> ${currentLiveConfigPath}`)
 
     try {
@@ -2495,6 +2596,7 @@ const Plugin = function (context) {
       const startupSelectEnabled = isStartupSelectEnabled(cfg)
       let startupNodes = []
       let reusedLiveConfig = false
+      let liveApiPort = 0
 
       if (!startupSelectEnabled) {
         const reusedConfig = readExistingXrayLiveConfig(liveConfigPath)
@@ -2658,15 +2760,36 @@ const Plugin = function (context) {
           log.info(`Xray 预置节点已注入: manualNodes=${manualStartupNodes.length}, combinedStartupNodes=${startupNodes.length}`)
         }
 
+        liveApiPort = await portFinder.findFreePort()
         const liveConfig = genConfig(port, startupNodes, cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
+          apiPort: liveApiPort,
           observatoryEnableConcurrency: true,
         })
         writeJsonFile(liveConfigPath, liveConfig)
         log.info(`Xray 配置文件已生成: ${liveConfigPath}`)
+      } else {
+        // Extract apiPort from reused config for hot refresh API support
+        const reusedConfigObj = readExistingXrayLiveConfig(liveConfigPath)
+        if (reusedConfigObj && reusedConfigObj.api && reusedConfigObj.api.listen) {
+          const m = String(reusedConfigObj.api.listen).match(/:(\d+)$/)
+          if (m) {
+            liveApiPort = Number(m[1])
+          }
+        }
       }
 
       currentLivePort = port
+      currentLiveApiPort = liveApiPort
       liveConfigHasProxyNodes = startupNodes.length > 0
+      // Initialize live node-to-tag mapping for API-based hot refresh
+      currentLiveNodeTags.clear()
+      startupNodes.forEach((node, i) => {
+        const fp = xrayCache.fingerprintNode(node)
+        if (fp) {
+          currentLiveNodeTags.set(fp, `proxy_${i}`)
+        }
+      })
+      nextProxyTagIndex = startupNodes.length
 
       // 3. Start live process.
       await api.stopBackgroundProbe()
@@ -2706,6 +2829,9 @@ const Plugin = function (context) {
       await processApi.stop()
       liveConfigHasProxyNodes = false
       currentLivePort = 0
+      currentLiveApiPort = 0
+      currentLiveNodeTags.clear()
+      nextProxyTagIndex = 0
       currentLiveConfigPath = ''
       currentLiveConfigBakPath = ''
       currentBinPath = ''

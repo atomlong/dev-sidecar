@@ -3,6 +3,7 @@ const parser = require('./parser')
 module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval, options = {}) {
   const {
     metricsPort = null,
+    apiPort = null,
     observatoryEnableConcurrency = true,
     probeMode = 'observatory',
     probeSamples = 1,
@@ -47,7 +48,7 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
   if (proxyTags.length > 0) {
     balancers.push({
       tag: 'balancer-proxy',
-      selector: proxyTags,
+      selector: ['proxy_'],
       fallbackTag: 'direct',
       strategy: {
         type: 'leastPing', // Uses observatory results
@@ -112,7 +113,7 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
 
   // Observatory / Burst Observatory
   const observatoryBase = {
-    subjectSelector: proxyTags,
+    subjectSelector: ['proxy_'],
   }
 
   let observatory = null
@@ -201,6 +202,15 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
 
   if (metrics) {
     config.metrics = metrics
+  }
+
+  // HandlerService + ObservatoryService + RoutingService API for runtime outbound management without restart
+  if (apiPort != null) {
+    config.api = {
+      tag: 'api',
+      listen: `127.0.0.1:${apiPort}`,
+      services: ['HandlerService', 'ObservatoryService', 'RoutingService'],
+    }
   }
 
   return config
