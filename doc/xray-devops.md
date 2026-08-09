@@ -33,7 +33,9 @@ xray api lso --server=127.0.0.1:45021
 ```
 显示当前 xray 进程中所有 outbound 的 tag 和 protocol（静态定义 + 运行时动态添加的）。
 
-### `xray api obs` — 查看 observatory 探测状态（需 Xray-core v26.7.28+ 或含 PR #6604）
+### `xray api obs` — 查看 observatory 探测状态（fork 专有，上游未合并）
+> 上游 XTLS/Xray-core PR #6604 已被关闭（maintainer 表示"obs 不打算再扩展"）。此命令仅存在于 fork [atomlong/Xray-core](https://github.com/atomlong/Xray-core) 的 `feat/api-observatory-status` 分支，需自行编译并替换 DS 内置的 xray 二进制（`~/.dev-sidecar/xray/xray`）后才可用。DS 自身不依赖此命令（通过 metrics API 读 observatory 数据），缺少它不影响任何功能，仅缺少一个调试手段。
+
 ```shell
 xray api obs --server=127.0.0.1:45021
 ```
@@ -48,7 +50,7 @@ proxy_2             yes    187        -
 - `ALIVE=yes` 表示节点探测通过，`DELAY` 为最近一次探测的延迟
 - `ALIVE=no` 的节点 `DELAY` 显示 `-`，`LAST_ERROR` 显示失败原因（截断到 60 字符）
 - 加 `-json` 参数输出 protobuf JSON 格式
-- v26.3.27 无此命令，但不影响 DS 功能（DS 通过 metrics API 读 observatory 数据，不依赖此 CLI）
+- 上游官方版（含 v26.7.28）无此命令；如需使用见上文 fork 说明
 
 ### `xray api bi` — 查看 balancer 选择状态
 ```shell
@@ -67,12 +69,12 @@ DS 的 Phase 2 热刷新改动兼容 **Xray-core v26.3.27 及以上**：
 | HandlerService / ObservatoryService gRPC | ✅ | ✅ |
 | `Select` 前缀匹配 / `RemoveHandler` 不中断连接 | ✅ | ✅ |
 | observatory 自动清理已移除 outbound 状态 | ❌（残留但无害） | ✅ |
-| `xray api obs` 命令 | ❌（DS 不依赖） | ✅（PR #6604） |
+| `xray api obs` 命令 | ❌ | ❌（上游 PR #6604 被关闭；仅 fork 有） |
 
 v26.3.27 上运行时，已 `RemoveOutbound` 的 tag 旧 status 会残留在 observatory 内部状态里，但：
 - 不影响 balancer 选择（balancer 实时查 manager，不查 observatory status）
 - 不影响 DS 决策（DS 用独立 probe 进程做 Stage1 探测，Stage3 基于 cache 指纹比较）
-- 仅影响 `xray api obs` 调试输出（v26.3.27 无此命令，故无实际影响）
+- 仅影响 fork 专有的 `xray api obs` 调试输出（上游官方版无此命令，故无实际影响）
 
 ## 部署后首次重启
 
