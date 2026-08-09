@@ -147,13 +147,20 @@ function updateStatus (key, value) {
   }, 300)
 }
 
-// 订阅 core 状态总线，仅同步 *.enabled 开关状态（过滤 free_eye.result 等大 payload）
+// 订阅 core 状态总线，同步 *.enabled 开关状态和 plugin.xray 端口字段（过滤 free_eye.result 等大 payload）
 function watchStatusEvents ({ log } = {}) {
   event.register('status', (e) => {
-    if (!e || typeof e.key !== 'string' || !e.key.endsWith('.enabled')) {
+    if (!e || typeof e.key !== 'string') {
       return
     }
-    updateStatus(e.key, e.value)
+    if (e.key.endsWith('.enabled')) {
+      updateStatus(e.key, e.value)
+      return
+    }
+    // Sync xray runtime ports for debugging (curl /debug/vars, xray api lso/obs)
+    if (e.key === 'plugin.xray.port' || e.key === 'plugin.xray.apiPort' || e.key === 'plugin.xray.metricsPort') {
+      updateStatus(e.key, e.value)
+    }
   })
 }
 

@@ -23,9 +23,47 @@ Xray 插件在 Stage3（后台运行时）会定期从缓存刷新节点列表�
 
 ## 运行时调试命令
 
-Xray 启动后，可用 `xray api` 子命令查询运行时状态（需 xray 二进制在 PATH，或用 DS 内置的 xray 路径）。
+Xray 主进程启动后会开放两个本地调试端口，写入 `~/.dev-sidecar/running.json` 的 `app.status.plugin.xray`：
+- `apiPort` — HandlerService/ObservatoryService/RoutingService gRPC 端口，供 `xray api` 子命令使用
+- `metricsPort` — expvar metrics 端口，供 `curl /debug/vars` 查看运行时状态（含 observatory 节点延时）
 
-> 所有命令都需要 `--server=127.0.0.1:<apiPort>`，`apiPort` 可在 `~/.dev-sidecar/running.json` 的 `api.listen` 字段查看（格式 `127.0.0.1:PORT`）。
+```shell
+# 查看当前端口
+cat ~/.dev-sidecar/running.json | jq '.app.status.plugin.xray'
+# {"enabled": true, "port": 10801, "apiPort": 45021, "metricsPort": 45022}
+```
+
+## 方式一：curl 查看 observatory 节点延时（推荐，上游官方版即可用）
+
+主进程的 metrics 端口暴露 expvar，`observatory` 字段包含每个节点的 alive/delay/lastErrorReason：
+
+```shell
+# 查看所有节点状态
+curl -s http://127.0.0.1:<metricsPort>/debug/vars | jq '.observatory'
+# {
+#   "proxy_0": {"alive": true, "delay": 142, "lastErrorReason": ""},
+#   "proxy_1": {"alive": false, "delay": 99999999, "lastErrorReason": "the outbound proxy_1 is dead..."},
+#   "proxy_2": {"alive": true, "delay": 187, "lastErrorReason": ""}
+# }
+
+# 只看 alive 节点的延时（表格形式）
+curl -s http://127.0.0.1:<metricsPort>/debug/vars | \
+  jq -r '.observatory | to_entries[] | select(.value.alive) | "\(.key)\t\(.value.delay)ms"'
+# proxy_0   142ms
+# proxy_2   187ms
+
+# 只看 dead 节点的失败原因
+curl -s http://127.0.0.1:<metricsPort>/debug/vars | \
+  jq -r '.observatory | to_entries[] | select(.value.alive | not) | "\(.key)\t\(.value.lastErrorReason[:60])"'
+# proxy_1   the outbound proxy_1 is dead: GET request failed:...
+```
+
+> `delay=99999999` 是 xray 对 dead 节点的哨兵值，`alive=false` 即可判断节点不可用。
+> burst observatory 模式下字段结构相同，`delay` 是平均延时，另有 `healthPing` 子对象含详细统计。
+
+## 方式二：`xray api` 子命令
+
+需 xray 二进制在 PATH，或用 DS 内置的 xray 路径。所有命令都需要 `--server=127.0.0.1:<apiPort>`。
 
 ### `xray api lso` — 列出所有 outbound
 ```shell
@@ -65,6 +103,7 @@ DS 的 Phase 2 热刷新改动兼容 **Xray-core v26.3.27 及以上**：
 | 依赖项 | v26.3.27 | v26.7.28 |
 |--------|----------|----------|
 | `api` 块（tag/listen/services） | ✅ | ✅ |
+| `metrics` 块（expvar /debug/vars） | ✅ | ✅ |
 | `xray api ado/rmo/lso` | ✅ | ✅ |
 | HandlerService / ObservatoryService gRPC | ✅ | ✅ |
 | `Select` 前缀匹配 / `RemoveHandler` 不中断连接 | ✅ | ✅ |

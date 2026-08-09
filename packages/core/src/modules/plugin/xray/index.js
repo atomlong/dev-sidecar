@@ -2089,6 +2089,7 @@ const Plugin = function (context) {
   const transientProbeControllers = new Set()
   let currentLivePort = 0
   let currentLiveApiPort = 0
+  let currentLiveMetricsPort = 0
   let currentLiveConfigPath = ''
   let currentLiveConfigBakPath = ''
   let currentBinPath = ''
@@ -2181,8 +2182,12 @@ const Plugin = function (context) {
       if (!currentLiveApiPort) {
         currentLiveApiPort = await portFinder.findFreePort()
       }
+      if (!currentLiveMetricsPort) {
+        currentLiveMetricsPort = await portFinder.findFreePort()
+      }
       const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, observatoryProbeUrl, cfg.probeInterval, {
         apiPort: currentLiveApiPort,
+        metricsPort: currentLiveMetricsPort,
         observatoryEnableConcurrency: true,
       })
       writeJsonFile(currentLiveConfigPath, liveConfig)
@@ -2196,6 +2201,8 @@ const Plugin = function (context) {
         }
       })
       nextProxyTagIndex = selectedNodes.length
+      event.fire('status', { key: 'plugin.xray.metricsPort', value: currentLiveMetricsPort })
+      event.fire('status', { key: 'plugin.xray.apiPort', value: currentLiveApiPort })
       log.info(`Xray Stage3 后自动重生成 live config: proxyNodes=${selectedNodes.length}, freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length} -> ${currentLiveConfigPath}`)
 
       try {
@@ -2355,8 +2362,12 @@ const Plugin = function (context) {
     if (!currentLiveApiPort) {
       currentLiveApiPort = await portFinder.findFreePort()
     }
+    if (!currentLiveMetricsPort) {
+      currentLiveMetricsPort = await portFinder.findFreePort()
+    }
     const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
       apiPort: currentLiveApiPort,
+      metricsPort: currentLiveMetricsPort,
       observatoryEnableConcurrency: true,
     })
     writeJsonFile(currentLiveConfigPath, liveConfig)
@@ -2369,6 +2380,8 @@ const Plugin = function (context) {
       }
     })
     nextProxyTagIndex = selectedNodes.length
+    event.fire('status', { key: 'plugin.xray.metricsPort', value: currentLiveMetricsPort })
+    event.fire('status', { key: 'plugin.xray.apiPort', value: currentLiveApiPort })
     log.info(`Xray Stage3 后热刷新 live config: proxyNodes=${selectedNodes.length}, kept=${keptNodes.length}, fresh=${selectedNodes.length - keptNodes.length} -> ${currentLiveConfigPath}`)
 
     try {
@@ -2597,6 +2610,7 @@ const Plugin = function (context) {
       let startupNodes = []
       let reusedLiveConfig = false
       let liveApiPort = 0
+      let liveMetricsPort = 0
 
       if (!startupSelectEnabled) {
         const reusedConfig = readExistingXrayLiveConfig(liveConfigPath)
@@ -2761,8 +2775,10 @@ const Plugin = function (context) {
         }
 
         liveApiPort = await portFinder.findFreePort()
+        liveMetricsPort = await portFinder.findFreePort()
         const liveConfig = genConfig(port, startupNodes, cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
           apiPort: liveApiPort,
+          metricsPort: liveMetricsPort,
           observatoryEnableConcurrency: true,
         })
         writeJsonFile(liveConfigPath, liveConfig)
@@ -2776,10 +2792,18 @@ const Plugin = function (context) {
             liveApiPort = Number(m[1])
           }
         }
+        // Extract metricsPort from reused config for runtime observatory debugging
+        if (reusedConfigObj && reusedConfigObj.metrics && reusedConfigObj.metrics.listen) {
+          const m = String(reusedConfigObj.metrics.listen).match(/:(\d+)$/)
+          if (m) {
+            liveMetricsPort = Number(m[1])
+          }
+        }
       }
 
       currentLivePort = port
       currentLiveApiPort = liveApiPort
+      currentLiveMetricsPort = liveMetricsPort
       liveConfigHasProxyNodes = startupNodes.length > 0
       // Initialize live node-to-tag mapping for API-based hot refresh
       currentLiveNodeTags.clear()
@@ -2796,6 +2820,12 @@ const Plugin = function (context) {
       await processApi.start(binPath, liveConfigPath)
       event.fire('status', { key: 'plugin.xray.enabled', value: true })
       event.fire('status', { key: 'plugin.xray.port', value: port })
+      if (currentLiveMetricsPort) {
+        event.fire('status', { key: 'plugin.xray.metricsPort', value: currentLiveMetricsPort })
+      }
+      if (currentLiveApiPort) {
+        event.fire('status', { key: 'plugin.xray.apiPort', value: currentLiveApiPort })
+      }
 
       // 4. Inject rules and reload server.
       await api.injectRules(cfg.rules, port)
@@ -2830,12 +2860,15 @@ const Plugin = function (context) {
       liveConfigHasProxyNodes = false
       currentLivePort = 0
       currentLiveApiPort = 0
+      currentLiveMetricsPort = 0
       currentLiveNodeTags.clear()
       nextProxyTagIndex = 0
       currentLiveConfigPath = ''
       currentLiveConfigBakPath = ''
       currentBinPath = ''
       event.fire('status', { key: 'plugin.xray.enabled', value: false })
+      event.fire('status', { key: 'plugin.xray.metricsPort', value: 0 })
+      event.fire('status', { key: 'plugin.xray.apiPort', value: 0 })
       log.info('Xray 插件已关闭')
     },
 
