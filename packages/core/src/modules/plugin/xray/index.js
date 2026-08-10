@@ -3232,6 +3232,15 @@ const Plugin = function (context) {
 
       if (totalDueCandidateCount === 0) {
         log.info('Xray 缓存周期探测: 当前没有到期的可探测节点')
+        // Still refresh probed-node-stats.json so it reflects the current
+        // cache state (e.g. totalProbed=0 when all nodes are dead), rather
+        // than leaving stale data from a previous round with alive nodes.
+        try {
+          xrayCache.updateProbedNodeIdsAtPath(cachePath)
+          writeProbedNodeStats({ xrayDir, cachePath })
+        } catch {
+          // non-fatal
+        }
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
         writeStage3RoundSummary({
           xrayDir,
