@@ -75,13 +75,24 @@ function isObservationReady (metrics, expectedSamples = 1, expectedSubjectCount 
     return false
   }
 
-  if (expectedSamples <= 1) {
-    return true
+  // Burst observatory: check healthPing sample count
+  if (expectedSamples > 1) {
+    const anyHealthPing = statuses.some((status) => {
+      const healthPing = getHealthPingStats(status)
+      return healthPing && healthPing.all > 0
+    })
+    if (anyHealthPing) {
+      return statuses.every((status) => {
+        const healthPing = getHealthPingStats(status)
+        return healthPing && healthPing.all >= expectedSamples
+      })
+    }
   }
 
+  // Regular observatory (no healthPing): all nodes probed at least once
   return statuses.every((status) => {
-    const healthPing = getHealthPingStats(status)
-    return healthPing && healthPing.all >= expectedSamples
+    const delay = status.delay || status.Delay || 0
+    return delay > 0
   })
 }
 
@@ -172,7 +183,17 @@ async function waitForObservatoryMetrics ({ metricsPort, timeoutMs = 45000, poll
       if (expectedSubjectCount > 0 && observedCount < expectedSubjectCount) {
         lastError = new Error(`Observatory metrics only collected ${observedCount}/${expectedSubjectCount} node statuses so far`)
       } else {
-        lastError = new Error(`Observatory metrics have not collected ${expectedSamples} samples yet`)
+        const statuses = observatory ? Object.values(observatory) : []
+        const anyHealthPing = statuses.some((s) => {
+          const hp = getHealthPingStats(s)
+          return hp && hp.all > 0
+        })
+        if (anyHealthPing) {
+          lastError = new Error(`Observatory metrics have not collected ${expectedSamples} samples yet`)
+        } else {
+          const probed = statuses.filter((s) => (s.delay || 0) > 0).length
+          lastError = new Error(`Observatory has probed ${probed}/${statuses.length} nodes so far`)
+        }
       }
     } catch (e) {
       lastError = e

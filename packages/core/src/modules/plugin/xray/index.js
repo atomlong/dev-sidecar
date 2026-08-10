@@ -2492,7 +2492,7 @@ const Plugin = function (context) {
     const probeConfig = genConfig(probePort, batchNodes, cfg.rules, probeUrl, CACHE_PROBE_SAMPLE_INTERVAL, {
       metricsPort,
       observatoryEnableConcurrency: true,
-      probeMode: 'burst',
+      probeMode: 'observatory',
       probeSamples,
       probeTimeoutSeconds: CACHE_PROBE_SAMPLE_TIMEOUT,
     })

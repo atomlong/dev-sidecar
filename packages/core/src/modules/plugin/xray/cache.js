@@ -2963,6 +2963,21 @@ function buildCacheEntriesFromObservatory (observatoryResults, nodeMap, source =
       continue
     }
 
+    // Regular observatory: { alive, delay, outbound_tag } — no HealthPing
+    const rawDelay = status.delay ?? status.Delay ?? 0
+    const isAlive = status.alive ?? status.Alive ?? false
+    if (!isAlive) {
+      continue
+    }
+    const delay = normalizeDelayMs(rawDelay)
+    entries.push({
+      node: normalizedNode,
+      stable: isAlive,
+      delay,
+      source,
+      updatedAt: timestamp,
+      tag,
+    })
   }
 
   return sortCacheEntries(entries)
