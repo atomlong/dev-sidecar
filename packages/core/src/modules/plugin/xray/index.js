@@ -3564,6 +3564,10 @@ const Plugin = function (context) {
           if (probedCount > 0) {
             log.info(`Xray 启动缓存已更新: probedNodeIds=${probedCount}`)
           }
+          // Always refresh probed-node-stats.json so it reflects the current
+          // state (including totalProbed=0 when all nodes are dead), rather
+          // than leaving stale data from a previous round with alive nodes.
+          writeProbedNodeStats({ xrayDir, cachePath })
         } catch (probedError) {
           log.warn(`Xray 启动缓存更新失败: ${probedError && probedError.message}`)
         }
