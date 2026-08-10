@@ -543,16 +543,6 @@ function getCacheRefreshIntervalSeconds (cfg) {
   return Math.max(value, CACHE_REFRESH_INTERVAL_MIN_SECONDS)
 }
 
-function getCacheBatchTimeoutSeconds (cfg) {
-  return Math.max(normalizePositiveInt(cfg.cacheBatchTimeout, pluginConfig.cacheBatchTimeout), CACHE_PROBE_SAMPLE_TIMEOUT)
-}
-
-function getBootstrapBatchTimeoutSeconds (cfg) {
-  // No timeout for bootstrap probe — let it complete naturally.
-  // Probe process crash is caught by child.exitCode check in waitForObservatoryMetrics.
-  return 0
-}
-
 function getBootstrapProbeSamples (cfg) {
   return normalizePositiveInt(cfg.bootstrapProbeSamples ?? cfg.initialRefreshProbeSamples, pluginConfig.bootstrapProbeSamples)
 }
@@ -2729,7 +2719,7 @@ const Plugin = function (context) {
               cfg,
               xrayDir,
               batchNodes: bootstrapCandidates,
-              timeoutMs: getBootstrapBatchTimeoutSeconds(cfg) * 1000,
+              timeoutMs: 0,
               probeSamples: getBootstrapProbeSamples(cfg),
               probeUrl: cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl,
             })
@@ -3192,7 +3182,6 @@ const Plugin = function (context) {
       const generation = ++refreshGeneration
       const roundStartedAt = Date.now()
       const cacheRefreshInterval = getCacheRefreshIntervalSeconds(cfg) * 1000
-      const cacheBatchTimeout = getCacheBatchTimeoutSeconds(cfg) * 1000
 
       // 在 countCacheEntries 之前回收：Stage1 启动期间读取配置/缓存已累积
       // ~100MB file cache，如果不清空，countCacheEntries 的索引扫描再拉入
@@ -3358,7 +3347,7 @@ const Plugin = function (context) {
             cfg,
             xrayDir,
             batchNodes: candidateNodes,
-            timeoutMs: cacheBatchTimeout,
+            timeoutMs: 0,
             probeSamples: getCacheRefreshProbeSamples(cfg),
             probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
           })
