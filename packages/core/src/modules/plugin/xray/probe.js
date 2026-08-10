@@ -150,7 +150,9 @@ function stopChild (child, options = {}) {
 
 async function waitForObservatoryMetrics ({ metricsPort, timeoutMs = 45000, pollIntervalMs = 1000, child, expectedSamples = 1, expectedSubjectCount = 0 }) {
   const metricsUrl = `http://127.0.0.1:${metricsPort}/debug/vars`
-  const deadline = Date.now() + timeoutMs
+  // timeoutMs <= 0 means no timeout (bootstrap probe waits for completion naturally;
+  // probe process crash is still caught via child.exitCode check below)
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity
   let lastError = new Error('Observatory metrics are not ready yet')
 
   while (Date.now() < deadline) {

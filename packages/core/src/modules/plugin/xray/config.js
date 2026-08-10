@@ -17,8 +17,7 @@ module.exports = {
   tip: 'Xray 核心插件，支持 VLESS/VMess/Trojan 等高级协议',
   localPort: 10801, // 默认端口，0表示自动
   startupNodeLimit: 10, // 阶段1：启动时最多使用多少个可用节点
-  bootstrapBatchTimeout: 30, // 阶段1：启动前快速复检缓存候选节点的超时（秒）
-  bootstrapCandidateLimit: 31, // 阶段1：启动前最多复检多少个缓存候选节点
+  bootstrapCandidateLimit: 100, // 阶段1：启动前最多复检多少个缓存候选节点
   bootstrapProbeSamples: 2, // 阶段1：启动前快速复检的 burst 样本数
   allowedCountries: [], // 允许使用的国家/地区代码，例如 ['SG', '!JP']
   allowedOwners: [], // 允许使用的节点提供方关键字，例如 ['amazon', '!cloudflare']

@@ -548,7 +548,9 @@ function getCacheBatchTimeoutSeconds (cfg) {
 }
 
 function getBootstrapBatchTimeoutSeconds (cfg) {
-  return Math.max(normalizePositiveInt(cfg.bootstrapBatchTimeout ?? cfg.initialRefreshBatchTimeout, pluginConfig.bootstrapBatchTimeout), CACHE_PROBE_SAMPLE_TIMEOUT)
+  // No timeout for bootstrap probe — let it complete naturally.
+  // Probe process crash is caught by child.exitCode check in waitForObservatoryMetrics.
+  return 0
 }
 
 function getBootstrapProbeSamples (cfg) {
@@ -2150,6 +2152,8 @@ const Plugin = function (context) {
     if (currentConfigNodes.length === 0 && !liveConfigHasProxyNodes) {
       // Cold start with no nodes — use original logic to bootstrap from cache
       const stableFallbackQuery = buildCacheEntryQueryOptions({
+        allowedCountries,
+        allowedOwners,
         stableOnly: true,
         maxDelayMs,
         limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
@@ -2159,6 +2163,8 @@ const Plugin = function (context) {
       const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isParsedNodeValid(entry.node))
 
       const freshProbeQuery = buildCacheEntryQueryOptions({
+        allowedCountries,
+        allowedOwners,
         maxDelayMs,
         limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
       })
@@ -2257,6 +2263,8 @@ const Plugin = function (context) {
 
     // Fill remaining slots from freshly probed available nodes
     const freshProbeQuery = buildCacheEntryQueryOptions({
+      allowedCountries,
+      allowedOwners,
       maxDelayMs,
       limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
     })
@@ -2458,7 +2466,7 @@ const Plugin = function (context) {
     })
   }
 
-  async function probeNodesBatch ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeSamples = pluginConfig.cacheRefreshProbeSamples }) {
+  async function probeNodesBatch ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeSamples = pluginConfig.cacheRefreshProbeSamples, probeUrl = null }) {
     const effectiveProbeSamples = normalizePositiveInt(probeSamples, pluginConfig.cacheRefreshProbeSamples)
 
     if (!Array.isArray(batchNodes) || batchNodes.length === 0) {
@@ -2468,7 +2476,9 @@ const Plugin = function (context) {
       }
     }
 
-    const configuredProbeUrl = cfg.probeUrl || pluginConfig.probeUrl
+    // Stage1 bootstrap passes observatoryProbeUrl (strict, near real target);
+    // Stage3 cache refresh passes probeUrl (lenient, gstatic 204) for broad screening.
+    const effectiveProbeUrl = probeUrl || cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl
 
     // Single-pass probe: probe ALL nodes once with the configured probeUrl.
     // The dual-protocol (HTTP + HTTPS) probing was reverted because:
@@ -2478,7 +2488,7 @@ const Plugin = function (context) {
     // 3. Proxying plain HTTP (port 80) traffic has little practical value;
     //    the vast majority of proxied traffic is HTTPS, so the configured
     //    probeUrl's protocol is authoritative.
-    return await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: configuredProbeUrl, probeSamples: effectiveProbeSamples })
+    return await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: effectiveProbeUrl, probeSamples: effectiveProbeSamples })
   }
 
   async function runSingleProbePass ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl, probeSamples }) {
@@ -2631,11 +2641,15 @@ const Plugin = function (context) {
       if (!reusedLiveConfig) {
         const bootstrapCandidateLimit = getBootstrapCandidateLimit(cfg)
         const stableFallbackQuery = buildCacheEntryQueryOptions({
+          allowedCountries,
+          allowedOwners,
           stableOnly: true,
           maxDelayMs,
           limit: bootstrapCandidateLimit,
         })
         const bootstrapCandidateQuery = buildCacheEntryQueryOptions({
+          allowedCountries,
+          allowedOwners,
           limit: bootstrapCandidateLimit,
           probedOnly: true,
         })
@@ -2717,6 +2731,7 @@ const Plugin = function (context) {
               batchNodes: bootstrapCandidates,
               timeoutMs: getBootstrapBatchTimeoutSeconds(cfg) * 1000,
               probeSamples: getBootstrapProbeSamples(cfg),
+              probeUrl: cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl,
             })
             const annotatedBootstrapEntries = await annotateProbeEntries(bootstrapProbeResult.entries, {
               binPath,
@@ -2737,12 +2752,18 @@ const Plugin = function (context) {
           }
         }
 
+        // Only use bootstrap-probed entries; do NOT pad with unprobed stable fallback.
+        // fallbackStableEntries are only used when bootstrap probe fails entirely (catch below).
         const startupNodeCandidates = []
         appendItems(startupNodeCandidates, bootstrapSelectedEntries.map(entry => entry.node))
-        appendItems(startupNodeCandidates, supportedFallbackEntries.map(entry => entry.node))
+        // If bootstrap probe failed (catch above) and produced zero selected entries,
+        // fall back to stable cache entries as last resort to avoid empty config.
+        if (startupNodeCandidates.length === 0) {
+          appendItems(startupNodeCandidates, supportedFallbackEntries.map(entry => entry.node))
+        }
         startupNodes = xrayCache.deduplicateNodes(startupNodeCandidates).slice(0, startupNodeLimit)
 
-        log.info(`Xray 启动节点候选: source=nodes-cache, fallbackStable=${fallbackStableEntries.length}, fallbackSupported=${supportedFallbackEntries.length}, startupSelected=${startupNodes.length}`)
+        log.info(`Xray 启动节点候选: source=nodes-cache, bootstrapSelected=${bootstrapSelectedEntries.length}, fallbackStable=${supportedFallbackEntries.length}, usedFallback=${bootstrapSelectedEntries.length === 0}, startupSelected=${startupNodes.length}`)
 
         if (startupNodes.length === 0) {
           log.warn('Xray 警告: 未找到任何可用节点，将只启用 Direct/Block')
@@ -3339,6 +3360,7 @@ const Plugin = function (context) {
             batchNodes: candidateNodes,
             timeoutMs: cacheBatchTimeout,
             probeSamples: getCacheRefreshProbeSamples(cfg),
+            probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
           })
 
           if (generation !== refreshGeneration) {
