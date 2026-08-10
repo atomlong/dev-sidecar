@@ -92,7 +92,8 @@ function isObservationReady (metrics, expectedSamples = 1, expectedSubjectCount 
   // Regular observatory (no healthPing): all nodes probed at least once
   return statuses.every((status) => {
     const delay = status.delay || status.Delay || 0
-    return delay > 0
+    const lastTry = status.last_try_time || status.LastTryTime || 0
+    return delay > 0 || lastTry > 0
   })
 }
 
