@@ -118,6 +118,10 @@ function resetStateForTest () {
     statusWriteTimer = null
   }
   statusWriteQueue = {}
+  if (watchStatusListenerId != null) {
+    event.unregister(watchStatusListenerId)
+    watchStatusListenerId = null
+  }
   watchStatusRegistered = false
 }
 
@@ -159,12 +163,13 @@ function updateStatus (key, value) {
 // 订阅 core 状态总线，同步 *.enabled 开关状态和 plugin.xray 端口字段（过滤 free_eye.result 等大 payload）
 // 幂等：重复调用不会多次注册（防止 acquireLock + 显式调用导致双注册）
 let watchStatusRegistered = false
+let watchStatusListenerId = null
 function watchStatusEvents ({ log } = {}) {
   if (watchStatusRegistered) {
     return
   }
   watchStatusRegistered = true
-  event.register('status', (e) => {
+  watchStatusListenerId = event.register('status', (e) => {
     if (!e || typeof e.key !== 'string') {
       return
     }
