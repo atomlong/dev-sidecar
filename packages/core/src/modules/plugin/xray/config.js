@@ -59,6 +59,10 @@ module.exports = {
   // chatgpt.com 有 CF 防护会返回 403，但连接成功即视为可用；垃圾代理会超时。
   observatoryProbeUrl: '',
   probeInterval: 300,
+  // 当所有代理节点不可用时，是否回退到直连（fallbackTag: 'direct'）。
+  // true: 走直连（默认，网络不中断但可能暴露真实 IP）
+  // false: 不回退，请求直接失败（适合需要代理但不能裸连的场景）
+  fallbackWhenAllDead: true,
 
   // Exported so server/index.js and xray/index.js can look up the per-level
   // V8 old-space cap and stage3 GC threshold. Keep STAGE3_MAX_OLD_SPACE_BY_LEVEL

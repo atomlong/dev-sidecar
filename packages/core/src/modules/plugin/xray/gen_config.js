@@ -8,6 +8,7 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
     probeMode = 'observatory',
     probeSamples = 1,
     probeTimeoutSeconds = 15,
+    enableDirectFallback = true,
   } = options
 
   const proxyTags = []
@@ -49,7 +50,7 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
     balancers.push({
       tag: 'balancer-proxy',
       selector: ['proxy_'],
-      fallbackTag: 'direct',
+      ...(enableDirectFallback ? { fallbackTag: 'direct' } : {}),
       strategy: {
         type: 'leastPing', // Uses observatory results
       },

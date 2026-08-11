@@ -2185,6 +2185,7 @@ const Plugin = function (context) {
         apiPort: currentLiveApiPort,
         metricsPort: currentLiveMetricsPort,
         observatoryEnableConcurrency: true,
+        enableDirectFallback: cfg.fallbackWhenAllDead !== false,
       })
       writeJsonFile(currentLiveConfigPath, liveConfig)
       liveConfigHasProxyNodes = true
@@ -2367,6 +2368,7 @@ const Plugin = function (context) {
       apiPort: currentLiveApiPort,
       metricsPort: currentLiveMetricsPort,
       observatoryEnableConcurrency: true,
+      enableDirectFallback: cfg.fallbackWhenAllDead !== false,
     })
     writeJsonFile(currentLiveConfigPath, liveConfig)
     liveConfigHasProxyNodes = selectedNodes.length > 0
@@ -2791,6 +2793,7 @@ const Plugin = function (context) {
           apiPort: liveApiPort,
           metricsPort: liveMetricsPort,
           observatoryEnableConcurrency: true,
+          enableDirectFallback: cfg.fallbackWhenAllDead !== false,
         })
         writeJsonFile(liveConfigPath, liveConfig)
         log.info(`Xray 配置文件已生成: ${liveConfigPath}`)
