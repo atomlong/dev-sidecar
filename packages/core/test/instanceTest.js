@@ -15,6 +15,7 @@ describe('instance', function () {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ds-core-instance-'))
     process.env.HOME = tmpDir
     fs.mkdirSync(path.join(tmpDir, '.dev-sidecar'), { recursive: true })
+    instance.resetStateForTest()
   })
 
   afterEach(function () {
@@ -157,7 +158,6 @@ describe('instance', function () {
         assert.isTrue(data.app.status.plugin.git.enabled)
       } finally {
         await release()
-        await sleep(100)
       }
     })
 
@@ -173,7 +173,6 @@ describe('instance', function () {
         assert.isUndefined(data.app.status.plugin)
       } finally {
         await release()
-        await sleep(100)
       }
     })
 
@@ -192,7 +191,6 @@ describe('instance', function () {
         assert.strictEqual(data.app.status.plugin.xray.metricsPort, 45022)
       } finally {
         await release()
-        await sleep(100)
       }
     })
   })

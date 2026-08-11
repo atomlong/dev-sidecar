@@ -112,6 +112,15 @@ function writeInstance (instance) {
 let statusWriteTimer = null
 let statusWriteQueue = {}
 
+function resetStateForTest () {
+  if (statusWriteTimer) {
+    clearTimeout(statusWriteTimer)
+    statusWriteTimer = null
+  }
+  statusWriteQueue = {}
+  watchStatusRegistered = false
+}
+
 // 将状态写入 running.json 的 app.status（事件驱动，300ms 防抖合并多次更新为一次写入）
 function updateStatus (key, value) {
   if (typeof key !== 'string' || key.length === 0) {
@@ -179,4 +188,5 @@ module.exports = {
   watchStatusEvents,
   getLockPath,
   getRunningJsonPath,
+  resetStateForTest,
 }
