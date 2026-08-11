@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.2.5] - Unreleased
+## [v2.2.5] - 2026-08-11
 
 Synced upstream `docmirror/dev-sidecar` master (29 commits). Upstream introduced a CLI rewrite (native `ds-cli` binary with SEA packaging), single-instance mutex, and Linux/macOS environment-variable proxy support. All fork-specific changes (CA cert passthrough, Xray plugin, keep-alive socket fix, log.debug hot-path demotion, conditional linuxTargets, native module rebuild, CSS variable theme) were preserved. The fork's desktop-detection logic in `set-system-proxy` was merged with upstream's env-var support so that headless servers now write proxy env vars (previously the early `return true` skipped them).
 
