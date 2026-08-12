@@ -4,8 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [v2.2.6] - Unreleased
 
-### Added
-- **Xray balancer `fallbackTag` 可配置开关** (fork). 新增 `fallbackWhenAllDead` 配置项（`packages/core/src/modules/plugin/xray/config.js`，默认 `true`）。当所有代理节点不可用时，Xray balancer 的 `fallbackTag: 'direct'` 会让流量走直连——这在某些场景下不符合预期（如需要代理但不能暴露真实 IP 的场景）。设为 `false` 时，`gen_config.js` 不生成 `fallbackTag` 字段，所有节点不可用时请求直接失败而非走直连。3 处 live config `genConfig` 调用（冷启动 regen / 重启 fallback / 初始启动）传入 `enableDirectFallback: cfg.fallbackWhenAllDead !== false`；egress probe 和 batch probe 调用不受影响（始终不需要 fallback）。
+### Changed
+- **移除 Xray balancer 的 `fallbackTag: 'direct'` 直连回退** (fork). 所有代理节点不可用时，请求直接失败而非走直连，避免暴露真实 IP。`packages/core/src/modules/plugin/xray/gen_config.js` 不再生成 `fallbackTag` 字段。
 
 ## [v2.2.5] - 2026-08-11
 
