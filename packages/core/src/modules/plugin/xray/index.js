@@ -596,24 +596,24 @@ function isSubscriptionSyncEnabled (cfg) {
   return cfg ? cfg.subscriptionSyncEnabled !== false : true
 }
 
-const SUBSCRIPTION_SYNC_INTERVAL_DAYS_DEFAULT = 3
-const SUBSCRIPTION_SYNC_INTERVAL_DAYS_MIN = 1
+const SUBSCRIPTION_SYNC_INTERVAL_HOURS_DEFAULT = 24
+const SUBSCRIPTION_SYNC_INTERVAL_HOURS_MIN = 1
 
-function getSubscriptionSyncIntervalDays (cfg) {
-  const raw = Number(cfg && cfg.subscriptionSyncIntervalDays)
-  if (!Number.isFinite(raw) || raw < SUBSCRIPTION_SYNC_INTERVAL_DAYS_MIN) {
-    return SUBSCRIPTION_SYNC_INTERVAL_DAYS_DEFAULT
+function getSubscriptionSyncIntervalHours (cfg) {
+  const raw = Number(cfg && cfg.subscriptionSyncIntervalHours)
+  if (!Number.isFinite(raw) || raw < SUBSCRIPTION_SYNC_INTERVAL_HOURS_MIN) {
+    return SUBSCRIPTION_SYNC_INTERVAL_HOURS_DEFAULT
   }
   return Math.floor(raw)
 }
 
 function shouldSkipRemoteFetchDueToCooldown (cachePath, cfg) {
-  const intervalDays = getSubscriptionSyncIntervalDays(cfg)
+  const intervalHours = getSubscriptionSyncIntervalHours(cfg)
   const lastFetchAt = xrayCache.getStage2LastRemoteFetchAt(cachePath)
   if (lastFetchAt === 0) {
     return false
   }
-  const cooldownSeconds = intervalDays * 24 * 60 * 60
+  const cooldownSeconds = intervalHours * 60 * 60
   const elapsed = Math.floor(Date.now() / 1000) - lastFetchAt
   return elapsed < cooldownSeconds
 }
@@ -2929,12 +2929,12 @@ const Plugin = function (context) {
       let shouldSkipSubscriptionFetch = subscriptionSyncDecision.shouldSkip
 
       // Cooldown check: even if the watermark says we should fetch, don't
-      // fetch if the last remote fetch was within subscriptionSyncIntervalDays.
+      // fetch if the last remote fetch was within subscriptionSyncIntervalHours.
       if (!shouldSkipSubscriptionFetch && !subscriptionSyncDecision.error) {
         if (shouldSkipRemoteFetchDueToCooldown(cachePath, cfg)) {
           const lastFetchAt = xrayCache.getStage2LastRemoteFetchAt(cachePath)
-          const intervalDays = getSubscriptionSyncIntervalDays(cfg)
-          log.info(`Xray 订阅抓取冷却中: 距上次远端抓取 ${Math.floor((Date.now() / 1000 - lastFetchAt) / 3600)}h, 间隔 ${intervalDays}d, 跳过远端拉取`)
+          const intervalHours = getSubscriptionSyncIntervalHours(cfg)
+          log.info(`Xray 订阅抓取冷却中: 距上次远端抓取 ${Math.floor((Date.now() / 1000 - lastFetchAt) / 3600)}h, 间隔 ${intervalHours}h, 跳过远端拉取`)
           shouldSkipSubscriptionFetch = true
         }
       }
@@ -3634,10 +3634,10 @@ const Plugin = function (context) {
         // refresh and is guarded by isStageRunning to prevent overlap.
         if (generation === refreshGeneration && isSubscriptionSyncEnabled(cfg) && !isStageRunning) {
           const lastFetchAt = xrayCache.getStage2LastRemoteFetchAt(cachePath)
-          const intervalDays = getSubscriptionSyncIntervalDays(cfg)
+          const intervalHours = getSubscriptionSyncIntervalHours(cfg)
           const elapsedHours = lastFetchAt > 0 ? Math.floor((Date.now() / 1000 - lastFetchAt) / 3600) : Infinity
-          if (elapsedHours >= intervalDays * 24) {
-            log.info(`Xray Stage3 后触发 Stage2: 距上次远端抓取 ${elapsedHours === Infinity ? 'never' : elapsedHours + 'h'}, 间隔 ${intervalDays}d`)
+          if (elapsedHours >= intervalHours) {
+            log.info(`Xray Stage3 后触发 Stage2: 距上次远端抓取 ${elapsedHours === Infinity ? 'never' : elapsedHours + 'h'}, 间隔 ${intervalHours}h`)
             isStageRunning = true
             try {
               await api.refreshCacheFromSourcesOnce({
