@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - **移除 Xray balancer 的 `fallbackTag: 'direct'` 直连回退** (fork). 所有代理节点不可用时，请求直接失败而非走直连，避免暴露真实 IP。`packages/core/src/modules/plugin/xray/gen_config.js` 不再生成 `fallbackTag` 字段。
+- **`subscriptionSyncIntervalDays` 改为 `subscriptionSyncIntervalHours`** (fork). 单位从天改为小时，默认 24 小时（原 3 天），最小 1 小时（原 1 天）。`packages/core/src/modules/plugin/xray/config.js` 和 `index.js` 同步更新。
+- **`cacheRefreshInterval` 改为 `cacheRefreshIntervalHours`** (fork). 单位从秒改为小时，默认 6 小时（原 21600 秒），最小 1 小时（原 3 小时）。`packages/core/src/modules/plugin/xray/config.js` 和 `index.js` 同步更新。
 
 ## [v2.2.5] - 2026-08-11
 
