@@ -536,11 +536,11 @@ async function detectEgressAddressThroughProxy ({ proxyPort, timeoutMs = EGRESS_
   throw lastError
 }
 
-const CACHE_REFRESH_INTERVAL_MIN_SECONDS = 3 * 60 * 60 // 3 hours
+const CACHE_REFRESH_INTERVAL_MIN_HOURS = 1
 
 function getCacheRefreshIntervalSeconds (cfg) {
-  const value = normalizePositiveInt(cfg.cacheRefreshInterval, pluginConfig.cacheRefreshInterval)
-  return Math.max(value, CACHE_REFRESH_INTERVAL_MIN_SECONDS)
+  const hours = normalizePositiveInt(cfg.cacheRefreshIntervalHours, pluginConfig.cacheRefreshIntervalHours)
+  return Math.max(hours, CACHE_REFRESH_INTERVAL_MIN_HOURS) * 3600
 }
 
 function getBootstrapProbeSamples (cfg) {
