@@ -74,25 +74,29 @@ DevSideCar 会根据你配置的域名规则，将流量转发给 Xray 插件。
 
 ### 怎么用
 
-在终端执行以下命令（需要 DS 正在运行且 Xray 插件已启动）：
-
-**1. 查看当前 Xray API 端口**
+为了方便，先设置一个变量复用 xray 路径和 apiPort：
 ```shell
-cat ~/.dev-sidecar/running.json | jq '.app.status.plugin.xray.apiPort'
-# 输出示例: 45457
+XRAY=/opt/dev-sidecar/resources/extra/xray/xray
+API=127.0.0.1:$(cat ~/.dev-sidecar/running.json | jq -r '.app.status.plugin.xray.apiPort')
 ```
 
-**2. 锁定当前节点（保持出口 IP 不变）**
-```shell
-# 查看当前 balancer 选中的节点
-xray api bi --server 127.0.0.1:$(cat ~/.dev-sidecar/running.json | jq -r '.app.status.plugin.xray.apiPort') balancer-proxy
-# Selects 部分显示当前选中的 tag，例如 proxy_0
+> Windows 用户：`XRAY` 路径改为 `C:\Program Files\dev-sidecar\resources\extra\xray\xray.exe`，`jq` 需单独安装。
 
-# 锁定到该节点（所有新连接都走这个节点）
-xray api bo --server 127.0.0.1:$(cat ~/.dev-sidecar/running.json | jq -r '.app.status.plugin.xray.apiPort') -b balancer-proxy proxy_0
+**一行锁定当前节点（保持出口 IP 不变）**
+```shell
+# 自动获取当前 balancer 选中的节点并锁定
+$XRAY api bo --server $API -b balancer-proxy $($XRAY api bi --server $API balancer-proxy 2>&1 | awk '/Selects:/{getline; print $2}')
 ```
 
-**3. 验证出口 IP 已固定**
+**查看当前是否已锁定**
+```shell
+$XRAY api bi --server $API balancer-proxy
+# 看 "Selecting Override" 那行：
+#   值为空（只有空格）= 未锁定，走 leastPing 动态选择
+#   值为 proxy_N      = 已锁定到 proxy_N
+```
+
+**验证出口 IP 已固定**
 ```shell
 # 多次请求，出口 IP 应该相同
 curl -s -x http://127.0.0.1:10801 https://api.ipify.org
@@ -100,9 +104,9 @@ curl -s -x http://127.0.0.1:10801 https://api.ipify.org
 # 两次输出应该相同
 ```
 
-**4. 恢复动态选择（解除锁定）**
+**恢复动态选择（解除锁定）**
 ```shell
-xray api bo --server 127.0.0.1:$(cat ~/.dev-sidecar/running.json | jq -r '.app.status.plugin.xray.apiPort') -b balancer-proxy -r
+$XRAY api bo --server $API -b balancer-proxy -r
 ```
 
 ### 注意事项
@@ -112,7 +116,7 @@ xray api bo --server 127.0.0.1:$(cat ~/.dev-sidecar/running.json | jq -r '.app.s
 - 如果锁定节点被 Stage3 热刷新删除（延迟升高或探测失败），DS 会自动解除锁定，恢复动态选择
 - DS 重启后锁定会自动失效（xray 进程重启后 balancer override 丢失）
 - 锁定只影响**新连接**，已有连接继续走原节点完成
-- 上述命令用 `jq -r` 自动提取 apiPort，无需手动替换
+- `XRAY` 和 `API` 变量在同一个终端会话中设置一次即可复用
 
 > **提示**：未来版本会在 GUI 中加入"锁定出口 IP"按钮，目前需通过上述命令行操作。
 
