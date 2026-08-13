@@ -92,7 +92,8 @@ describe('probe isObservationReady', () => {
         },
       }
       const expectedTags = new Set(['proxy_0', 'proxy_1'])
-      // Current batch started at t=150; proxy_0's last_try_time=50 < 150 → not ready
+      // Current batch ado completed at t=155; minLastTryTime = 155 - 5 = 150
+      // proxy_0's last_try_time=50 < 150 → not ready
       assert.strictEqual(isObservationReady(metrics, 1, 0, expectedTags, 150), false)
     })
 
@@ -105,6 +106,21 @@ describe('probe isObservationReady', () => {
       }
       const expectedTags = new Set(['proxy_0', 'proxy_1'])
       // Both probed at t>=150 → ready (including dead node with delay=99999999)
+      assert.strictEqual(isObservationReady(metrics, 1, 0, expectedTags, 150), true)
+    })
+
+    it('with minLastTryTime: rejects status from just before adoCompletedAt', () => {
+      // Edge case: previous batch probe at t=154, adoCompletedAt=155,
+      // minLastTryTime = 155 - 5 = 150. 154 >= 150 → would be accepted.
+      // This is acceptable: the 5s window means we might accept a probe
+      // that happened up to 5s before ado, but observatory won't probe
+      // a freshly added outbound until the next probeInterval (5s) anyway.
+      const metrics = {
+        observatory: {
+          proxy_0: { delay: 500, last_try_time: 154 },
+        },
+      }
+      const expectedTags = new Set(['proxy_0'])
       assert.strictEqual(isObservationReady(metrics, 1, 0, expectedTags, 150), true)
     })
 

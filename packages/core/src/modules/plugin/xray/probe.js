@@ -189,8 +189,11 @@ function stopChild (child, options = {}) {
 async function waitForObservatoryMetrics ({ metricsPort, timeoutMs = 45000, pollIntervalMs = 1000, child, expectedSamples = 1, expectedSubjectCount = 0, expectedTags = null, minLastTryTime = 0 }) {
   const metricsUrl = `http://127.0.0.1:${metricsPort}/debug/vars`
   // timeoutMs <= 0 means no timeout (bootstrap probe waits for completion naturally;
-  // probe process crash is still caught via child.exitCode check below)
-  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity
+  // probe process crash is still caught via child.exitCode check below).
+  // Safety cap: even with no timeout, abort after 10 minutes to prevent
+  // infinite loops if observatory silently skips a tag.
+  const effectiveTimeout = timeoutMs > 0 ? timeoutMs : 10 * 60 * 1000
+  const deadline = Date.now() + effectiveTimeout
   let lastError = new Error('Observatory metrics are not ready yet')
 
   while (Date.now() < deadline) {
@@ -250,6 +253,14 @@ function startXrayProcess ({ binPath, configPath, log, purpose = 'probe' }) {
   if (!child || !child.pid) {
     throw new Error('Failed to start Xray probe process')
   }
+
+  // Catch async spawn errors (e.g. EACCES, ENOENT after fork) to prevent
+  // unhandled 'error' events from crashing the parent process.
+  child.on('error', (err) => {
+    if (log && typeof log.warn === 'function') {
+      log.warn(`Xray 探测进程 error 事件: ${err.message}`)
+    }
+  })
 
   // Move the probe process into an isolated cgroup so its file cache (from
   // reading the 800MB+ SQLite cache) does NOT count against dev-sidecar's

@@ -2527,6 +2527,12 @@ const Plugin = function (context) {
       if (result.failedTags.length > 0) {
         swapLog.warn(`Xray 常驻探测: ${result.failedTags.length} 个节点 ado 失败: ${result.failedTags.map(f => f.tag).join(',')}`)
       }
+      if (result.stoppedEarly) {
+        const droppedCount = outbounds.length - result.results.length
+        if (droppedCount > 0) {
+          swapLog.warn(`Xray 常驻探测: ado 遇无效节点提前停止，${droppedCount} 个节点未被处理`)
+        }
+      }
 
       // Record ado completion time (unix seconds, same unit as xray last_try_time)
       // Used by isObservationReady to distinguish new probe results from stale status.
@@ -2558,13 +2564,19 @@ const Plugin = function (context) {
 
     // Wait for observatory to probe new nodes. Use minLastTryTime to ignore
     // stale status from previous batch (rmo doesn't clear old entries).
-    // -1s tolerance for clock skew between Node.js and xray process.
+    // Use CACHE_PROBE_SAMPLE_INTERVAL (5s) as tolerance — observatory probes
+    // at probeInterval boundaries, so the previous batch's last_try_time could
+    // be up to probeInterval seconds before adoCompletedAt. Using -1s would
+    // risk accepting stale data when swapBatch completes within 1s of the
+    // previous batch's last probe.
+    const minLastTryTime = adoCompletedAt > 0 ? adoCompletedAt - CACHE_PROBE_SAMPLE_INTERVAL : 0
+
     const metrics = await probe.waitForObservatoryMetrics({
       metricsPort: persistentController.metricsPort,
       timeoutMs,
       child: persistentController.child,
       expectedTags,
-      minLastTryTime: adoCompletedAt > 0 ? adoCompletedAt - 1 : 0,
+      minLastTryTime,
     })
 
     const observatory = metrics && (metrics.observatory || metrics.burstObservatory || metrics.Observatory || metrics.BurstObservatory)
@@ -3410,6 +3422,7 @@ const Plugin = function (context) {
       registerTransientProbeController(persistentController)
       log.info(`Xray 常驻探测子进程已启动: apiPort=${persistentController.apiPort}, metricsPort=${persistentController.metricsPort}`)
 
+      try {
       let successBatchCount = 0
       let availableCount = 0
       let removedCount = 0
@@ -3422,7 +3435,6 @@ const Plugin = function (context) {
 
       while (processedCount < totalDueCandidateCount) {
         if (generation !== refreshGeneration) {
-          await stopPersistentProbe()
           return
         }
 
@@ -3634,6 +3646,13 @@ const Plugin = function (context) {
             return
           }
 
+          // If persistent probe subprocess died, stop retrying — further swapBatch
+          // calls would spawn pointless xray api rmo/ado against a dead process.
+          if (persistentController && persistentController.child && (persistentController.child.exitCode != null || persistentController.child.signalCode != null)) {
+            log.error(`Xray 缓存周期探测: 常驻探测子进程已退出，中止本轮 Stage3: ${error.message}`)
+            break
+          }
+
           const networkStatusAfterFailure = await ensureLocalNetworkAvailabilityForRefresh({
             generation,
             batchIndex: nextBatchIndex,
@@ -3654,13 +3673,11 @@ const Plugin = function (context) {
       }
 
       if (generation !== refreshGeneration) {
-        await stopPersistentProbe()
         return
       }
 
       if (successBatchCount === 0) {
         log.warn('Xray 缓存周期探测: 所有批次都失败，保留原缓存')
-        await stopPersistentProbe()
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
         const nextRefreshAt = xrayCache.formatLocalTimestamp(new Date(Date.now() + nextDelay))
         writeStage3RoundSummary({
@@ -3807,8 +3824,9 @@ const Plugin = function (context) {
           forceGc: true,
         })
       }
-
-      await stopPersistentProbe()
+      } finally {
+        await stopPersistentProbe()
+      }
     },
 
     async injectRules (rules, port) {
