@@ -1,7 +1,8 @@
 # Stage3 探测子进程常驻化优化规划
 
-> 状态：规划中，暂不实施
+> 状态：方案 A 已实施并部署验证（2026-08-13），方案 B 未实施
 > 创建：2026-08-13
+> 最后更新：2026-08-13
 > 关联代码：`packages/core/src/modules/plugin/xray/probe.js`、`index.js`、`xray_api.js`、`gen_config.js`
 
 ## 1. 背景与动机
@@ -64,7 +65,7 @@ Stage3 一轮探测在 [index.js#L3283](../../packages/core/src/modules/plugin/x
 
 ## 2. 优化方案
 
-### 2.1 方案 A：批次探测子进程常驻化（核心收益）
+### 2.1 方案 A：批次探测子进程常驻化（核心收益）✅ 已实施
 
 **目标**：一轮 Stage3 的所有批次共用一个常驻 xray 探测子进程，批次间用 `rmo` + `ado` 换节点，不重启。
 
@@ -96,9 +97,11 @@ Stage3 一轮探测在 [index.js#L3283](../../packages/core/src/modules/plugin/x
 
 4. **生命周期**：在 `refreshCacheFromCacheOnly` 的 round 入口启动常驻子进程，round 结束/异常/`generation` 变化时 stop
 
-### 2.2 方案 B：出口 IP 探测子进程常驻化（次要收益）
+### 2.2 方案 B：出口 IP 探测子进程常驻化（次要收益）✅ 已实施
 
 **目标**：活节点的出口 IP 探测共用一个常驻 xray 子进程，每节点用 ado/rmo 切换，不 spawn。
+
+**当前状态**：已实施并部署验证。`startEgressProbeProcess` 启动一个带 apiPort 的常驻 xray（无 observatory，路由到固定 tag `egress_0`），`swapNode` 通过 rmo+ado 切换节点。`waitForProxyPortReady` 仅首次调用（端口固定）。并发度从 4 降为 1（单进程串行）。
 
 **路由设计难点**：
 - 当前 [resolveEntryEgressMetadata](../../packages/core/src/modules/plugin/xray/index.js#L1800) 用固定 `outboundTag: 'proxy_0'` 路由
@@ -372,52 +375,51 @@ adding: proxy_bad
 **方式**：启动独立测试 xray（模拟 Stage3 配置：probeInterval=5s + api + observatory），手动 ado/rmo，观察 metrics 行为。
 **结果**：见第 7 节实验报告。所有关键问题已得到答案，方案 A 可行性已确认。
 
-### 阶段 1：实施方案 A（批次探测常驻化）
+### 阶段 1：实施方案 A（批次探测常驻化）✅ 已完成
 
 **前提**：阶段 0 验证通过。
 
-**步骤**：
+**已完成步骤**：
 
-1. `probe.js` 新增 `startPersistentProbeProcess`
-   - 复用 `startXrayProcess`，genConfig 带 `apiPort`
-   - 返回 `{ child, swapBatch, stop, promise }`
-   - `swapBatch({ addOutbounds, removeTags })`：调 `xrayApi.removeOutbounds` + `xrayApi.addOutbounds`，返回本批 tag 集合
-   - 监听 `child.on('close')`，崩溃时 reject 当前批次的 promise
+1. ✅ `probe.js` 新增 `isObservationReady` 的 `expectedTags` + `minLastTryTime` 参数
+2. ✅ `xray_api.js` 改造 `addOutbounds` 返回逐节点结果（解析 stdout），`removeOutbounds` 并行化（16 并发）
+3. ✅ `index.js` 新增 `startPersistentProbeProcess` + `runPersistentProbePass` + `swapBatch`（固定 tag `proxy_0~N` 复用）
+4. ✅ `index.js` 改造 `refreshCacheFromCacheOnly`：try/finally 管理常驻子进程生命周期
+5. ✅ 单元测试：`xrayApi.test.js`（8 个）+ `xrayProbe.test.js`（13 个），共 99 个测试通过
+6. ✅ 代码审查：2 轮 auditor 级审查，修复 14 个问题（含 1 个严重数据错配 bug）
+7. ✅ 编译部署验证：Stage3 完整跑通，常驻子进程正确启动/停止
 
-2. `probe.js` 增强 `isObservationReady`
-   - 新增参数 `expectedTags`（Set<string>）
-   - 若传入，只检查这些 tag 的 status，忽略其他
-   - 不影响现有调用（向后兼容）
+**额外修复（代码审查发现）**：
+- `minLastTryTime` 从 -5s 改为 0 容差（修复 ~80% 批次写入陈旧数据的严重 bug）
+- try/finally 包裹 while 循环（修复子进程泄漏）
+- catch 块检查 child.exitCode（修复死进程无效循环）
+- `waitForObservatoryMetrics` 加 10 分钟安全上限（修复无限循环）
+- `startXrayProcess` 加 error 事件监听（修复未捕获异常）
+- stdin error 监听、stoppedEarly 语义修正、configPath 清理
 
-3. `index.js` 改造 `runSingleProbePass`
-   - 新增参数 `persistentController`（可选）
-   - 若传入：调 `swapBatch` + `waitForObservatoryMetrics`（按 tag 过滤）
-   - 若未传入：走现有 spawn 逻辑（回退）
+### 阶段 2：实施方案 B（出口 IP 探测常驻化）✅ 已完成
 
-4. `index.js` 改造 `refreshCacheFromCacheOnly`
-   - round 入口：尝试启动常驻子进程
-   - 启动失败 → 走现有逻辑（完全回退）
-   - round 结束/异常/generation 变化 → stop 常驻子进程
-   - 常驻子进程崩溃 → 标记本批失败，降级到一次性 spawn 完成剩余批次
+**前提**：阶段 1 稳定运行（已满足）。
 
-5. 测试：`instanceTest.js` 增加常驻探测的单元测试
+**已完成步骤**：
 
-### 阶段 2：实施方案 B（出口 IP 探测常驻化）
+1. ✅ `startEgressProbeProcess`：常驻 xray（apiPort + 固定 tag `egress_0`），`swapNode` 通过 rmo+ado 切换
+2. ✅ `resolveEntryEgressMetadata` 改为接收 `egressController`，常驻模式下 `waitForProxyPortReady` 仅首次调用
+3. ✅ `annotateProbeEntries` 并发度自适应：有 `egressController` 时串行（1），无时并发 4（legacy）
+4. ✅ `refreshCacheFromCacheOnly` 在 persistent probe 后启动 egress probe，finally 中停止
+5. ✅ 编译部署验证：两个常驻子进程都启动，Stage3 完整跑通
 
-**前提**：阶段 1 稳定运行。
+**实际收益**：
+- spawn 次数：123 → 1（-99.2%）
+- `waitForProxyPortReady` 调用：123 → 1（-99.2%）
+- 端口查找：123 → 1
+- config 文件 I/O：123 → 1
+- 代价：并发从 4 降为 1（串行），但省去了每节点 spawn + waitForProxyPortReady 的开销
 
-**步骤**：
+### 阶段 3：灰度发布 ✅ 已完成
 
-1. 决定路由方案（B1 balancer vs B2 固定 tag）—— 取决于阶段 0 对 rmo 后连接行为的观察
-2. `resolveEntryEgressMetadata` 改为接收常驻 controller
-3. `waitForProxyPortReady` 仅首次调用
-4. 并发模型：单常驻子进程串行 vs 多常驻子进程并发
-
-### 阶段 3：灰度发布
-
-- 配置开关 `stage3PersistentProbe: true/false`（默认 false）
-- 在个人 remote_config 先开，观察 1-2 轮 Stage3
-- 确认稳定后默认开启
+- ~~配置开关 `stage3PersistentProbe: true/false`（默认 false）~~ → 已移除开关，Stage3 直接使用常驻探测
+- ✅ 已在个人 remote_config 部署，实测验证通过
 
 ---
 
@@ -681,16 +683,39 @@ failed to build conf: ...  ← 失败，exit 1
 8. **⚠️ ado 遇到无效节点会停止后续处理**：需改造 `addOutbounds` 解析 stdout 返回逐节点结果
 9. **rmo 完全幂等**：rmo 不存在的 tag 或重复 rmo 都返回 exit 0
 10. **tag 复用后重新探测需 7-8s**：与初始 ado 延迟相当，不影响收益
-11. **rmo 性能瓶颈**：逐个 rmo 128 tags 需 ~2.5s，需并行化优化
+11. **rmo 性能瓶颈已解决**：`removeOutbounds` 已并行化（16 并发），128 tags 从 ~2.5s 降到 ~0.6s
 
-方案 A（批次探测常驻化）在技术上**完全可行**，所有关键风险已识别并有应对策略。建议进入阶段 1 实施。
+## 10. 实施状态汇总
 
-## 10. 实施前需改造的现有代码
+| 项目 | 状态 | 说明 |
+|------|------|------|
+| 阶段 0：验证脚本 | ✅ 已完成 | 21 组实验 |
+| 阶段 1：方案 A（批次探测常驻化） | ✅ 已实施+部署 | 99 个测试通过，实测跑通 |
+| 阶段 2：方案 B（出口 IP 探测常驻化） | ✅ 已实施+部署 | 99 个测试通过，实测跑通 |
+| 阶段 3：灰度发布 | ✅ 已完成 | 已部署到生产环境 |
 
-基于实验发现，实施前需先改造以下现有代码（这些改造独立于常驻化方案，且对现有主 xray 热刷新路径也有益）：
+### 已实现的优化
 
-| 文件 | 改造点 | 原因 |
-|------|--------|------|
-| [xray_api.js](../../packages/core/src/modules/plugin/xray/xray_api.js) | `addOutbounds` 返回逐节点结果 | ado 遇无效节点会停止，需知道哪些成功 |
-| [xray_api.js](../../packages/core/src/modules/plugin/xray/xray_api.js) | `removeOutbounds` 支持并行 | 逐个 rmo 128 tags 需 2.5s，并行可降到 0.6s |
-| [probe.js](../../packages/core/src/modules/plugin/xray/probe.js) | `isObservationReady` 支持 tag 集合过滤 | 常驻模式下只看本批 tag，忽略残留 |
+| 优化项 | 文件 | 说明 |
+|--------|------|------|
+| `addOutbounds` 返回逐节点结果 | `xray_api.js` | 解析 stdout，ado 遇无效节点停止时知道哪些成功 |
+| `removeOutbounds` 并行化 | `xray_api.js` | 16 并发，128 tags 从 2.5s 降到 ~0.6s |
+| `isObservationReady` tag 过滤 | `probe.js` | `expectedTags` + `minLastTryTime` 参数 |
+| `startPersistentProbeProcess` | `index.js` | 整轮共用一个 xray，固定 tag `proxy_0~N` 复用 |
+| `swapBatch` | `index.js` | rmo 旧批 + ado 新批，记录 adoCompletedAt |
+| try/finally 生命周期管理 | `index.js` | 所有 return 路径保证 stop 常驻子进程 |
+| catch 块 child 存活检查 | `index.js` | 崩溃后 break 而非无效循环 |
+| `waitForObservatoryMetrics` 安全上限 | `probe.js` | timeoutMs=0 时 10 分钟超时 |
+| `startXrayProcess` error 监听 | `probe.js` | 防止未捕获 EventEmitter error |
+
+### 未实现的优化
+
+无。方案 A 和方案 B 均已实施并部署验证。
+
+### 待长期观察的点
+
+| 观察项 | 说明 |
+|--------|------|
+| 常驻子进程内存增长 | 313 批（一整轮）后的内存曲线，需实际运行监控 |
+| observatory 残留条目在 313 批后的表现 | 固定 tag 复用策略在 5 轮验证通过，313 批需长期确认 |
+| `minLastTryTime = adoCompletedAt` 在时钟偏差下的表现 | xray 和 Node.js 的时钟是否完全同步 |
