@@ -16,6 +16,7 @@ function runXrayApi (binPath, args, { input = null, timeoutMs = API_TIMEOUT_MS }
       resolve(stdout)
     })
     if (input && child.stdin) {
+      child.stdin.on('error', () => {})
       child.stdin.write(input)
       child.stdin.end()
     }
@@ -36,6 +37,7 @@ function runXrayApiRaw (binPath, args, { input = null, timeoutMs = API_TIMEOUT_M
       resolve({ stdout: stdout || '', stderr: stderr || '', exitCode })
     })
     if (input && child.stdin) {
+      child.stdin.on('error', () => {})
       child.stdin.write(input)
       child.stdin.end()
     }
@@ -89,7 +91,7 @@ async function addOutbounds (binPath, apiPort, outbounds) {
     throw new Error(`addOutbounds failed with exit code ${exitCode}: ${stderr}`)
   }
 
-  return { results, addedTags, failedTags, stoppedEarly: exitCode !== 0 }
+  return { results, addedTags, failedTags, stoppedEarly: exitCode !== 0 && results.length < outbounds.length }
 }
 
 // Remove outbounds by tag via HandlerService gRPC API (no process restart).

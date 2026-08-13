@@ -2504,14 +2504,24 @@ const Plugin = function (context) {
     const configPath = path.join(probeDir, `persistent-${Date.now()}-${Math.random().toString(16).slice(2)}.json`)
     writeJsonFile(configPath, config)
 
-    const { child, stop } = probe.startXrayProcess({ binPath, configPath, log, purpose: 'persistent' })
+    let child, stop
+    try {
+      ({ child, stop } = probe.startXrayProcess({ binPath, configPath, log, purpose: 'persistent' }))
+    } catch (err) {
+      try { fs.rmSync(configPath, { force: true }) } catch { /* ignore */ }
+      throw err
+    }
 
     let currentTags = []
 
     async function swapBatch ({ nodes, log: swapLog }) {
       // rmo 上一批所有 tag (idempotent — safe even if some tags don't exist)
       if (currentTags.length > 0) {
-        await xrayApi.removeOutbounds(binPath, apiPort, currentTags, { concurrency: 16 })
+        const rmoResults = await xrayApi.removeOutbounds(binPath, apiPort, currentTags, { concurrency: 16 })
+        const rmoFailed = rmoResults.filter(r => !r.success)
+        if (rmoFailed.length > 0) {
+          swapLog.warn(`Xray 常驻探测: ${rmoFailed.length}/${currentTags.length} 个 tag rmo 失败: ${rmoFailed.map(r => r.tag).join(',')}`)
+        }
       }
 
       // ado 新一批节点（固定 tag proxy_0~N，复用避免 observatory 残留累积）
@@ -2564,12 +2574,10 @@ const Plugin = function (context) {
 
     // Wait for observatory to probe new nodes. Use minLastTryTime to ignore
     // stale status from previous batch (rmo doesn't clear old entries).
-    // Use CACHE_PROBE_SAMPLE_INTERVAL (5s) as tolerance — observatory probes
-    // at probeInterval boundaries, so the previous batch's last_try_time could
-    // be up to probeInterval seconds before adoCompletedAt. Using -1s would
-    // risk accepting stale data when swapBatch completes within 1s of the
-    // previous batch's last probe.
-    const minLastTryTime = adoCompletedAt > 0 ? adoCompletedAt - CACHE_PROBE_SAMPLE_INTERVAL : 0
+    // minLastTryTime = adoCompletedAt (no tolerance): new probes happen at
+    // >= T_ado + probeInterval (5s after ado), stale probes happened before
+    // rmo (which is before ado), so lastTry < T_ado for all stale entries.
+    const minLastTryTime = adoCompletedAt
 
     const metrics = await probe.waitForObservatoryMetrics({
       metricsPort: persistentController.metricsPort,
