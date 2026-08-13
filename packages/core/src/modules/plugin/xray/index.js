@@ -1793,68 +1793,147 @@ function applyStage3ProbeResults ({
   }
 }
 
-async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeLifecycle = null }) {
-  if (!node || typeof node !== 'object') {
-    return { country: '', owner: '' }
-  }
+// Persistent egress probe: one xray process for all egress lookups in a round.
+// Uses fixed tag egress_0, swaps nodes via rmo+ado. Port stays fixed so
+// waitForProxyPortReady is only needed once (first node).
+let egressProbeController = null
 
-  const probeDir = getProbeDir(xrayDir)
+async function startEgressProbeProcess ({ binPath, xrayDir, log }) {
+  ensureDir(xrayDir)
+  const probeDir = path.join(xrayDir, 'probe')
   ensureDir(probeDir)
-  const configPath = path.join(probeDir, `egress-${Date.now()}-${Math.random().toString(16).slice(2)}.json`)
+
   const proxyPort = await portFinder.findFreePort()
-  const config = genConfig(proxyPort, [node], [], null, CACHE_PROBE_SAMPLE_INTERVAL, {
+  const apiPort = await portFinder.findFreePort()
+  const config = genConfig(proxyPort, [], [], null, CACHE_PROBE_SAMPLE_INTERVAL, {
+    apiPort,
     observatoryEnableConcurrency: true,
     probeMode: 'none',
   })
   config.routing = {
     domainStrategy: 'AsIs',
     balancers: [],
-    rules: [{
-      type: 'field',
-      network: 'tcp,udp',
-      outboundTag: 'proxy_0',
-    }],
+    rules: [{ type: 'field', network: 'tcp,udp', outboundTag: 'egress_0' }],
   }
   delete config.observatory
   delete config.burstObservatory
+
+  const configPath = path.join(probeDir, `egress-persistent-${Date.now()}-${Math.random().toString(16).slice(2)}.json`)
   writeJsonFile(configPath, config)
 
-  const controller = probe.startXrayProcess({
-    binPath,
+  let child, stop
+  try {
+    ({ child, stop } = probe.startXrayProcess({ binPath, configPath, log, purpose: 'egress' }))
+  } catch (err) {
+    try { fs.rmSync(configPath, { force: true }) } catch { /* ignore */ }
+    throw err
+  }
+
+  let portReady = false
+  let currentNodeTag = ''
+
+  async function swapNode (node) {
+    // rmo previous node (idempotent)
+    if (currentNodeTag) {
+      await xrayApi.removeOutbounds(binPath, apiPort, [currentNodeTag]).catch(() => {})
+      currentNodeTag = ''
+    }
+    // ado new node with fixed tag egress_0
+    const outbound = parser.sanitizeNodeForCurrentXray(JSON.parse(JSON.stringify(node)))
+    outbound.tag = 'egress_0'
+    const result = await xrayApi.addOutbounds(binPath, apiPort, [outbound])
+    if (result.addedTags.length > 0) {
+      currentNodeTag = 'egress_0'
+      return true
+    }
+    return false
+  }
+
+  return {
+    child,
+    proxyPort,
     configPath,
-    log,
-    purpose: 'egress',
-  })
-  if (probeLifecycle && typeof probeLifecycle.registerController === 'function') {
-    probeLifecycle.registerController(controller)
+    isPortReady: () => portReady,
+    setPortReady: () => { portReady = true },
+    swapNode,
+    stop: async () => {
+      await stop().catch(() => {})
+      try { fs.rmSync(configPath, { force: true }) } catch { /* ignore */ }
+    },
+  }
+}
+
+async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeoutMs = EGRESS_METADATA_LOOKUP_TIMEOUT, probeLifecycle = null, egressController = null }) {
+  if (!node || typeof node !== 'object') {
+    return { country: '', owner: '' }
   }
 
   let exitAddress = ''
-  try {
-    // Wait for the Xray HTTP inbound port to start accepting connections
-    // before issuing the egress IP lookup. Under cgroup MemoryHigh pressure,
-    // the spawned Xray process can take several seconds to bind its listen
-    // socket; without this wait the very first proxy request fails with
-    // ECONNREFUSED, leaving country/owner permanently empty for the node.
-    await waitForProxyPortReady({ proxyPort, child: controller.child, timeoutMs: 5000 })
 
-    exitAddress = await withTimeout(
-      detectEgressAddressThroughProxy({
-        proxyPort,
-        timeoutMs,
-      }),
-      timeoutMs + 1000,
-      `Egress metadata lookup timeout after ${timeoutMs}ms`
-    )
-  } finally {
-    await controller.stop().catch(() => {})
-    if (probeLifecycle && typeof probeLifecycle.unregisterController === 'function') {
-      probeLifecycle.unregisterController(controller)
+  if (egressController) {
+    // Persistent egress probe mode: reuse long-lived xray, swap node via ado/rmo
+    const added = await egressController.swapNode(node)
+    if (!added) {
+      log.warn('Xray egress 常驻探测: 节点 ado 失败')
+      return { country: '', owner: '' }
     }
+
+    const proxyPort = egressController.proxyPort
+    // Wait for port readiness only on first use; subsequent swaps reuse the same port
+    if (!egressController.isPortReady()) {
+      await waitForProxyPortReady({ proxyPort, child: egressController.child, timeoutMs: 5000 })
+      egressController.setPortReady()
+    } else {
+      // Brief delay after ado to let xray apply the new outbound before proxying
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+
     try {
-      fs.rmSync(configPath, { force: true })
+      exitAddress = await withTimeout(
+        detectEgressAddressThroughProxy({ proxyPort, timeoutMs }),
+        timeoutMs + 1000,
+        `Egress metadata lookup timeout after ${timeoutMs}ms`,
+      )
     } catch {
-      // ignore cleanup errors
+      exitAddress = ''
+    }
+  } else {
+    // Fallback: spawn a one-shot xray subprocess per node (legacy behavior)
+    const probeDir = getProbeDir(xrayDir)
+    ensureDir(probeDir)
+    const configPath = path.join(probeDir, `egress-${Date.now()}-${Math.random().toString(16).slice(2)}.json`)
+    const proxyPort = await portFinder.findFreePort()
+    const config = genConfig(proxyPort, [node], [], null, CACHE_PROBE_SAMPLE_INTERVAL, {
+      observatoryEnableConcurrency: true,
+      probeMode: 'none',
+    })
+    config.routing = {
+      domainStrategy: 'AsIs',
+      balancers: [],
+      rules: [{ type: 'field', network: 'tcp,udp', outboundTag: 'proxy_0' }],
+    }
+    delete config.observatory
+    delete config.burstObservatory
+    writeJsonFile(configPath, config)
+
+    const controller = probe.startXrayProcess({ binPath, configPath, log, purpose: 'egress' })
+    if (probeLifecycle && typeof probeLifecycle.registerController === 'function') {
+      probeLifecycle.registerController(controller)
+    }
+
+    try {
+      await waitForProxyPortReady({ proxyPort, child: controller.child, timeoutMs: 5000 })
+      exitAddress = await withTimeout(
+        detectEgressAddressThroughProxy({ proxyPort, timeoutMs }),
+        timeoutMs + 1000,
+        `Egress metadata lookup timeout after ${timeoutMs}ms`,
+      )
+    } finally {
+      await controller.stop().catch(() => {})
+      if (probeLifecycle && typeof probeLifecycle.unregisterController === 'function') {
+        probeLifecycle.unregisterController(controller)
+      }
+      try { fs.rmSync(configPath, { force: true }) } catch { /* ignore */ }
     }
   }
 
@@ -1877,7 +1956,10 @@ async function annotateProbeEntries (entries, options = {}) {
   const existingEntryMap = createEntryMapByFingerprint(options.existingEntries)
   const useEgressMetadata = options.useEgressMetadata !== false
   const logger = options.log || console
-  return mapWithConcurrencyLimit(entries, EGRESS_METADATA_CONCURRENCY, async (entry) => {
+  const egressController = options.egressController || null
+  // Persistent egress probe is single-process serial; legacy mode keeps concurrency 4
+  const concurrency = egressController ? 1 : EGRESS_METADATA_CONCURRENCY
+  return mapWithConcurrencyLimit(entries, concurrency, async (entry) => {
     const fingerprint = xrayCache.fingerprintNode(entry && entry.node)
     const existingEntry = fingerprint ? existingEntryMap.get(fingerprint) : null
     const fallbackOwner = xrayCache.resolveOwnerLabel(entry && entry.owner, existingEntry && existingEntry.owner)
@@ -1892,6 +1974,7 @@ async function annotateProbeEntries (entries, options = {}) {
           node: entry && entry.node,
           log: logger,
           probeLifecycle: options.probeLifecycle,
+          egressController,
         })
       } catch (error) {
         logger.warn(`Xray egress metadata 探测失败: delay=${entry && entry.delay}ms, error=${error && error.message}`)
@@ -3430,6 +3513,25 @@ const Plugin = function (context) {
       registerTransientProbeController(persistentController)
       log.info(`Xray 常驻探测子进程已启动: apiPort=${persistentController.apiPort}, metricsPort=${persistentController.metricsPort}`)
 
+      // Start persistent egress probe subprocess for exit IP/country/owner lookup.
+      // One xray for all egress lookups in this round; nodes swapped via ado/rmo.
+      let egressController = null
+      const stopEgressProbe = async () => {
+        if (egressController) {
+          unregisterTransientProbeController(egressController)
+          await egressController.stop().catch(() => {})
+          egressController = null
+        }
+      }
+      try {
+        egressController = await startEgressProbeProcess({ binPath, xrayDir, log })
+        registerTransientProbeController(egressController)
+        log.info(`Xray 常驻出口探测子进程已启动: proxyPort=${egressController.proxyPort}`)
+      } catch (err) {
+        log.warn(`Xray 常驻出口探测子进程启动失败，回退到一次性 spawn: ${err.message}`)
+        egressController = null
+      }
+
       try {
       let successBatchCount = 0
       let availableCount = 0
@@ -3532,6 +3634,7 @@ const Plugin = function (context) {
             xrayDir,
             existingEntries: validTargetBatch,
             log,
+            egressController,
             probeLifecycle: {
               registerController: registerTransientProbeController,
               unregisterController: unregisterTransientProbeController,
@@ -3833,6 +3936,7 @@ const Plugin = function (context) {
         })
       }
       } finally {
+        await stopEgressProbe()
         await stopPersistentProbe()
       }
     },
