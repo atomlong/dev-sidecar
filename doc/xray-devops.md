@@ -96,6 +96,23 @@ xray api bi --server=127.0.0.1:45021 balancer-proxy
 ```
 显示 balancer 当前的 `Selects` 列表和 `Override`。需 `RoutingService` 已启用。
 
+### `xray api bo` — 锁定/解锁 balancer 选择（Sticky）
+```shell
+# 锁定到 proxy_0（所有新连接走 proxy_0）
+xray api bo --server=127.0.0.1:45021 -b balancer-proxy proxy_0
+
+# 解除锁定，恢复 leastPing 自动选择
+xray api bo --server=127.0.0.1:45021 -b balancer-proxy -r
+```
+`bo`（Balancer Override）强制 balancer 永远选择指定 outbound tag。用于保持出口 IP 不变（如 ChatGPT 注册场景）。需 `RoutingService` 已启用。
+
+DS 内置 API 封装（`packages/core/src/modules/plugin/xray/index.js`）：
+- `enableSticky({duration=300})` — 自动获取当前选中节点并锁定，`duration` 秒后自动解锁
+- `disableSticky()` — 手动解除锁定
+- `getStickyStatus()` — 返回 `{active, tag, apiPort}`
+
+锁定期间 observatory 继续探测（不影响），只是 balancer 选择被固定。热刷新 rmo 删除锁定节点时自动解除；xray 重启时自动重置。
+
 ## Xray-core 版本兼容性
 
 DS 的 Phase 2 热刷新改动兼容 **Xray-core v26.3.27 及以上**：

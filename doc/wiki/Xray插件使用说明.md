@@ -68,7 +68,21 @@ DevSideCar 会根据你配置的域名规则，将流量转发给 Xray 插件。
 
 ---
 
-## 5. 常见问题
+## 5. Sticky 锁定（保持出口 IP 不变）
+
+某些场景（如 ChatGPT 注册）需要出口 IP 在一段时间内保持不变，否则会报 `ERR_NETWORK_CHANGED`。Xray 的 `leastPing` 策略默认每连接选最优节点，可能导致 IP 切换。
+
+DS 提供 Sticky API 锁定 balancer 选择，让所有新连接走同一节点：
+
+- `enableSticky({duration=300})` — 锁定当前节点，`duration` 秒后自动解锁（默认 5 分钟）
+- `disableSticky()` — 手动解除
+- `getStickyStatus()` — 查看锁定状态 `{active, tag, apiPort}`
+
+底层通过 `xray api bo`（Balancer Override）实现。锁定期间 observatory 继续探测，只是 balancer 选择被固定。热刷新删除锁定节点或 xray 重启时自动解除。
+
+---
+
+## 6. 常见问题
 
 **Q: 节点无法连接？**
 A: 
