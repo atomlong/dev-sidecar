@@ -3,6 +3,7 @@ const URL = require('node:url')
 const jsonApi = require('../../../json')
 const log = require('../../../utils/util.log.server')
 const DnsUtil = require('../../dns')
+const commonUtil = require('../common/util')
 const dnsLookup = require('./dnsLookup')
 
 const localIP = '127.0.0.1'
@@ -47,7 +48,7 @@ module.exports = function createConnectHandler (sslConnectInterceptor, middlewar
         log.error(`----- fakeServer getServerPromise error: ${hostname}:${port}, error:`, e)
       })
     } else {
-      log.debug(`不拦截请求，直连目标服务器: ${hostname}:${port}, headers:`, jsonApi.stringify2(req.headers))
+      log.debug(`不拦截请求，直连目标服务器: ${hostname}:${port}, headers:`, jsonApi.stringify2(commonUtil.sanitizeHeadersForLog(req.headers)))
       connect(req, cltSocket, head, hostname, port, dnsConfig, true)
     }
   }

@@ -51,6 +51,18 @@ function loadExtraCaCerts () {
   return extraCaCerts
 }
 
+const SENSITIVE_HEADER_RE = /^(authorization|proxy-authorization|cookie|set-cookie)$/i
+
+util.sanitizeHeadersForLog = (headers) => {
+  if (!headers || typeof headers !== 'object') {
+    return headers
+  }
+
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [key, SENSITIVE_HEADER_RE.test(key) ? '[REDACTED]' : value]),
+  )
+}
+
 const httpsAgentCache = {}
 const httpAgentCache = {}
 

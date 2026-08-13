@@ -48,3 +48,18 @@ console.log('arr8:', arr)
 assert.strictEqual(arr.length === 2, true) // true
 assert.strictEqual(arr[0] === '[2001:abcd::1]', true) // true
 assert.strictEqual(arr[1] === 8080, true) // ture
+
+const sanitizedHeaders = util.sanitizeHeadersForLog({
+	authorization: 'Bearer secret',
+	Cookie: 'session=secret',
+	'proxy-authorization': 'Basic secret',
+	'set-cookie': ['session=secret'],
+	accept: 'application/json',
+})
+assert.deepStrictEqual(sanitizedHeaders, {
+	authorization: '[REDACTED]',
+	Cookie: '[REDACTED]',
+	'proxy-authorization': '[REDACTED]',
+	'set-cookie': '[REDACTED]',
+	accept: 'application/json',
+})

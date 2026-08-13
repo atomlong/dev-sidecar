@@ -90,7 +90,7 @@ module.exports = function createUpgradeHandler (createIntercepts, middlewares, e
 
         function onFree () {
           const finalUrl = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${rOptions.path}`
-          log.debug('发起代理Upgrade请求:', finalUrl, (rOptions.servername ? `, sni: ${rOptions.servername}` : ''), ', headers:', jsonApi.stringify2(rOptions.headers))
+          log.debug('发起代理Upgrade请求:', finalUrl, (rOptions.servername ? `, sni: ${rOptions.servername}` : ''), ', headers:', jsonApi.stringify2(commonUtil.sanitizeHeadersForLog(rOptions.headers)))
 
           const isDnsIntercept = {}
           if (dnsConfig && dnsConfig.dnsMap) {

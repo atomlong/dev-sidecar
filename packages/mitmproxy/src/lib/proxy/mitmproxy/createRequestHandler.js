@@ -32,7 +32,7 @@ function safeROptionsForLog (rOptions) {
     url: rOptions.url,
     servername: rOptions.servername,
     rejectUnauthorized: rOptions.rejectUnauthorized,
-    headers: rOptions.headers,
+    headers: commonUtil.sanitizeHeadersForLog(rOptions.headers),
   }
 }
 
@@ -134,7 +134,7 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
         function onFree () {
           url = `${rOptions.method} ➜ ${rOptions.protocol}//${rOptions.hostname}:${rOptions.port}${rOptions.path}`
           const start = Date.now()
-          log.debug('发起代理请求:', url, (rOptions.servername ? `, sni: ${rOptions.servername}` : ''), ', headers:', jsonApi.stringify2(rOptions.headers))
+          log.debug('发起代理请求:', url, (rOptions.servername ? `, sni: ${rOptions.servername}` : ''), ', headers:', jsonApi.stringify2(commonUtil.sanitizeHeadersForLog(rOptions.headers)))
 
           const isDnsIntercept = {}
           if (dnsConfig && dnsConfig.dnsMap) {
