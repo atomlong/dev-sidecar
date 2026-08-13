@@ -588,10 +588,6 @@ function isCacheRefreshEnabled (cfg) {
   return cfg ? cfg.cacheRefreshEnabled !== false : true
 }
 
-function isStage3PersistentProbeEnabled (cfg) {
-  return cfg ? cfg.stage3PersistentProbe === true : false
-}
-
 function isStartupSelectEnabled (cfg) {
   return cfg ? cfg.startupSelectEnabled !== false : true
 }
@@ -3394,8 +3390,8 @@ const Plugin = function (context) {
 
       log.info(`Xray 缓存周期探测候选: due=${totalDueCandidateCount}, batchSize=${batchSize}, plannedBatchCount=${plannedBatchCount}`)
 
-      // Start persistent probe subprocess if enabled (one xray for entire round,
-      // batches swap nodes via ado/rmo instead of spawning new processes).
+      // Start persistent probe subprocess: one xray for the entire round,
+      // batches swap nodes via ado/rmo instead of spawning new processes.
       let persistentController = null
       const stopPersistentProbe = async () => {
         if (persistentController) {
@@ -3404,22 +3400,15 @@ const Plugin = function (context) {
           persistentController = null
         }
       }
-      if (isStage3PersistentProbeEnabled(cfg)) {
-        try {
-          persistentController = await startPersistentProbeProcess({
-            binPath,
-            cfg,
-            xrayDir,
-            probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
-            probeSamples: getCacheRefreshProbeSamples(cfg),
-          })
-          registerTransientProbeController(persistentController)
-          log.info(`Xray 常驻探测子进程已启动: apiPort=${persistentController.apiPort}, metricsPort=${persistentController.metricsPort}`)
-        } catch (err) {
-          log.warn(`Xray 常驻探测子进程启动失败，回退到一次性 spawn: ${err.message}`)
-          persistentController = null
-        }
-      }
+      persistentController = await startPersistentProbeProcess({
+        binPath,
+        cfg,
+        xrayDir,
+        probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
+        probeSamples: getCacheRefreshProbeSamples(cfg),
+      })
+      registerTransientProbeController(persistentController)
+      log.info(`Xray 常驻探测子进程已启动: apiPort=${persistentController.apiPort}, metricsPort=${persistentController.metricsPort}`)
 
       let successBatchCount = 0
       let availableCount = 0
