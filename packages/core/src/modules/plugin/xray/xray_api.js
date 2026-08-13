@@ -43,17 +43,29 @@ function runXrayApiRaw (binPath, args, { input = null, timeoutMs = API_TIMEOUT_M
 }
 
 // Parse ado stdout to determine per-outbound success.
-// Format: "adding: <tag>\n{}\n" = success; "adding: <tag>\n" without {} = failure.
+// Format: "adding: <tag>\n" followed by "{}" (possibly after warning lines) = success;
+// "adding: <tag>\n" without {} before next "adding:" or EOF = failure.
 function parseAdoResults (stdout) {
   const results = []
   const lines = stdout.split('\n')
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^adding: (\S+)/)
-    if (match) {
-      const tag = match[1]
-      const nextLine = (lines[i + 1] || '').trim()
-      results.push({ tag, success: nextLine === '{}' })
+    if (!match) {
+      continue
     }
+    const tag = match[1]
+    let success = false
+    // Scan forward until we find "{}" (success) or another "adding:" / EOF (failure)
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].match(/^adding: /)) {
+        break
+      }
+      if (lines[j].trim() === '{}') {
+        success = true
+        break
+      }
+    }
+    results.push({ tag, success })
   }
   return results
 }

@@ -312,4 +312,6 @@ module.exports = {
   startXrayProcess,
   startProbeProcess,
   waitForObservatoryMetrics,
+  isObservationReady,
+  getObservatoryStatusMap,
 }
