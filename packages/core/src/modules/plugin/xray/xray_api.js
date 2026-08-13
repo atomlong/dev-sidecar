@@ -128,8 +128,40 @@ async function listOutbounds (binPath, apiPort) {
   return out
 }
 
+// Override balancer to always select a specific outbound tag.
+// Requires RoutingService in config.api.services.
+async function overrideBalancer (binPath, apiPort, balancerTag, outboundTag) {
+  if (!apiPort || !binPath) {
+    throw new Error('overrideBalancer: apiPort and binPath are required')
+  }
+  const server = `127.0.0.1:${apiPort}`
+  return runXrayApi(binPath, ['bo', '--server', server, '-b', balancerTag, outboundTag])
+}
+
+// Remove balancer override, restoring automatic selection.
+async function removeBalancerOverride (binPath, apiPort, balancerTag) {
+  if (!apiPort || !binPath) {
+    throw new Error('removeBalancerOverride: apiPort and binPath are required')
+  }
+  const server = `127.0.0.1:${apiPort}`
+  return runXrayApi(binPath, ['bo', '--server', server, '-b', balancerTag, '-r'])
+}
+
+// Get balancer info: current selection, override, and health.
+async function getBalancerInfo (binPath, apiPort, balancerTag) {
+  if (!apiPort || !binPath) {
+    throw new Error('getBalancerInfo: apiPort and binPath are required')
+  }
+  const server = `127.0.0.1:${apiPort}`
+  const args = balancerTag ? ['bi', '--server', server, balancerTag] : ['bi', '--server', server]
+  return runXrayApi(binPath, args)
+}
+
 module.exports = {
   addOutbounds,
   removeOutbounds,
   listOutbounds,
+  overrideBalancer,
+  removeBalancerOverride,
+  getBalancerInfo,
 }
