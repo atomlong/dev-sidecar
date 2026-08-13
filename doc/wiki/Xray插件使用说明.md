@@ -108,7 +108,8 @@ xray api bo --server 127.0.0.1:$(cat ~/.dev-sidecar/running.json | jq -r '.app.s
 ### 注意事项
 
 - 锁定期间 observatory 继续探测节点（不影响），只是 balancer 选择被固定到指定节点
-- 如果锁定节点被 Stage3 热刷新删除（延迟升高或探测失败），DS 会自动解除锁定
+- 锁定期间 Stage3 热刷新会正常添加新节点、删除坏节点，但**只要锁定节点还在，balancer 继续走锁定节点**，新加入的节点不会被自动选中
+- 如果锁定节点被 Stage3 热刷新删除（延迟升高或探测失败），DS 会自动解除锁定，恢复动态选择
 - DS 重启后锁定会自动失效（xray 进程重启后 balancer override 丢失）
 - 锁定只影响**新连接**，已有连接继续走原节点完成
 - 上述命令用 `jq -r` 自动提取 apiPort，无需手动替换
