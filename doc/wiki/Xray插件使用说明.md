@@ -70,15 +70,50 @@ DevSideCar 会根据你配置的域名规则，将流量转发给 Xray 插件。
 
 ## 5. Sticky 锁定（保持出口 IP 不变）
 
-某些场景（如 ChatGPT 注册）需要出口 IP 在一段时间内保持不变，否则会报 `ERR_NETWORK_CHANGED`。Xray 的 `leastPing` 策略默认每连接选最优节点，可能导致 IP 切换。
+某些场景（如 ChatGPT 注册）需要出口 IP 在一段时间内保持不变，否则会报 `ERR_NETWORK_CHANGED`。Xray 的 `leastPing` 策略默认每连接选最优节点，可能导致不同请求走不同出口 IP。
 
-DS 提供 Sticky API 锁定 balancer 选择，让所有新连接走同一节点：
+### 怎么用
 
-- `enableSticky({duration=300})` — 锁定当前节点，`duration` 秒后自动解锁（默认 5 分钟）
-- `disableSticky()` — 手动解除
-- `getStickyStatus()` — 查看锁定状态 `{active, tag, apiPort}`
+在终端执行以下命令（需要 DS 正在运行且 Xray 插件已启动）：
 
-底层通过 `xray api bo`（Balancer Override）实现。锁定期间 observatory 继续探测，只是 balancer 选择被固定。热刷新删除锁定节点或 xray 重启时自动解除。
+**1. 查看当前 Xray API 端口**
+```shell
+cat ~/.dev-sidecar/running.json | python3 -c "import json,sys; print(json.load(sys.stdin)['app']['status']['plugin']['xray']['apiPort'])"
+# 输出示例: 45457
+```
+
+**2. 锁定当前节点（保持出口 IP 不变）**
+```shell
+# 查看当前 balancer 选中的节点
+xray api bi --server 127.0.0.1:<apiPort> balancer-proxy
+# Selects 部分显示当前选中的 tag，例如 proxy_0
+
+# 锁定到该节点（所有新连接都走这个节点）
+xray api bo --server 127.0.0.1:<apiPort> -b balancer-proxy proxy_0
+```
+
+**3. 验证出口 IP 已固定**
+```shell
+# 多次请求，出口 IP 应该相同
+curl -s -x http://127.0.0.1:10801 https://api.ipify.org
+curl -s -x http://127.0.0.1:10801 https://api.ipify.org
+# 两次输出应该相同
+```
+
+**4. 恢复动态选择（解除锁定）**
+```shell
+xray api bo --server 127.0.0.1:<apiPort> -b balancer-proxy -r
+```
+
+### 注意事项
+
+- 锁定期间 observatory 继续探测节点（不影响），只是 balancer 选择被固定到指定节点
+- 如果锁定节点被 Stage3 热刷新删除（延迟升高或探测失败），DS 会自动解除锁定
+- DS 重启后锁定会自动失效（xray 进程重启后 balancer override 丢失）
+- 锁定只影响**新连接**，已有连接继续走原节点完成
+- `<apiPort>` 每次启动 DS 都会变，请先查 `running.json` 获取当前值
+
+> **提示**：未来版本会在 GUI 中加入"锁定出口 IP"按钮，目前需通过上述命令行操作。
 
 ---
 
