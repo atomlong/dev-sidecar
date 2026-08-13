@@ -2175,6 +2175,7 @@ const Plugin = function (context) {
   let nextProxyTagIndex = 0
   let stickyTimer = null
   let stickyTag = null
+  let stickyOpChain = Promise.resolve()
 
   function registerTransientProbeController (controller) {
     if (controller && typeof controller.stop === 'function') {
@@ -2285,6 +2286,10 @@ const Plugin = function (context) {
       event.fire('status', { key: 'plugin.xray.metricsPort', value: currentLiveMetricsPort })
       event.fire('status', { key: 'plugin.xray.apiPort', value: currentLiveApiPort })
       log.info(`Xray Stage3 后自动重生成 live config: proxyNodes=${selectedNodes.length}, freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length} -> ${currentLiveConfigPath}`)
+
+      // xray restart clears balancer override — reset sticky state
+      if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
+      stickyTag = null
 
       try {
         await processApi.restart(binPath, currentLiveConfigPath)
@@ -2415,6 +2420,13 @@ const Plugin = function (context) {
         }
         // Then remove bad nodes (existing connections to them continue, new ones go to fresh nodes)
         if (tagsToRemove.length > 0) {
+          // If sticky-locked node is being removed, release the lock first
+          if (stickyTag && tagsToRemove.includes(stickyTag)) {
+            log.warn(`Xray Stage3 后API热刷新: sticky 锁定节点 ${stickyTag} 将被移除，自动解除锁定`)
+            await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
+            if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
+            stickyTag = null
+          }
           const results = await xrayApi.removeOutbounds(currentBinPath, currentLiveApiPort, tagsToRemove)
           for (const r of results) {
             if (r.success) {
@@ -2468,6 +2480,10 @@ const Plugin = function (context) {
     event.fire('status', { key: 'plugin.xray.metricsPort', value: currentLiveMetricsPort })
     event.fire('status', { key: 'plugin.xray.apiPort', value: currentLiveApiPort })
     log.info(`Xray Stage3 后热刷新 live config: proxyNodes=${selectedNodes.length}, kept=${keptNodes.length}, fresh=${selectedNodes.length - keptNodes.length} -> ${currentLiveConfigPath}`)
+
+    // xray restart clears balancer override — reset sticky state
+    if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
+    stickyTag = null
 
     try {
       await processApi.restart(binPath, currentLiveConfigPath)
@@ -3085,11 +3101,22 @@ const Plugin = function (context) {
     async close () {
       refreshGeneration += 1
       clearCacheRefreshTimer()
+      // Clear sticky state before awaits to prevent enableSticky racing during close
       if (stickyTimer) {
         clearTimeout(stickyTimer)
         stickyTimer = null
-        stickyTag = null
       }
+      const heldStickyTag = stickyTag
+      stickyTag = null
+      // Remove balancer override before stopping xray (best-effort)
+      if (heldStickyTag && currentLiveApiPort && currentBinPath) {
+        await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
+      }
+      // Invalidate API access early to reject enableSticky during remaining awaits
+      const prevApiPort = currentLiveApiPort
+      const prevBinPath = currentBinPath
+      currentLiveApiPort = 0
+      currentBinPath = ''
       await api.stopBackgroundProbe()
       await stopTransientProbeControllers()
       cleanupStaleProbeArtifacts()
@@ -3134,6 +3161,14 @@ const Plugin = function (context) {
 
     // --- Sticky balancer: lock exit IP for a duration ---
 
+    resetStickyState () {
+      if (stickyTimer) {
+        clearTimeout(stickyTimer)
+        stickyTimer = null
+      }
+      stickyTag = null
+    },
+
     async getStickyStatus () {
       return {
         active: stickyTimer !== null,
@@ -3143,55 +3178,65 @@ const Plugin = function (context) {
     },
 
     async enableSticky ({ duration = 300 } = {}) {
-      if (!currentLiveApiPort || !currentBinPath) {
-        throw new Error('Xray API 不可用，无法锁定节点')
-      }
+      // Serialize sticky operations to prevent enable/disable race conditions
+      return stickyOpChain.then(async () => {
+        if (!currentLiveApiPort || !currentBinPath) {
+          throw new Error('Xray API 不可用，无法锁定节点')
+        }
 
-      // Get current balancer selection
-      const info = await xrayApi.getBalancerInfo(currentBinPath, currentLiveApiPort, 'balancer-proxy')
-      const match = info.match(/Selects:\s*\n\s*\d+\s+(\S+)/)
-      if (!match) {
-        throw new Error('无法获取当前 balancer 选中节点')
-      }
-      const tag = match[1]
+        // Get current balancer selection
+        const info = await xrayApi.getBalancerInfo(currentBinPath, currentLiveApiPort, 'balancer-proxy')
+        const match = info.match(/Selects:\s*\n\s*\d+\s+(\S+)/)
+        if (!match) {
+          throw new Error('无法获取当前 balancer 选中节点')
+        }
+        const tag = match[1]
 
-      // Override balancer to lock to this node
-      await xrayApi.overrideBalancer(currentBinPath, currentLiveApiPort, 'balancer-proxy', tag)
-      stickyTag = tag
+        // Override balancer to lock to this node
+        await xrayApi.overrideBalancer(currentBinPath, currentLiveApiPort, 'balancer-proxy', tag)
+        stickyTag = tag
 
-      // Clear previous timer
-      if (stickyTimer) {
-        clearTimeout(stickyTimer)
-      }
+        // Clear previous timer
+        if (stickyTimer) {
+          clearTimeout(stickyTimer)
+        }
 
-      // Auto-release after duration
-      const ms = Math.max(1, Number(duration) || 300) * 1000
-      stickyTimer = setTimeout(async () => {
-        stickyTimer = null
+        // Auto-release after duration
+        const ms = Math.max(1, Number(duration) || 300) * 1000
+        stickyTimer = setTimeout(async () => {
+          stickyTimer = null
+          const heldTag = stickyTag
+          stickyTag = null
+          if (currentLiveApiPort && currentBinPath) {
+            await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
+            log.info(`Xray sticky 锁定已到期自动解除: tag=${heldTag}`)
+          }
+        }, ms)
+
+        log.info(`Xray sticky 锁定已启用: tag=${tag}, duration=${duration}s`)
+        return { tag, duration }
+      }).catch((err) => {
+        // Re-throw but keep chain resolved for next op
+        throw err
+      })
+    },
+
+    async disableSticky () {
+      return stickyOpChain.then(async () => {
+        if (stickyTimer) {
+          clearTimeout(stickyTimer)
+          stickyTimer = null
+        }
         const heldTag = stickyTag
         stickyTag = null
         if (currentLiveApiPort && currentBinPath) {
           await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
-          log.info(`Xray sticky 锁定已到期自动解除: tag=${heldTag}`)
         }
-      }, ms)
-
-      log.info(`Xray sticky 锁定已启用: tag=${tag}, duration=${duration}s`)
-      return { tag, duration }
-    },
-
-    async disableSticky () {
-      if (stickyTimer) {
-        clearTimeout(stickyTimer)
-        stickyTimer = null
-      }
-      const heldTag = stickyTag
-      stickyTag = null
-      if (currentLiveApiPort && currentBinPath) {
-        await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
-      }
-      log.info(`Xray sticky 锁定已手动解除: tag=${heldTag}`)
-      return { tag: heldTag }
+        log.info(`Xray sticky 锁定已手动解除: tag=${heldTag}`)
+        return { tag: heldTag }
+      }).catch((err) => {
+        throw err
+      })
     },
 
     async refreshCacheFromSourcesOnce ({ binPath, cfg, xrayDir, liveConfigPath, liveConfigBakPath, cachePath }) {
