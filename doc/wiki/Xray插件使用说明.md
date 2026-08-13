@@ -78,18 +78,18 @@ DevSideCar 会根据你配置的域名规则，将流量转发给 Xray 插件。
 
 **1. 查看当前 Xray API 端口**
 ```shell
-cat ~/.dev-sidecar/running.json | python3 -c "import json,sys; print(json.load(sys.stdin)['app']['status']['plugin']['xray']['apiPort'])"
+cat ~/.dev-sidecar/running.json | jq '.app.status.plugin.xray.apiPort'
 # 输出示例: 45457
 ```
 
 **2. 锁定当前节点（保持出口 IP 不变）**
 ```shell
 # 查看当前 balancer 选中的节点
-xray api bi --server 127.0.0.1:<apiPort> balancer-proxy
+xray api bi --server 127.0.0.1:$(cat ~/.dev-sidecar/running.json | jq -r '.app.status.plugin.xray.apiPort') balancer-proxy
 # Selects 部分显示当前选中的 tag，例如 proxy_0
 
 # 锁定到该节点（所有新连接都走这个节点）
-xray api bo --server 127.0.0.1:<apiPort> -b balancer-proxy proxy_0
+xray api bo --server 127.0.0.1:$(cat ~/.dev-sidecar/running.json | jq -r '.app.status.plugin.xray.apiPort') -b balancer-proxy proxy_0
 ```
 
 **3. 验证出口 IP 已固定**
@@ -102,7 +102,7 @@ curl -s -x http://127.0.0.1:10801 https://api.ipify.org
 
 **4. 恢复动态选择（解除锁定）**
 ```shell
-xray api bo --server 127.0.0.1:<apiPort> -b balancer-proxy -r
+xray api bo --server 127.0.0.1:$(cat ~/.dev-sidecar/running.json | jq -r '.app.status.plugin.xray.apiPort') -b balancer-proxy -r
 ```
 
 ### 注意事项
@@ -111,7 +111,7 @@ xray api bo --server 127.0.0.1:<apiPort> -b balancer-proxy -r
 - 如果锁定节点被 Stage3 热刷新删除（延迟升高或探测失败），DS 会自动解除锁定
 - DS 重启后锁定会自动失效（xray 进程重启后 balancer override 丢失）
 - 锁定只影响**新连接**，已有连接继续走原节点完成
-- `<apiPort>` 每次启动 DS 都会变，请先查 `running.json` 获取当前值
+- 上述命令用 `jq -r` 自动提取 apiPort，无需手动替换
 
 > **提示**：未来版本会在 GUI 中加入"锁定出口 IP"按钮，目前需通过上述命令行操作。
 
