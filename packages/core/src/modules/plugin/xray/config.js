@@ -28,6 +28,7 @@ module.exports = {
   subscriptionSyncIntervalHours: 24, // 阶段2：远端订阅抓取的最小间隔（小时），默认 24 小时；距上次抓取不足此值时跳过远端拉取，只处理本地节点
   cacheRefreshEnabled: true, // 阶段3：是否启用周期性缓存探测与回填
   cacheRefreshIntervalHours: 6, // 阶段3：周期性重检缓存文件的间隔（小时），默认 6 小时，最小 1 小时
+  stage3PersistentProbe: false, // 阶段3：是否使用常驻探测子进程（一轮共用一个 xray，批次间用 ado/rmo 换节点）。false=每批 spawn 一次性子进程（回退）
   // cacheBatchTimeout removed — probe waits for completion naturally (no artificial timeout)
   // 阶段3：探测批次等级（1-5）。batchSize = 64 << (level-1)，即 64/128/256/512/1024。
   // 等级越高，单批探测节点越多，吞吐越高但内存占用越大。

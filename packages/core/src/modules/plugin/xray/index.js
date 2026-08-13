@@ -588,6 +588,10 @@ function isCacheRefreshEnabled (cfg) {
   return cfg ? cfg.cacheRefreshEnabled !== false : true
 }
 
+function isStage3PersistentProbeEnabled (cfg) {
+  return cfg ? cfg.stage3PersistentProbe === true : false
+}
+
 function isStartupSelectEnabled (cfg) {
   return cfg ? cfg.startupSelectEnabled !== false : true
 }
@@ -2320,11 +2324,13 @@ const Plugin = function (context) {
       try {
         // Add new nodes first (observatory will probe them before they're selectable)
         if (nodesToAdd.length > 0) {
-          await xrayApi.addOutbounds(currentBinPath, currentLiveApiPort, nodesToAdd.map(n => n.outbound))
+          const addResult = await xrayApi.addOutbounds(currentBinPath, currentLiveApiPort, nodesToAdd.map(n => n.outbound))
           for (const n of nodesToAdd) {
-            currentLiveNodeTags.set(n.fp, n.tag)
+            if (addResult.addedTags.includes(n.tag)) {
+              currentLiveNodeTags.set(n.fp, n.tag)
+            }
           }
-          log.info(`Xray Stage3 后API热刷新: 添加 ${nodesToAdd.length} 个节点`)
+          log.info(`Xray Stage3 后API热刷新: 添加 ${addResult.addedTags.length}/${nodesToAdd.length} 个节点`)
         }
         // Then remove bad nodes (existing connections to them continue, new ones go to fresh nodes)
         if (tagsToRemove.length > 0) {
@@ -2456,7 +2462,7 @@ const Plugin = function (context) {
     })
   }
 
-  async function probeNodesBatch ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeSamples = pluginConfig.cacheRefreshProbeSamples, probeUrl = null }) {
+  async function probeNodesBatch ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeSamples = pluginConfig.cacheRefreshProbeSamples, probeUrl = null, persistentController = null }) {
     const effectiveProbeSamples = normalizePositiveInt(probeSamples, pluginConfig.cacheRefreshProbeSamples)
 
     if (!Array.isArray(batchNodes) || batchNodes.length === 0) {
@@ -2478,13 +2484,131 @@ const Plugin = function (context) {
     // 3. Proxying plain HTTP (port 80) traffic has little practical value;
     //    the vast majority of proxied traffic is HTTPS, so the configured
     //    probeUrl's protocol is authoritative.
-    return await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: effectiveProbeUrl, probeSamples: effectiveProbeSamples })
+    return await runSingleProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl: effectiveProbeUrl, probeSamples: effectiveProbeSamples, persistentController })
   }
 
-  async function runSingleProbePass ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl, probeSamples }) {
+  async function startPersistentProbeProcess ({ binPath, cfg, xrayDir, probeUrl, probeSamples }) {
     ensureDir(xrayDir)
     const probeDir = path.join(xrayDir, 'probe')
     ensureDir(probeDir)
+
+    const probePort = await portFinder.findFreePort()
+    const metricsPort = await portFinder.findFreePort()
+    const apiPort = await portFinder.findFreePort()
+
+    const config = genConfig(probePort, [], cfg.rules, probeUrl, CACHE_PROBE_SAMPLE_INTERVAL, {
+      metricsPort,
+      apiPort,
+      observatoryEnableConcurrency: true,
+      probeMode: 'observatory',
+      probeSamples,
+      probeTimeoutSeconds: CACHE_PROBE_SAMPLE_TIMEOUT,
+    })
+
+    const configPath = path.join(probeDir, `persistent-${Date.now()}-${Math.random().toString(16).slice(2)}.json`)
+    writeJsonFile(configPath, config)
+
+    const { child, stop } = probe.startXrayProcess({ binPath, configPath, log, purpose: 'persistent' })
+
+    let currentTags = []
+
+    async function swapBatch ({ nodes, log: swapLog }) {
+      // rmo 上一批所有 tag (idempotent — safe even if some tags don't exist)
+      if (currentTags.length > 0) {
+        await xrayApi.removeOutbounds(binPath, apiPort, currentTags, { concurrency: 16 })
+      }
+
+      // ado 新一批节点（固定 tag proxy_0~N，复用避免 observatory 残留累积）
+      const outbounds = nodes.map((node, i) => {
+        const outbound = parser.sanitizeNodeForCurrentXray(JSON.parse(JSON.stringify(node)))
+        outbound.tag = `proxy_${i}`
+        return outbound
+      })
+
+      const result = await xrayApi.addOutbounds(binPath, apiPort, outbounds)
+      currentTags = result.addedTags
+
+      if (result.failedTags.length > 0) {
+        swapLog.warn(`Xray 常驻探测: ${result.failedTags.length} 个节点 ado 失败: ${result.failedTags.map(f => f.tag).join(',')}`)
+      }
+
+      // Record ado completion time (unix seconds, same unit as xray last_try_time)
+      // Used by isObservationReady to distinguish new probe results from stale status.
+      const adoCompletedAt = Math.floor(Date.now() / 1000)
+
+      return { addedTags: new Set(result.addedTags), adoCompletedAt }
+    }
+
+    return {
+      child,
+      metricsPort,
+      apiPort,
+      configPath,
+      swapBatch,
+      stop: async () => {
+        await stop().catch(() => {})
+        try { fs.rmSync(configPath, { force: true }) } catch { /* ignore */ }
+      },
+    }
+  }
+
+  async function runPersistentProbePass ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl, probeSamples, persistentController }) {
+    const { addedTags: expectedTags, adoCompletedAt } = await persistentController.swapBatch({ nodes: batchNodes, log })
+
+    if (expectedTags.size === 0) {
+      log.warn('Xray 常驻探测: 本批无节点成功添加')
+      return { entries: [], observedFingerprints: [] }
+    }
+
+    // Wait for observatory to probe new nodes. Use minLastTryTime to ignore
+    // stale status from previous batch (rmo doesn't clear old entries).
+    // -1s tolerance for clock skew between Node.js and xray process.
+    const metrics = await probe.waitForObservatoryMetrics({
+      metricsPort: persistentController.metricsPort,
+      timeoutMs,
+      child: persistentController.child,
+      expectedTags,
+      minLastTryTime: adoCompletedAt > 0 ? adoCompletedAt - 1 : 0,
+    })
+
+    const observatory = metrics && (metrics.observatory || metrics.burstObservatory || metrics.Observatory || metrics.BurstObservatory)
+    if (!observatory) {
+      log.warn('Xray 常驻探测: metrics 中没有 observatory 数据')
+      return { entries: [], observedFingerprints: [] }
+    }
+
+    // Build nodeMap only for successfully added tags (filter out ado failures)
+    const nodeMap = new Map()
+    batchNodes.forEach((node, i) => {
+      const tag = `proxy_${i}`
+      if (expectedTags.has(tag)) {
+        nodeMap.set(tag, node)
+      }
+    })
+
+    const observedFingerprints = Object.keys(observatory)
+      .filter(tag => expectedTags.has(tag))
+      .map(tag => nodeMap.get(tag))
+      .map(node => xrayCache.fingerprintNode(node))
+      .filter(Boolean)
+
+    return {
+      entries: xrayCache.buildCacheEntriesFromObservatory(observatory, nodeMap, 'background-probe'),
+      observedFingerprints,
+    }
+  }
+
+  async function runSingleProbePass ({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl, probeSamples, persistentController }) {
+    ensureDir(xrayDir)
+    const probeDir = path.join(xrayDir, 'probe')
+    ensureDir(probeDir)
+
+    // Persistent probe mode: reuse a long-lived xray subprocess, swap nodes via ado/rmo
+    if (persistentController) {
+      return await runPersistentProbePass({ binPath, cfg, xrayDir, batchNodes, timeoutMs, probeUrl, probeSamples, persistentController })
+    }
+
+    // Fallback: spawn a one-shot xray subprocess per batch
     const probeConfigPath = path.join(probeDir, `config-${Date.now()}-${Math.random().toString(16).slice(2)}.json`)
     const probePort = await portFinder.findFreePort()
     const metricsPort = await portFinder.findFreePort()
@@ -3270,6 +3394,33 @@ const Plugin = function (context) {
 
       log.info(`Xray 缓存周期探测候选: due=${totalDueCandidateCount}, batchSize=${batchSize}, plannedBatchCount=${plannedBatchCount}`)
 
+      // Start persistent probe subprocess if enabled (one xray for entire round,
+      // batches swap nodes via ado/rmo instead of spawning new processes).
+      let persistentController = null
+      const stopPersistentProbe = async () => {
+        if (persistentController) {
+          unregisterTransientProbeController(persistentController)
+          await persistentController.stop().catch(() => {})
+          persistentController = null
+        }
+      }
+      if (isStage3PersistentProbeEnabled(cfg)) {
+        try {
+          persistentController = await startPersistentProbeProcess({
+            binPath,
+            cfg,
+            xrayDir,
+            probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
+            probeSamples: getCacheRefreshProbeSamples(cfg),
+          })
+          registerTransientProbeController(persistentController)
+          log.info(`Xray 常驻探测子进程已启动: apiPort=${persistentController.apiPort}, metricsPort=${persistentController.metricsPort}`)
+        } catch (err) {
+          log.warn(`Xray 常驻探测子进程启动失败，回退到一次性 spawn: ${err.message}`)
+          persistentController = null
+        }
+      }
+
       let successBatchCount = 0
       let availableCount = 0
       let removedCount = 0
@@ -3282,6 +3433,7 @@ const Plugin = function (context) {
 
       while (processedCount < totalDueCandidateCount) {
         if (generation !== refreshGeneration) {
+          await stopPersistentProbe()
           return
         }
 
@@ -3359,6 +3511,7 @@ const Plugin = function (context) {
             timeoutMs: 0,
             probeSamples: getCacheRefreshProbeSamples(cfg),
             probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
+            persistentController,
           })
 
           if (generation !== refreshGeneration) {
@@ -3512,11 +3665,13 @@ const Plugin = function (context) {
       }
 
       if (generation !== refreshGeneration) {
+        await stopPersistentProbe()
         return
       }
 
       if (successBatchCount === 0) {
         log.warn('Xray 缓存周期探测: 所有批次都失败，保留原缓存')
+        await stopPersistentProbe()
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
         const nextRefreshAt = xrayCache.formatLocalTimestamp(new Date(Date.now() + nextDelay))
         writeStage3RoundSummary({
@@ -3663,6 +3818,8 @@ const Plugin = function (context) {
           forceGc: true,
         })
       }
+
+      await stopPersistentProbe()
     },
 
     async injectRules (rules, port) {

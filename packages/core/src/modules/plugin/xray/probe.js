@@ -60,10 +60,36 @@ function getHealthPingStats (status) {
   }
 }
 
-function isObservationReady (metrics, expectedSamples = 1, expectedSubjectCount = 0) {
+function isObservationReady (metrics, expectedSamples = 1, expectedSubjectCount = 0, expectedTags = null, minLastTryTime = 0) {
   const observatory = getObservatoryStatusMap(metrics)
   if (!observatory) {
     return false
+  }
+
+  // When expectedTags is provided (persistent probe mode), only check those
+  // tags. rmo leaves stale status entries that never clear, so checking all
+  // entries would always return true after the first batch.
+  if (expectedTags && expectedTags.size > 0) {
+    for (const tag of expectedTags) {
+      const status = observatory[tag]
+      if (!status) {
+        return false
+      }
+      const lastTry = status.last_try_time || status.LastTryTime || 0
+      if (minLastTryTime > 0) {
+        // Persistent mode: require last_try_time >= minLastTryTime to
+        // distinguish new probe results from stale status left by rmo.
+        if (lastTry < minLastTryTime) {
+          return false
+        }
+      } else {
+        const delay = status.delay || status.Delay || 0
+        if (!(delay > 0 || lastTry > 0)) {
+          return false
+        }
+      }
+    }
+    return true
   }
 
   const statuses = Object.values(observatory)
@@ -160,7 +186,7 @@ function stopChild (child, options = {}) {
   })
 }
 
-async function waitForObservatoryMetrics ({ metricsPort, timeoutMs = 45000, pollIntervalMs = 1000, child, expectedSamples = 1, expectedSubjectCount = 0 }) {
+async function waitForObservatoryMetrics ({ metricsPort, timeoutMs = 45000, pollIntervalMs = 1000, child, expectedSamples = 1, expectedSubjectCount = 0, expectedTags = null, minLastTryTime = 0 }) {
   const metricsUrl = `http://127.0.0.1:${metricsPort}/debug/vars`
   // timeoutMs <= 0 means no timeout (bootstrap probe waits for completion naturally;
   // probe process crash is still caught via child.exitCode check below)
@@ -176,7 +202,7 @@ async function waitForObservatoryMetrics ({ metricsPort, timeoutMs = 45000, poll
 
     try {
       const metrics = await fetchJson(metricsUrl)
-      if (isObservationReady(metrics, expectedSamples, expectedSubjectCount)) {
+      if (isObservationReady(metrics, expectedSamples, expectedSubjectCount, expectedTags, minLastTryTime)) {
         return metrics
       }
       const observatory = getObservatoryStatusMap(metrics)
@@ -243,7 +269,9 @@ function startXrayProcess ({ binPath, configPath, log, purpose = 'probe' }) {
       ? 'Xray 出口元数据探测进程'
       : purpose === 'batch'
         ? 'Xray 批次探测进程'
-        : 'Xray 探测进程'
+        : purpose === 'persistent'
+          ? 'Xray 常驻探测进程'
+          : 'Xray 探测进程'
     log.info(`正在启动 ${label}: ${binPath} -c ${configPath}`)
   }
 
@@ -276,7 +304,7 @@ function startXrayProcess ({ binPath, configPath, log, purpose = 'probe' }) {
 
   return {
     child,
-    stop: () => stopChild(child, { log, label: purpose === 'egress' ? 'Xray 出口元数据探测进程' : 'Xray 探测进程' }),
+    stop: () => stopChild(child, { log, label: purpose === 'egress' ? 'Xray 出口元数据探测进程' : purpose === 'persistent' ? 'Xray 常驻探测进程' : 'Xray 探测进程' }),
   }
 }
 
