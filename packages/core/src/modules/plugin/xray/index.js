@@ -1833,6 +1833,15 @@ async function startEgressProbeProcess ({ binPath, xrayDir, log }) {
   let currentNodeTag = ''
 
   async function swapNode (node) {
+    // Wait for xray API port readiness on first call (xray needs time to
+    // initialize gRPC listener after spawn; without this, ado/rmo calls fail
+    // with "failed to dial 127.0.0.1:<apiPort>").
+    if (!portReady) {
+      portReady = await waitForProxyPortReady({ proxyPort: apiPort, child, timeoutMs: 5000 })
+      if (!portReady) {
+        throw new Error(`Xray egress 常驻探测 API 端口 ${apiPort} 未就绪`)
+      }
+    }
     // rmo previous node (idempotent)
     if (currentNodeTag) {
       await xrayApi.removeOutbounds(binPath, apiPort, [currentNodeTag]).catch(() => {})
