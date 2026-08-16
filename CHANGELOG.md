@@ -6,8 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - **Xray Stage3 常驻探测子进程** (fork). Stage3 一轮探测的所有批次共用一个常驻 xray 探测子进程，批次间用 `xray api ado`/`rmo` 动态换节点（固定 tag `proxy_0`~`proxy_127` 复用），不再每批 spawn 一次性子进程。40000 节点场景下 spawn 次数从 ~313 降到 1（-99.7%）。`packages/core/src/modules/plugin/xray/probe.js` 的 `isObservationReady`/`waitForObservatoryMetrics` 新增 `expectedTags` + `minLastTryTime` 参数，按 tag 集合过滤并区分新旧探测结果（rmo 后 observatory status 永久残留）。`packages/core/src/modules/plugin/xray/xray_api.js` 的 `addOutbounds` 改为解析 stdout 返回逐节点结果（ado 遇无效节点会停止后续处理），`removeOutbounds` 改为并行（128 tags 从 2.5s 降到 ~0.6s）。Stage1 bootstrap 仍用一次性 spawn（只探测一批）。
-- **Xray Stage3 常驻出口探测子进程** (fork). 活节点的出口 IP/country/owner 探测共用一个常驻 xray 子进程（固定 tag `egress_0`，通过 ado/rmo 切换节点），不再每节点 spawn 一次性子进程。123 活节点场景下 spawn 次数从 ~123 降到 1（-99.2%），`waitForProxyPortReady` 仅首次调用（端口固定）。`resolveEntryEgressMetadata` 新增 `egressController` 参数，`annotateProbeEntries` 在有 controller 时并发降为 1（单进程串行）。Stage1 bootstrap 不传 controller，走 legacy 路径。总 spawn 次数（批次+出口）从 ~436 降到 ~2（-99.5%）。
+- **Xray Stage3 常驻出口探测子进程** (fork). 活节点的出口 IP/country/owner 探测共用一个常驻 xray 子进程（固定 tag `egress_0`，通过 ado/rmo 切换节点），不再每节点 spawn 一次性子进程。123 活节点场景下 spawn 次数从 ~123 降到 1（-99.2%），`waitForProxyPortReady` 仅首次调用（端口固定）。`resolveEntryEgressMetadata` 新增 `egressController` 参数，`annotateProbeEntries` 在有 controller 时并发降为 1（单进程串行）。Stage1 bootstrap 不传 controller，走 legacy 路径。总 spawn 次数（批次+出口）从 ~436 降到 ~2（-99.5%）。`swapNode` 首次调用时等待 API 端口就绪（10s 超时），失败后回退到一次性 spawn。
 - **Xray sticky balancer 锁定** (fork). 新增 `enableSticky({duration})`/`disableSticky()`/`getStickyStatus()` API，通过 `xray api bo`（Balancer Override）锁定出口 IP，防止 ChatGPT 注册等场景的 `ERR_NETWORK_CHANGED`。锁定后所有新连接走同一节点，`duration` 秒后自动解锁。`xray_api.js` 新增 `overrideBalancer`/`removeBalancerOverride`/`getBalancerInfo`。sticky 操作通过 `stickyOpChain` 串行化防止竞态；热刷新 rmo 删除锁定节点时自动解除；xray 重启时重置 sticky 状态。
+
+### Fixed
+- **修复 Xray 常驻出口探测 API 端口不可达** (fork). `startEgressProbeProcess` spawn xray 后立即返回，但 gRPC API 端口需要时间初始化。第一个 `swapNode` 调用 `addOutbounds` 时 API 还没就绪，导致 `failed to dial 127.0.0.1:<apiPort>`（生产环境 8月14日 170 次、8月15日 419 次失败）。修复：`swapNode` 首次调用时通过 `waitForProxyPortReady` 等 API 端口就绪（10s 超时），检查失败后标记 `portCheckFailed` 不再重试，`resolveEntryEgressMetadata` 捕获 `swapNode` 失败后回退到一次性 spawn。
 
 ### Changed
 - **移除 Xray balancer 的 `fallbackTag: 'direct'` 直连回退** (fork). 所有代理节点不可用时，请求直接失败而非走直连，避免暴露真实 IP。`packages/core/src/modules/plugin/xray/gen_config.js` 不再生成 `fallbackTag` 字段。
