@@ -1831,16 +1831,22 @@ async function startEgressProbeProcess ({ binPath, xrayDir, log }) {
 
   let portReady = false
   let currentNodeTag = ''
+  let portCheckFailed = false
 
   async function swapNode (node) {
     // Wait for xray API port readiness on first call (xray needs time to
     // initialize gRPC listener after spawn; without this, ado/rmo calls fail
     // with "failed to dial 127.0.0.1:<apiPort>").
-    if (!portReady) {
-      portReady = await waitForProxyPortReady({ proxyPort: apiPort, child, timeoutMs: 5000 })
+    if (!portReady && !portCheckFailed) {
+      portReady = await waitForProxyPortReady({ proxyPort: apiPort, child, timeoutMs: 10000 })
       if (!portReady) {
+        log.warn(`Xray egress 常驻探测 API 端口 ${apiPort} 10s 内未就绪，后续节点将回退到一次性 spawn`)
+        portCheckFailed = true
         throw new Error(`Xray egress 常驻探测 API 端口 ${apiPort} 未就绪`)
       }
+    }
+    if (portCheckFailed) {
+      throw new Error(`Xray egress 常驻探测 API 端口 ${apiPort} 未就绪`)
     }
     // rmo previous node (idempotent)
     if (currentNodeTag) {
@@ -1880,33 +1886,40 @@ async function resolveEntryEgressMetadata ({ binPath, xrayDir, node, log, timeou
   let exitAddress = ''
 
   if (egressController) {
-    // Persistent egress probe mode: reuse long-lived xray, swap node via ado/rmo
-    const added = await egressController.swapNode(node)
-    if (!added) {
-      log.warn('Xray egress 常驻探测: 节点 ado 失败')
-      return { country: '', owner: '' }
-    }
-
-    const proxyPort = egressController.proxyPort
-    // Wait for port readiness only on first use; subsequent swaps reuse the same port
-    if (!egressController.isPortReady()) {
-      await waitForProxyPortReady({ proxyPort, child: egressController.child, timeoutMs: 5000 })
-      egressController.setPortReady()
-    } else {
-      // Brief delay after ado to let xray apply the new outbound before proxying
-      await new Promise(resolve => setTimeout(resolve, 200))
-    }
-
     try {
-      exitAddress = await withTimeout(
-        detectEgressAddressThroughProxy({ proxyPort, timeoutMs }),
-        timeoutMs + 1000,
-        `Egress metadata lookup timeout after ${timeoutMs}ms`,
-      )
-    } catch {
-      exitAddress = ''
+      // Persistent egress probe mode: reuse long-lived xray, swap node via ado/rmo
+      const added = await egressController.swapNode(node)
+      if (!added) {
+        log.warn('Xray egress 常驻探测: 节点 ado 失败')
+        return { country: '', owner: '' }
+      }
+
+      const proxyPort = egressController.proxyPort
+      // Wait for port readiness only on first use; subsequent swaps reuse the same port
+      if (!egressController.isPortReady()) {
+        await waitForProxyPortReady({ proxyPort, child: egressController.child, timeoutMs: 5000 })
+        egressController.setPortReady()
+      } else {
+        // Brief delay after ado to let xray apply the new outbound before proxying
+        await new Promise(resolve => setTimeout(resolve, 200))
+      }
+
+      try {
+        exitAddress = await withTimeout(
+          detectEgressAddressThroughProxy({ proxyPort, timeoutMs }),
+          timeoutMs + 1000,
+          `Egress metadata lookup timeout after ${timeoutMs}ms`,
+        )
+      } catch {
+        exitAddress = ''
+      }
+    } catch (stickyErr) {
+      // swapNode failed (API port not ready) — fall through to legacy one-shot spawn
+      log.debug(`Xray egress 常驻探测不可用，回退到一次性 spawn: ${stickyErr.message}`)
     }
-  } else {
+  }
+
+  if (!exitAddress && node && typeof node === 'object') {
     // Fallback: spawn a one-shot xray subprocess per node (legacy behavior)
     const probeDir = getProbeDir(xrayDir)
     ensureDir(probeDir)
