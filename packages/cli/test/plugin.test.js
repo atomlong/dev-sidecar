@@ -17,7 +17,7 @@ describe('plugin', function () {
       assert.include(plugins, 'node')
       assert.include(plugins, 'pip')
       assert.include(plugins, 'overwall')
-      assert.include(plugins, 'free_eye')
+      assert.include(plugins, 'xray')
     })
   })
 
