@@ -210,7 +210,7 @@ async function main () {
     // Step 1: esbuild
     console.log('==> Step 1: esbuild 打包...')
     execSync(
-      `npx esbuild src/sea-entry.js --bundle --platform=node --target=node18 --format=cjs --outfile="${bundle}" "--external:node:*" "--external:@docmirror/dev-sidecar/src/modules/plugin/xray/*" "--external:@starknt/sysproxy" "--external:better-sqlite3"`,
+      `npx esbuild src/sea-entry.js --bundle --platform=node --target=node18 --format=cjs --outfile="${bundle}" "--external:node:*" "--external:@docmirror/dev-sidecar/src/modules/plugin/xray/*" "--external:@starknt/sysproxy" "--external:better-sqlite3" --define:process.env.CLI_VERSION='"${VERSION}"'`,
       { cwd: ROOT, stdio: 'inherit' },
     )
     const bundleSize = (fs.statSync(bundle).size / 1024 / 1024).toFixed(1)
