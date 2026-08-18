@@ -227,7 +227,7 @@ async function routeCommand (args) {
       break
     }
     case 'version': {
-      console.log(require('../../package.json').version)
+      console.log(process.env.CLI_VERSION || require('../../package.json').version)
       break
     }
     case 'plugin': {
