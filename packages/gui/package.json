@@ -1,6 +1,6 @@
 {
   "name": "@docmirror/dev-sidecar-gui",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "private": false,
   "description": "给开发者的加速代理工具图形界面",
   "author": {

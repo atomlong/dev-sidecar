@@ -46,6 +46,8 @@ PRIVATE_PATTERNS=(
     "^images/"
     "^test\.sh"
     "^submit\.sh"
+    "^doc/xray-stage3-persistent-probe"
+    "^doc/xray-devops\.md"
 )
 
 # Construct Regex from list

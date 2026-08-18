@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.2.6] - Unreleased
+## [v2.2.6] - 2026-08-18
 
 ### Added
 - **Xray Stage3 常驻探测子进程** (fork). Stage3 一轮探测的所有批次共用一个常驻 xray 探测子进程，批次间用 `xray api ado`/`rmo` 动态换节点（固定 tag `proxy_0`~`proxy_127` 复用），不再每批 spawn 一次性子进程。40000 节点场景下 spawn 次数从 ~313 降到 1（-99.7%）。`packages/core/src/modules/plugin/xray/probe.js` 的 `isObservationReady`/`waitForObservatoryMetrics` 新增 `expectedTags` + `minLastTryTime` 参数，按 tag 集合过滤并区分新旧探测结果（rmo 后 observatory status 永久残留）。`packages/core/src/modules/plugin/xray/xray_api.js` 的 `addOutbounds` 改为解析 stdout 返回逐节点结果（ado 遇无效节点会停止后续处理），`removeOutbounds` 改为并行（128 tags 从 2.5s 降到 ~0.6s）。Stage1 bootstrap 仍用一次性 spawn（只探测一批）。
