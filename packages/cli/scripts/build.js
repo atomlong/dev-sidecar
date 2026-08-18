@@ -33,7 +33,7 @@ function getCurrentPlatform () {
 function getNodeDownloadUrl (platform) {
   const base = `https://nodejs.org/dist/${NODE_VERSION}`
   const map = {
-    'linux-x64': `${base}/node-${NODE_VERSION}-linux-x64`,
+    'linux-x64': `${base}/node-${NODE_VERSION}-linux-x64.tar.gz`,
     'linux-x64-armv7l': `${base}/node-${NODE_VERSION}-linux-armv7l.tar.gz`,
     'linux-arm64': `${base}/node-${NODE_VERSION}-linux-arm64.tar.gz`,
     'macos-x64': `${base}/node-${NODE_VERSION}-darwin-x64.tar.gz`,
@@ -45,7 +45,7 @@ function getNodeDownloadUrl (platform) {
 }
 
 function needsExtraction (platform) {
-  return platform !== 'windows-x64' && platform !== 'linux-x64'
+  return platform !== 'windows-x64' && platform !== 'windows-arm64'
 }
 
 function getOutputName (platform) {
