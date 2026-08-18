@@ -89,13 +89,24 @@ const api = {
     }
     isExpectedExit = true
     log.info('正在停止 Xray...')
-    child.kill()
-    // 简单等待进程结束
-    // 实际应该监听 close 事件，但这里简化处理
+    // 等 close 事件确保进程真正退出、端口释放，再返回。
+    // 之前 child.kill() 后立即 child=null 不等退出，导致 systemctl restart
+    // 时新 xray 启动发现端口仍被旧进程占用（"端口被占用"错误）。
+    // 加 3 秒超时 SIGKILL 兜底，防止 xray 不响应 SIGTERM。
+    const childRef = child
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        log.warn('Xray SIGTERM 后 3 秒未退出，发送 SIGKILL')
+        try { process.kill(childRef.pid, 'SIGKILL') } catch { /* already exited */ }
+        resolve()
+      }, 3000)
+      childRef.once('close', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+      childRef.kill()
+    })
     child = null
-    // Clean up the isolated cgroup scope after the main Xray process exits.
-    // The scope is shared with probe processes; cleanup is best-effort
-    // (rmdir fails if other probe processes are still running in it).
     cleanupIsolatedCgroup()
   },
 
