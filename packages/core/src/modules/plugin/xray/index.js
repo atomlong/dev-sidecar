@@ -2995,14 +2995,11 @@ const Plugin = function (context) {
         }
 
         // Only use bootstrap-probed entries; do NOT pad with unprobed stable fallback.
-        // fallbackStableEntries are only used when bootstrap probe fails entirely (catch below).
+        // If probe found 0 available nodes, config.json will only have manual preset
+        // nodes (cfg.nodes injected below) or Direct/Block-only. This is correct —
+        // unprobed stable nodes are likely stale and would mislead observatory.
         const startupNodeCandidates = []
         appendItems(startupNodeCandidates, bootstrapSelectedEntries.map(entry => entry.node))
-        // If bootstrap probe failed (catch above) and produced zero selected entries,
-        // fall back to stable cache entries as last resort to avoid empty config.
-        if (startupNodeCandidates.length === 0) {
-          appendItems(startupNodeCandidates, supportedFallbackEntries.map(entry => entry.node))
-        }
         startupNodes = xrayCache.deduplicateNodes(startupNodeCandidates).slice(0, startupNodeLimit)
 
         log.info(`Xray 启动节点候选: source=nodes-cache, bootstrapSelected=${bootstrapSelectedEntries.length}, fallbackStable=${supportedFallbackEntries.length}, usedFallback=${bootstrapSelectedEntries.length === 0}, startupSelected=${startupNodes.length}`)
