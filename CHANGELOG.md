@@ -10,10 +10,11 @@ All notable changes to this project will be documented in this file.
 - **修复 Stage3 探测 URL 与 Stage1/observatory 标准不一致** (fork). Stage3 缓存探测用 `probeUrl`（`gstatic.com/generate_204`，宽松，只测 443 连接），但 xray observatory 运行时用 `observatoryProbeUrl`（`chatgpt.com/cdn-cgi/trace`，严格，CF 防护/TLS 握手）。Stage3 用 gstatic.com 筛出的节点送进 observatory 后全标为 dead，balancer 无节点可选，所有流量走 direct。修复：Stage3 探测 URL 改为 `observatoryProbeUrl`，和 Stage1/observatory 统一标准。
 - **修复 xray 异常退出后 currentLiveNodeTags 不一致** (fork). xray 崩溃后 process.js 自动重启用固定模板（无 proxy 节点），但 `currentLiveNodeTags` 仍有旧节点，后续 ado/rmo 基于错误状态操作。修复：process.js 添加 `onUnexpectedExit` 回调，xray 崩溃时清空 `currentLiveNodeTags`、`nextProxyTagIndex`、`liveConfigHasProxyNodes`、sticky 状态。
 - **修复每批次注入 rmo 先删 Map 再调 API 导致不一致** (fork). 每批次注入的 rmo 先从 `currentLiveNodeTags` 删除再调 `removeOutbounds`，API 失败时 Map 和 xray 实际状态不一致。修复：改为先调 API，成功后才删 Map。同时 rmo 前检查 sticky 锁定节点是否被移除，如果是则先 `removeBalancerOverride` 解锁。
+- **修复每批次注入 rmo 移除策略不合理** (fork). 旧逻辑用 FIFO（移除最早插入的节点），不适用于 xray 节点选择场景——节点质量（延时/可用性）才是关键，而非插入顺序。修复：rmo 改为查询缓存中各节点的 `delay`/`failureStreak`，优先移除失效节点（delay≤0 或 failureStreak≥3），不够再按延时降序移除健康节点（移除延时最高的，保留延时最低的）。缓存查询失败时跳过 rmo（不盲目移除），等下一批次重试。
 
 ### Changed
 - **config.json 改为固定模板，Stage1/Stage3 用 ado/rmo 动态注入** (fork). `genConfig` 即使无 proxy 节点也总是生成 balancer + 路由规则 + observatory，config.json 成为固定模板（direct/block/balancer/observatory，无 proxy 节点）。dev-sidecar 启动后立即启动 xray（固定模板），Stage1 bootstrap 探测成功后用 `ado` 注入节点（等待 API 就绪）。Stage3 移除冷启动重写 config.json + 重启分支，统一走 ado/rmo 热刷新。config.json 永不修改（固定模板），主 xray 进程不再因 Stage3 而重启。
-- **Stage3 每批次注入节点** (fork). Stage3 每批次探测完成后，立即用 `ado` 注入本批次成功节点到 live xray（不等一轮完成），`rmo` 移除超限节点（FIFO）。更及时注入可用节点，缩短从探测到可用的时间。
+- **Stage3 每批次注入节点** (fork). Stage3 每批次探测完成后，立即用 `ado` 注入本批次成功节点到 live xray（不等一轮完成），`rmo` 移除超限节点（优先失效，然后按延时降序，保留延时最低的节点）。更及时注入可用节点，缩短从探测到可用的时间。
 - **移除 `config.json.bak` 备份机制** (fork). `config.json.bak` 原用于 Stage2 读取"上次启动时的节点快照"作为订阅去重比对的来源。随着 Phase 2 热刷新（config.json 不再被 Stage3 同步写回）和 bootstrap 不再 fallback 到旧 config.json 节点，备份已无用途。Stage2 现在直接读 `config.json`。移除了 `backupFileIfExists()` 辅助函数、`liveConfigBakPath` 变量/参数、`config.json.bak` 创建逻辑、`configSourcePath` fallback 逻辑。
 
 ## [v2.2.6] - 2026-08-18
