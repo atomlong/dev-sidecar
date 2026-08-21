@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.2.7] - 2026-08-21
+
+### Fixed
+- **修复 Xray 主进程 stop() 不等 close 事件导致重启时端口冲突** (fork). `packages/core/src/modules/plugin/xray/process.js` 的 `stop()` 调用 `child.kill()`(SIGTERM)后立即 `child = null` 返回，不等 `close` 事件。`systemctl restart` 时主进程在旧 xray 释放端口 10801 前就退出，新实例启动报"端口 10801 被占用 (Strict Mode)"。更严重的是 xray 被移到隔离 cgroup(`dev-sidecar-xray-probe.scope`)，systemd `KillMode=control-group` 杀不到它，旧 xray 成孤儿进程持续占端口。修复：`stop()` 改为 `await` 等 `close` 事件(3 秒超时 SIGKILL 兜底)，确保进程退出、端口释放后才返回。
+- **修复 Xray bootstrap probe 全失败时复用旧 config.json 节点** (fork). `packages/core/src/modules/plugin/xray/index.js` 在 bootstrap probe 返回 0 个可用节点时，旧逻辑 fallback 到上次 `config.json` 的节点。但旧 config.json 的节点来源也是缓存数据库，既然数据库已确认无可用节点，旧节点大概率也已失效，继续用只会误导 observatory 反复探测已知 dead 节点，浪费探测周期。修复：不再 fallback 到旧 config.json 节点，仅保留手动预置节点(`cfg.nodes`)作为兜底。
+
+### Changed
+- **移除 `config.json.bak` 备份机制** (fork). `config.json.bak` 原用于 Stage2 读取"上次启动时的节点快照"作为订阅去重比对的来源。随着 Phase 2 热刷新（config.json 不再被 Stage3 同步写回）和 bootstrap 不再 fallback 到旧 config.json 节点，备份已无用途。Stage2 现在直接读 `config.json`。移除了 `backupFileIfExists()` 辅助函数、`liveConfigBakPath` 变量/参数、`config.json.bak` 创建逻辑、`configSourcePath` fallback 逻辑。
+
 ## [v2.2.6] - 2026-08-18
 
 ### Added

@@ -1013,15 +1013,7 @@ function extractInboundPortFromXrayConfig (config) {
   return null
 }
 
-function backupFileIfExists (sourcePath, backupPath) {
-  if (!sourcePath || !backupPath || !fs.existsSync(sourcePath)) {
-    return false
-  }
-
-  ensureDir(path.dirname(backupPath))
-  fs.copyFileSync(sourcePath, backupPath)
-  return true
-}
+// ...existing code...
 
 function collectNodesFromLinks (links) {
   if (!Array.isArray(links) || links.length === 0) {
@@ -2188,7 +2180,6 @@ const Plugin = function (context) {
   let currentLiveApiPort = 0
   let currentLiveMetricsPort = 0
   let currentLiveConfigPath = ''
-  let currentLiveConfigBakPath = ''
   let currentBinPath = ''
   let liveConfigHasProxyNodes = false
   let isStageRunning = false
@@ -2826,10 +2817,8 @@ const Plugin = function (context) {
       currentXrayDir = xrayDir
       cleanupStaleProbeArtifacts()
       const liveConfigPath = path.join(xrayDir, 'config.json')
-      const liveConfigBakPath = path.join(xrayDir, 'config.json.bak')
       const cachePath = path.join(xrayDir, 'nodes_cache.sqlite')
       currentLiveConfigPath = liveConfigPath
-      currentLiveConfigBakPath = liveConfigBakPath
       currentBinPath = binPath
       liveConfigHasProxyNodes = false
       const startupNodeLimit = normalizePositiveInt(cfg.startupNodeLimit, pluginConfig.startupNodeLimit)
@@ -3026,15 +3015,10 @@ const Plugin = function (context) {
       ensureDir(xrayDir)
 
       if (!reusedLiveConfig) {
-        // If no usable nodes were found from cache, fall back to the previous
-        // config.json which may still have working proxy outbounds.
-        if (startupNodes.length === 0) {
-          const previousConfigNodes = xrayCache.extractNodesFromXrayConfigFile(liveConfigPath)
-          if (previousConfigNodes.length > 0) {
-            startupNodes = xrayCache.deduplicateNodes(previousConfigNodes)
-            log.info(`Xray 缓存无可用节点，复用上次 config.json: reusedNodes=${startupNodes.length}`)
-          }
-        }
+        // 如果 cache probe 全失败，不复用上次 config.json 的旧节点。
+        // 旧 config.json 的节点来源也是缓存数据库，既然数据库已无可用节点，
+        // 旧节点大概率也已失效，继续用只会误导 observatory 标记为 dead。
+        // 仅保留手动预置节点（cfg.nodes）作为兜底。
 
         // Prepend manual nodes from cfg.nodes — these are user-specified nodes
         // that must always be included in the live config, bypassing the
@@ -3113,7 +3097,6 @@ const Plugin = function (context) {
         cfg,
         xrayDir,
         liveConfigPath,
-        liveConfigBakPath,
         cachePath,
       }).catch((error) => {
         log.warn('Xray 后台节点刷新任务失败:', error)
@@ -3154,7 +3137,6 @@ const Plugin = function (context) {
       currentLiveNodeTags.clear()
       nextProxyTagIndex = 0
       currentLiveConfigPath = ''
-      currentLiveConfigBakPath = ''
       currentBinPath = ''
       event.fire('status', { key: 'plugin.xray.enabled', value: false })
       event.fire('status', { key: 'plugin.xray.metricsPort', value: 0 })
@@ -3261,7 +3243,7 @@ const Plugin = function (context) {
       })
     },
 
-    async refreshCacheFromSourcesOnce ({ binPath, cfg, xrayDir, liveConfigPath, liveConfigBakPath, cachePath }) {
+    async refreshCacheFromSourcesOnce ({ binPath, cfg, xrayDir, liveConfigPath, cachePath }) {
       const generation = ++refreshGeneration
 
       if (!isSubscriptionSyncEnabled(cfg)) {
@@ -3319,8 +3301,7 @@ const Plugin = function (context) {
         }
       }
 
-      const configSourcePath = fs.existsSync(liveConfigBakPath) ? liveConfigBakPath : liveConfigPath
-      const configNodes = xrayCache.extractNodesFromXrayConfigFile(configSourcePath)
+      const configNodes = xrayCache.extractNodesFromXrayConfigFile(liveConfigPath)
       const candidateNodeSeen = new Set()
       const allSubscriptionSourceKeys = new Set()
       const localCandidateNodes = []
@@ -4053,7 +4034,6 @@ const Plugin = function (context) {
                 cfg,
                 xrayDir,
                 liveConfigPath: currentLiveConfigPath,
-                liveConfigBakPath: currentLiveConfigBakPath,
                 cachePath,
               })
             } catch (stage2Error) {
