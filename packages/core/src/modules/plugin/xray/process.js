@@ -6,9 +6,13 @@ let child = null
 let isExpectedExit = false
 let currentBinPath = ''
 let currentConfigPath = ''
+let onUnexpectedExitCallback = null
 
 const api = {
-  start (binPath, configPath) {
+  start (binPath, configPath, { onUnexpectedExit } = {}) {
+    if (onUnexpectedExit) {
+      onUnexpectedExitCallback = onUnexpectedExit
+    }
     return new Promise((resolve, reject) => {
       if (child) {
         resolve()
@@ -64,6 +68,9 @@ const api = {
         child = null
         if (!isExpectedExit) {
           log.warn('Xray 异常退出，3秒后尝试重启...')
+          if (typeof onUnexpectedExitCallback === 'function') {
+            try { onUnexpectedExitCallback() } catch (e) { log.warn('Xray onUnexpectedExit 回调异常:', e) }
+          }
           setTimeout(() => {
             api.start(currentBinPath, currentConfigPath).catch(err => {
               log.error('Xray 自动重启失败:', err)

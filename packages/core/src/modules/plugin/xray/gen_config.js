@@ -43,17 +43,14 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
     outbounds.push(outbound)
   })
 
-  // Balancer
-  const balancers = []
-  if (proxyTags.length > 0) {
-    balancers.push({
-      tag: 'balancer-proxy',
-      selector: ['proxy_'],
-      strategy: {
-        type: 'leastPing', // Uses observatory results
-      },
-    })
-  }
+  // Balancer — always created so Stage3 ado-injected nodes are picked up
+  const balancers = [{
+    tag: 'balancer-proxy',
+    selector: ['proxy_'],
+    strategy: {
+      type: 'leastPing', // Uses observatory results
+    },
+  }]
 
   // Routing
   const routingRules = []
@@ -69,19 +66,12 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
           domain: domainList,
         }
         if (requestedBalancerTag) {
-          // Only reference a balancer if proxy nodes exist
-          if (proxyTags.length > 0) {
-            ruleConfig.balancerTag = requestedBalancerTag
-          } else {
-            ruleConfig.outboundTag = 'direct'
-          }
+          // Always reference balancer — ado-injected nodes will be picked up
+          ruleConfig.balancerTag = requestedBalancerTag
         } else if (rule.outboundTag) {
           ruleConfig.outboundTag = rule.outboundTag
-        } else if (proxyTags.length > 0) {
-          // Default to balancer if no tag specified and proxies exist
-          ruleConfig.balancerTag = 'balancer-proxy'
         } else {
-          ruleConfig.outboundTag = 'direct'
+          ruleConfig.balancerTag = 'balancer-proxy'
         }
         routingRules.push(ruleConfig)
       }
@@ -96,13 +86,12 @@ module.exports = function genConfig (port, nodes, rules, probeUrl, probeInterval
   // If DevSideCar sends google.com to Xray, it expects Xray to proxy it.
   // So the default fallback should be balancer-proxy.
 
-  if (proxyTags.length > 0) {
-    routingRules.push({
-      type: 'field',
-      network: 'tcp,udp',
-      balancerTag: 'balancer-proxy',
-    })
-  }
+  // Default rule: route everything to balancer — ado-injected nodes will be used
+  routingRules.push({
+    type: 'field',
+    network: 'tcp,udp',
+    balancerTag: 'balancer-proxy',
+  })
 
   const routing = {
     domainStrategy: 'AsIs',
