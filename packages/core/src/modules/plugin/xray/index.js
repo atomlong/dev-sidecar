@@ -3663,7 +3663,7 @@ const Plugin = function (context) {
                   }
                 }
                 liveConfigHasProxyNodes = currentLiveNodeTags.size > 0
-                // rmo over-limit nodes: prioritize failed (delay<=0 or failureStreak>=3), then FIFO
+                // rmo over-limit nodes: prioritize failed, then highest delay (keep lowest-delay nodes)
                 const nodeLimit = normalizePositiveInt(cfg.startupNodeLimit, pluginConfig.startupNodeLimit)
                 const allEntries = [...currentLiveNodeTags.entries()]
                 const excess = Math.max(0, allEntries.length - nodeLimit)
@@ -3682,16 +3682,18 @@ const Plugin = function (context) {
                       if (!Number.isFinite(delay) || delay <= 0 || streak >= 3) {
                         failed.push({ fp, tag })
                       } else {
-                        healthy.push({ fp, tag })
+                        healthy.push({ fp, tag, delay })
                       }
                     }
+                    // Prioritize failed, then highest delay (keep lowest-delay nodes alive)
                     toRemove.push(...failed.slice(0, excess))
                     if (toRemove.length < excess) {
-                      toRemove.push(...healthy.slice(0, excess - toRemove.length))
+                      healthy.sort((a, b) => b.delay - a.delay)
+                      toRemove.push(...healthy.slice(0, excess - toRemove.length).map(({ fp, tag }) => ({ fp, tag })))
                     }
-                  } catch {
-                    // cache query failed — fallback to FIFO
-                    toRemove = allEntries.slice(0, excess)
+                  } catch (cacheError) {
+                    // cache query failed — skip rmo this batch, retry next batch
+                    log.warn(`Xray Stage3 批次 ${batchIndex} rmo 跳过: 缓存查询失败 ${cacheError.message}`)
                   }
                 }
                 if (toRemove.length > 0) {
