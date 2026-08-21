@@ -3663,13 +3663,39 @@ const Plugin = function (context) {
                   }
                 }
                 liveConfigHasProxyNodes = currentLiveNodeTags.size > 0
-                // rmo over-limit nodes (FIFO: remove oldest inserted)
+                // rmo over-limit nodes: prioritize failed (delay<=0 or failureStreak>=3), then FIFO
                 const nodeLimit = normalizePositiveInt(cfg.startupNodeLimit, pluginConfig.startupNodeLimit)
                 const allEntries = [...currentLiveNodeTags.entries()]
                 const excess = Math.max(0, allEntries.length - nodeLimit)
-                const toRemove = allEntries.slice(0, excess)
+                let toRemove = []
+                if (excess > 0) {
+                  try {
+                    const liveFps = allEntries.map(([fp]) => fp)
+                    const liveEntries = xrayCache.readCacheEntriesByFingerprints(cachePath, liveFps)
+                    const fpToEntry = new Map(liveEntries.map(e => [xrayCache.fingerprintNode(e.node), e]))
+                    const failed = []
+                    const healthy = []
+                    for (const [fp, tag] of allEntries) {
+                      const entry = fpToEntry.get(fp)
+                      const delay = entry ? Number(entry.delay) : 0
+                      const streak = entry ? normalizePositiveInt(entry.failureStreak, 0) : 0
+                      if (!Number.isFinite(delay) || delay <= 0 || streak >= 3) {
+                        failed.push({ fp, tag })
+                      } else {
+                        healthy.push({ fp, tag })
+                      }
+                    }
+                    toRemove.push(...failed.slice(0, excess))
+                    if (toRemove.length < excess) {
+                      toRemove.push(...healthy.slice(0, excess - toRemove.length))
+                    }
+                  } catch {
+                    // cache query failed — fallback to FIFO
+                    toRemove = allEntries.slice(0, excess)
+                  }
+                }
                 if (toRemove.length > 0) {
-                  const tagsToRemove = toRemove.map(([fp, tag]) => tag)
+                  const tagsToRemove = toRemove.map(({ tag }) => tag)
                   // Release sticky lock if the locked node is being removed
                   if (stickyTag && tagsToRemove.includes(stickyTag)) {
                     await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
@@ -3679,7 +3705,7 @@ const Plugin = function (context) {
                   try {
                     await xrayApi.removeOutbounds(currentBinPath, currentLiveApiPort, tagsToRemove)
                     // Only delete from Map after rmo succeeds (keep consistency)
-                    for (const [fp, tag] of toRemove) {
+                    for (const { fp, tag } of toRemove) {
                       currentLiveNodeTags.delete(fp)
                     }
                   } catch (rmoError) {
