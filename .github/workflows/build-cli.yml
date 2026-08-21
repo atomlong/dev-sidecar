@@ -61,9 +61,9 @@ jobs:
 
       - name: "Flatten artifacts"
         run: |
-          mv release/ds-cli-*/* release/ 2>/dev/null || true
-          rm -rf release/ds-cli-*
-          chmod +x release/ds-cli-*
+          find release -mindepth 2 -type f -name 'ds-cli-*' ! -name '*.js' ! -name '*.blob' ! -name '*.json' -exec mv -f {} release/ \;
+          find release -mindepth 1 -type d -name 'ds-cli-*' -exec rm -rf {} +
+          chmod +x release/ds-cli-* 2>/dev/null || true
           ls -lah release/
 
       - name: "Create release"

@@ -1291,14 +1291,14 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
                 if (Array.isArray(chunkNodes) && chunkNodes.length > 0) {
                   processSubscriptionChunk(chunkNodes, subscriptionSnapshot)
                 }
-                parsedChunkCount += 1
-                if (shouldLogDetail && parsedChunkCount % STAGE2_SUBSCRIPTION_PARSE_GC_CHUNKS === 0) {
-                  const shouldLogChunkGc = parsedChunkCount === 1 || parsedChunkCount % 100 === 0
+                parsedChunk_count += 1
+                if (shouldLogDetail && parsedChunk_count % STAGE2_SUBSCRIPTION_PARSE_GC_CHUNKS === 0) {
+                  const shouldLogChunkGc = parsedChunk_count === 1 || parsedChunk_count % 100 === 0
                   if (shouldLogChunkGc) {
                   }
                   await runStage2GarbageCollection(log, 'large-subscription-parse-chunks', {
                     subscription: subscriptionLabel,
-                    chunks: parsedChunkCount,
+                    chunks: parsedChunk_count,
                     acceptedNodeKeys: subscriptionSnapshot.acceptedNodeKeyCount,
                   }, {
                     logAfter: shouldLogChunkGc,
@@ -2238,86 +2238,9 @@ const Plugin = function (context) {
 
     // Read current config.json proxy nodes
     const currentConfigNodes = xrayCache.extractNodesFromXrayConfigFile(currentLiveConfigPath)
-    if (currentConfigNodes.length === 0 && !liveConfigHasProxyNodes) {
-      // Cold start with no nodes — use original logic to bootstrap from cache
-      const stableFallbackQuery = buildCacheEntryQueryOptions({
-        allowedCountries,
-        allowedOwners,
-        stableOnly: true,
-        maxDelayMs,
-        limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
-      })
-      const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, stableFallbackQuery)
-      const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
-      const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isParsedNodeValid(entry.node))
-
-      const freshProbeQuery = buildCacheEntryQueryOptions({
-        allowedCountries,
-        allowedOwners,
-        maxDelayMs,
-        limit: normalizePositiveInt(cfg.bootstrapCandidateLimit, pluginConfig.bootstrapCandidateLimit),
-      })
-      const freshProbeSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, freshProbeQuery)
-      const freshProbeEntries = (await collectBootstrapCandidateEntries(freshProbeSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
-        .filter(entry => Number.isFinite(entry.delay) && entry.delay > 0)
-      const freshSupported = freshProbeEntries.filter(entry => parser.isParsedNodeValid(entry.node))
-
-      const candidateNodes = []
-      appendItems(candidateNodes, freshSupported.map(entry => entry.node))
-      appendItems(candidateNodes, supportedFallbackEntries.map(entry => entry.node))
-      const selectedNodes = xrayCache.deduplicateNodes(candidateNodes).slice(0, startupNodeLimit)
-
-      if (selectedNodes.length === 0) {
-        log.info(`Xray Stage3 后自动重生成: 仍无满足条件的可用节点 (freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}, maxDelayMs=${maxDelayMs}, availableNodeKeys=${availableNodeKeys.length})`)
-        return
-      }
-
-      // Observatory 用 observatoryProbeUrl（严格探测），Stage3 用 probeUrl（宽松探测）
-      const observatoryProbeUrl = cfg.observatoryProbeUrl || cfg.probeUrl
-      if (!currentLiveApiPort) {
-        currentLiveApiPort = await portFinder.findFreePort()
-      }
-      if (!currentLiveMetricsPort) {
-        currentLiveMetricsPort = await portFinder.findFreePort()
-      }
-      const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, observatoryProbeUrl, cfg.probeInterval, {
-        apiPort: currentLiveApiPort,
-        metricsPort: currentLiveMetricsPort,
-        observatoryEnableConcurrency: true,
-      })
-      writeJsonFile(currentLiveConfigPath, liveConfig)
-      liveConfigHasProxyNodes = true
-      // Rebuild live node-to-tag mapping after cold start regen
-      currentLiveNodeTags.clear()
-      selectedNodes.forEach((node, i) => {
-        const fp = xrayCache.fingerprintNode(node)
-        if (fp) {
-          currentLiveNodeTags.set(fp, `proxy_${i}`)
-        }
-      })
-      nextProxyTagIndex = selectedNodes.length
-      event.fire('status', { key: 'plugin.xray.metricsPort', value: currentLiveMetricsPort })
-      event.fire('status', { key: 'plugin.xray.apiPort', value: currentLiveApiPort })
-      log.info(`Xray Stage3 后自动重生成 live config: proxyNodes=${selectedNodes.length}, freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length} -> ${currentLiveConfigPath}`)
-
-      // xray restart clears balancer override — reset sticky state
-      if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
-      stickyTag = null
-
-      try {
-        await processApi.restart(binPath, currentLiveConfigPath)
-        await api.injectRules(cfg.rules, currentLivePort)
-        if (server) {
-          await server.reload()
-        }
-        event.fire('status', { key: 'plugin.xray.enabled', value: true })
-        log.info('Xray Stage3 后自动重生成: live 进程已重启并注入规则')
-      } catch (error) {
-        log.warn('Xray Stage3 后自动重生成: live 进程重启失败:', error)
-        liveConfigHasProxyNodes = false
-      }
-      return
-    }
+    // No cold-start rewrite+restart: always use ado/rmo hot refresh.
+    // genConfig at Stage1 always creates a balancer framework, so ado-injected
+    // nodes are picked up by balancer even when config.json started empty.
 
     // Hot refresh: check existing config.json nodes against cache
     const currentFingerprints = currentConfigNodes.map(node => xrayCache.fingerprintNode(node)).filter(Boolean)
@@ -2378,7 +2301,7 @@ const Plugin = function (context) {
     const selectedNodes = xrayCache.deduplicateNodes(candidateNodes).slice(0, startupNodeLimit)
 
     if (selectedNodes.length === 0) {
-      log.info(`Xray Stage3 后热刷新: 无可用节点可替换 (kept=${keptNodes.length}, fresh=${freshSupported.length})`)
+      log.info(`Xray Stage3 后自动重生成: 仍无满足条件的可用节点 (freshSupported=${freshSupported.length}, stableSupported=${supportedFallbackEntries.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}, maxDelayMs=${maxDelayMs}, availableNodeKeys=${availableNodeKeys.length})`)
       return
     }
 
@@ -2716,7 +2639,7 @@ const Plugin = function (context) {
       }
     })
 
-    const observedFingerprints = Object.keys(observatory)
+    const observedFingerprints = Object.keys(observatory || {})
       .filter(tag => expectedTags.has(tag))
       .map(tag => nodeMap.get(tag))
       .map(node => xrayCache.fingerprintNode(node))
@@ -2881,137 +2804,6 @@ const Plugin = function (context) {
       }
 
       if (!reusedLiveConfig) {
-        const bootstrapCandidateLimit = getBootstrapCandidateLimit(cfg)
-        const stableFallbackQuery = buildCacheEntryQueryOptions({
-          allowedCountries,
-          allowedOwners,
-          stableOnly: true,
-          maxDelayMs,
-          limit: bootstrapCandidateLimit,
-        })
-        const bootstrapCandidateQuery = buildCacheEntryQueryOptions({
-          allowedCountries,
-          allowedOwners,
-          limit: bootstrapCandidateLimit,
-          probedOnly: true,
-        })
-        // 在 SQLite 读取之前回收：冷启动时 D-Bus + gsettings + 配置加载已累积
-        // ~100MB file cache，如果不清空，readCacheEntriesForStartup 读取 SQLite
-        // 索引页+数据页会叠加到 280MB（MemoryHigh），peak 在回收之前就形成了。
-        if (process.platform === 'linux') {
-          xrayCache.dropSqliteFileCache(cachePath)
-          // 按 cgroup 当前存量动态回收：冷启动时 D-Bus + 配置加载累积 ~100MB+
-          // file cache，固定 150M 不够；目标压到 ~30MB 给后续 SQLite 读取留 headroom。
-          const localCgroupPath = getCurrentProcessCgroupPath()
-          const beforeFile = localCgroupPath ? path.join(localCgroupPath, 'memory.current') : ''
-          if (beforeFile && fs.existsSync(beforeFile)) {
-            try {
-              const beforeBytes = Number.parseInt(fs.readFileSync(beforeFile, 'utf8').trim(), 10)
-              const beforeMB = Math.round(beforeBytes / 1024 / 1024)
-              const reclaimTarget = Math.min(Math.max(beforeBytes - 30 * 1024 * 1024, 100 * 1024 * 1024), 300 * 1024 * 1024)
-              const reclaimMB = Math.round(reclaimTarget / 1024 / 1024)
-              const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
-              if (reclaimed) {
-                log.info(`Xray 启动预检查 SQLite 读取前内存回收完成: ${reclaimMB}M (before=${beforeMB}MB)`)
-              }
-            } catch {
-              const reclaimed = xrayCache.reclaimCgroupMemory(150 * 1024 * 1024)
-              if (reclaimed) {
-                log.info('Xray 启动预检查 SQLite 读取前内存回收完成: 150M (fallback)')
-              }
-            }
-          } else {
-            const reclaimed = xrayCache.reclaimCgroupMemory(150 * 1024 * 1024)
-            if (reclaimed) {
-              log.info('Xray 启动预检查 SQLite 读取前内存回收完成: 150M (fallback)')
-            }
-          }
-        }
-        const fallbackStableSourceEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
-          ...stableFallbackQuery,
-        })
-        const bootstrapCandidateEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
-          ...bootstrapCandidateQuery,
-        })
-        const fallbackStableEntries = (await collectBootstrapCandidateEntries(fallbackStableSourceEntries, allowedCountries, allowedOwners, startupNodeLimit)).entries
-        const supportedFallbackEntries = fallbackStableEntries.filter(entry => parser.isParsedNodeValid(entry.node))
-        const bootstrapCandidates = bootstrapCandidateEntries.map(entry => entry.node).filter(node => parser.isParsedNodeValid(node))
-
-        // Drop SQLite file cache after reading 200 candidate blobs from the 700MB+
-        // cache file. The candidate data is now in memory; the file page cache
-        // (up to 200MB on cold boot) must be released before the probe subprocess
-        // starts to avoid cgroup peak exceeding 300MB during the 40-second probe
-        // window. fadvise alone is insufficient on cold boot, so also trigger
-        // memory.reclaim for synchronous kernel reclaim of file pages.
-        xrayCache.dropSqliteFileCache(cachePath)
-        if (process.platform === 'linux') {
-          const cgroupPath = getCurrentProcessCgroupPath()
-          const cgroupFile = cgroupPath ? path.join(cgroupPath, 'memory.current') : ''
-          try {
-            const currentBytes = Number.parseInt(fs.readFileSync(cgroupFile, 'utf8').trim(), 10)
-            const currentMB = Math.round(currentBytes / 1024 / 1024)
-            // 无条件回收：启动预检查读取 SQLite 拉入的 file cache 会在后续
-            // D-Bus + mitmproxy fork + probe 叠加下把 peak 推到 280MB。
-            // 即使 currentBytes 不高，也要把 file cache 压下来给后续操作留空间。
-            const reclaimTarget = Math.min(Math.max(currentBytes - 80 * 1024 * 1024, 50 * 1024 * 1024), 200 * 1024 * 1024)
-            const reclaimed = xrayCache.reclaimCgroupMemory(reclaimTarget)
-            log.info(`Xray 启动预检查后内存回收: currentMB=${currentMB}, reclaimMB=${Math.round(reclaimTarget / 1024 / 1024)}, reclaimed=${reclaimed}`)
-          } catch (reclaimError) {
-          }
-        }
-
-        log.info(`Xray 启动预检查: source=nodes-cache, stableFallbackLoaded=${fallbackStableSourceEntries.length}, stableFallbackFiltered=${fallbackStableEntries.length}, stableFallbackSupported=${supportedFallbackEntries.length}, bootstrapCandidates=${bootstrapCandidateEntries.length}, bootstrapSupported=${bootstrapCandidates.length}, allowedCountries=${Array.isArray(allowedCountries) ? allowedCountries.join(',') : ''}, allowedOwners=${Array.isArray(allowedOwners) ? allowedOwners.join(',') : ''}`)
-
-        let bootstrapSelectedEntries = []
-
-        if (bootstrapCandidates.length > 0) {
-          try {
-            const bootstrapProbeResult = await probeNodesBatch({
-              binPath,
-              cfg,
-              xrayDir,
-              batchNodes: bootstrapCandidates,
-              timeoutMs: 0,
-              probeSamples: getBootstrapProbeSamples(cfg),
-              probeUrl: cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl,
-            })
-            const annotatedBootstrapEntries = await annotateProbeEntries(bootstrapProbeResult.entries, {
-              binPath,
-              xrayDir,
-              existingEntries: bootstrapCandidateEntries,
-              log,
-              useEgressMetadata: false,
-            })
-            const bootstrapByDelay = maxDelayMs > 0
-              ? annotatedBootstrapEntries.filter(entry => Number.isFinite(entry.delay) && entry.delay <= maxDelayMs)
-              : annotatedBootstrapEntries
-            const bootstrapByCountry = await filterEntriesByCountries(bootstrapByDelay, allowedCountries)
-            const bootstrapByOwner = await filterEntriesByOwners(bootstrapByCountry, allowedOwners)
-            bootstrapSelectedEntries = xrayCache.sortCacheEntries(bootstrapByOwner).slice(0, startupNodeLimit)
-            log.info(`Xray 启动前快速复检: source=nodes-cache, candidateLimit=${bootstrapCandidateLimit}, queried=${bootstrapCandidateEntries.length}, tested=${bootstrapCandidates.length}, available=${annotatedBootstrapEntries.length}, afterDelay=${bootstrapByDelay.length}, afterCountry=${bootstrapByCountry.length}, afterOwner=${bootstrapByOwner.length}, selected=${bootstrapSelectedEntries.length}`)
-          } catch (error) {
-            log.warn('Xray 启动前快速复检失败，回退到上次稳定缓存:', error)
-          }
-        }
-
-        // Only use bootstrap-probed entries; do NOT pad with unprobed stable fallback.
-        // If probe found 0 available nodes, config.json will only have manual preset
-        // nodes (cfg.nodes injected below) or Direct/Block-only. This is correct —
-        // unprobed stable nodes are likely stale and would mislead observatory.
-        const startupNodeCandidates = []
-        appendItems(startupNodeCandidates, bootstrapSelectedEntries.map(entry => entry.node))
-        startupNodes = xrayCache.deduplicateNodes(startupNodeCandidates).slice(0, startupNodeLimit)
-
-        log.info(`Xray 启动节点候选: source=nodes-cache, bootstrapSelected=${bootstrapSelectedEntries.length}, fallbackStable=${supportedFallbackEntries.length}, usedFallback=${bootstrapSelectedEntries.length === 0}, startupSelected=${startupNodes.length}`)
-
-        if (startupNodes.length === 0) {
-          log.warn('Xray 警告: 未找到任何可用节点，将只启用 Direct/Block')
-        }
-      }
-
-      ensureDir(xrayDir)
-
-      if (!reusedLiveConfig) {
         // 如果 cache probe 全失败，不复用上次 config.json 的旧节点。
         // 旧 config.json 的节点来源也是缓存数据库，既然数据库已无可用节点，
         // 旧节点大概率也已失效，继续用只会误导 observatory 标记为 dead。
@@ -3031,13 +2823,14 @@ const Plugin = function (context) {
 
         liveApiPort = await portFinder.findFreePort()
         liveMetricsPort = await portFinder.findFreePort()
-        const liveConfig = genConfig(port, startupNodes, cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
+        // Fixed template: no proxy nodes in config.json; Stage1 injects via ado/rmo after start
+        const liveConfig = genConfig(port, [], cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
           apiPort: liveApiPort,
           metricsPort: liveMetricsPort,
           observatoryEnableConcurrency: true,
         })
         writeJsonFile(liveConfigPath, liveConfig)
-        log.info(`Xray 配置文件已生成: ${liveConfigPath}`)
+        log.info(`Xray 配置文件已生成(固定模板): ${liveConfigPath}`)
       } else {
         // Extract apiPort from reused config for hot refresh API support
         const reusedConfigObj = readExistingXrayLiveConfig(liveConfigPath)
@@ -3059,20 +2852,24 @@ const Plugin = function (context) {
       currentLivePort = port
       currentLiveApiPort = liveApiPort
       currentLiveMetricsPort = liveMetricsPort
-      liveConfigHasProxyNodes = startupNodes.length > 0
-      // Initialize live node-to-tag mapping for API-based hot refresh
+      // Fixed template has no proxy nodes; startupNodes will be injected via ado after start
+      liveConfigHasProxyNodes = false
       currentLiveNodeTags.clear()
-      startupNodes.forEach((node, i) => {
-        const fp = xrayCache.fingerprintNode(node)
-        if (fp) {
-          currentLiveNodeTags.set(fp, `proxy_${i}`)
-        }
-      })
-      nextProxyTagIndex = startupNodes.length
+      nextProxyTagIndex = 0
 
       // 3. Start live process.
       await api.stopBackgroundProbe()
-      await processApi.start(binPath, liveConfigPath)
+      await processApi.start(binPath, liveConfigPath, {
+        onUnexpectedExit: () => {
+          // xray crashed and will auto-restart with the fixed template (no proxy nodes).
+          // Clear live node tracking so subsequent ado/rmo starts from a clean state.
+          currentLiveNodeTags.clear()
+          nextProxyTagIndex = 0
+          liveConfigHasProxyNodes = false
+          if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
+          stickyTag = null
+        },
+      })
       event.fire('status', { key: 'plugin.xray.enabled', value: true })
       event.fire('status', { key: 'plugin.xray.port', value: port })
       if (currentLiveMetricsPort) {
@@ -3080,6 +2877,40 @@ const Plugin = function (context) {
       }
       if (currentLiveApiPort) {
         event.fire('status', { key: 'plugin.xray.apiPort', value: currentLiveApiPort })
+      }
+
+      // Stage1: inject startupNodes via ado/rmo (no config.json rewrite)
+      if (!reusedLiveConfig && startupNodes.length > 0 && currentLiveApiPort && currentBinPath) {
+        // Wait for xray API port to be ready before ado/rmo
+        const apiReady = await waitForProxyPortReady({ proxyPort: currentLiveApiPort, timeoutMs: 5000 })
+        if (!apiReady) {
+          log.warn('Xray 第一阶段 ado 注入: API 端口未就绪，跳过')
+        } else {
+          const nodesToAdd = []
+          for (const node of startupNodes) {
+            const fp = xrayCache.fingerprintNode(node)
+            if (fp) {
+              const tag = `proxy_${nextProxyTagIndex++}`
+              const outbound = parser.sanitizeNodeForCurrentXray(JSON.parse(JSON.stringify(node)))
+              outbound.tag = tag
+              nodesToAdd.push({ node, tag, fp, outbound })
+            }
+          }
+          if (nodesToAdd.length > 0) {
+            try {
+              const addResult = await xrayApi.addOutbounds(currentBinPath, currentLiveApiPort, nodesToAdd.map(n => n.outbound))
+              for (const n of nodesToAdd) {
+                if (addResult.addedTags.includes(n.tag)) {
+                  currentLiveNodeTags.set(n.fp, n.tag)
+                }
+              }
+              liveConfigHasProxyNodes = currentLiveNodeTags.size > 0
+              log.info(`Xray 第一阶段 ado 注入: added=${addResult.addedTags.length}/${nodesToAdd.length}, liveNodes=${currentLiveNodeTags.size}`)
+            } catch (error) {
+              log.warn(`Xray 第一阶段 ado 注入失败: ${error.message}`)
+            }
+          }
+        }
       }
 
       // 4. Inject rules and reload server.
@@ -3597,6 +3428,8 @@ const Plugin = function (context) {
             failedBatchCount: 0,
             availableNodeCount: 0,
             removedNodeCount: 0,
+            explicitFailureCount: 0,
+            partialCoverageCount: 0,
             nextRefreshAt: xrayCache.formatLocalTimestamp(new Date(Date.now() + nextDelay)),
             subscriptions: xrayCache.readSubscriptionAvailabilitySummary(cachePath).filter(subscription => subscription.configured),
           },
@@ -3621,7 +3454,7 @@ const Plugin = function (context) {
         binPath,
         cfg,
         xrayDir,
-        probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
+        probeUrl: cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl,
         probeSamples: getCacheRefreshProbeSamples(cfg),
       })
       registerTransientProbeController(persistentController)
@@ -3735,7 +3568,7 @@ const Plugin = function (context) {
             batchNodes: candidateNodes,
             timeoutMs: 0,
             probeSamples: getCacheRefreshProbeSamples(cfg),
-            probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
+            probeUrl: cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl,
             persistentController,
           })
 
@@ -3805,6 +3638,60 @@ const Plugin = function (context) {
           }
 
           log.info(`Xray 缓存周期探测批次已写回: ${batchIndex}, available=${batchWritePlan.availableCount}, explicitFailed=${batchWritePlan.explicitFailureCount}, removed=${batchWritePlan.removedCount}, partialCoverage=${batchWritePlan.partialCoverageCount}, progress=${processedCount}/${totalDueCandidateCount} -> ${cachePath}`)
+
+          // Inject available nodes from this batch via ado/rmo (no config.json rewrite, no restart)
+          if (batchWritePlan.availableCount > 0 && currentLiveApiPort && currentBinPath) {
+            const availableEntries = batchWritePlan.updatedEntries.filter(
+              e => Number.isFinite(e.delay) && e.delay > 0 && parser.isParsedNodeValid(e.node)
+            )
+            const nodesToAdd = []
+            for (const entry of availableEntries) {
+              const fp = xrayCache.fingerprintNode(entry.node)
+              if (fp && !currentLiveNodeTags.has(fp)) {
+                const tag = `proxy_${nextProxyTagIndex++}`
+                const outbound = parser.sanitizeNodeForCurrentXray(JSON.parse(JSON.stringify(entry.node)))
+                outbound.tag = tag
+                nodesToAdd.push({ node: entry.node, tag, fp, outbound })
+              }
+            }
+            if (nodesToAdd.length > 0) {
+              try {
+                const addResult = await xrayApi.addOutbounds(currentBinPath, currentLiveApiPort, nodesToAdd.map(n => n.outbound))
+                for (const n of nodesToAdd) {
+                  if (addResult.addedTags.includes(n.tag)) {
+                    currentLiveNodeTags.set(n.fp, n.tag)
+                  }
+                }
+                liveConfigHasProxyNodes = currentLiveNodeTags.size > 0
+                // rmo over-limit nodes (FIFO: remove oldest inserted)
+                const nodeLimit = normalizePositiveInt(cfg.startupNodeLimit, pluginConfig.startupNodeLimit)
+                const allEntries = [...currentLiveNodeTags.entries()]
+                const excess = Math.max(0, allEntries.length - nodeLimit)
+                const toRemove = allEntries.slice(0, excess)
+                if (toRemove.length > 0) {
+                  const tagsToRemove = toRemove.map(([fp, tag]) => tag)
+                  // Release sticky lock if the locked node is being removed
+                  if (stickyTag && tagsToRemove.includes(stickyTag)) {
+                    await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
+                    if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
+                    stickyTag = null
+                  }
+                  try {
+                    await xrayApi.removeOutbounds(currentBinPath, currentLiveApiPort, tagsToRemove)
+                    // Only delete from Map after rmo succeeds (keep consistency)
+                    for (const [fp, tag] of toRemove) {
+                      currentLiveNodeTags.delete(fp)
+                    }
+                  } catch (rmoError) {
+                    log.warn(`Xray Stage3 批次 ${batchIndex} rmo 失败: ${rmoError.message}`)
+                  }
+                }
+                log.info(`Xray Stage3 批次 ${batchIndex} 注入: added=${addResult.addedTags.length}/${nodesToAdd.length}, rmo=${toRemove.length}, liveNodes=${currentLiveNodeTags.size}`)
+              } catch (injectError) {
+                log.warn(`Xray Stage3 批次 ${batchIndex} 注入失败: ${injectError.message}`)
+              }
+            }
+          }
 
           // Update probed_node_ids after each batch so that a restart during
           // a long Stage3 round still has the latest probed nodes for Stage1

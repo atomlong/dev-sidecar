@@ -7,8 +7,13 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **修复 Xray 主进程 stop() 不等 close 事件导致重启时端口冲突** (fork). `packages/core/src/modules/plugin/xray/process.js` 的 `stop()` 调用 `child.kill()`(SIGTERM)后立即 `child = null` 返回，不等 `close` 事件。`systemctl restart` 时主进程在旧 xray 释放端口 10801 前就退出，新实例启动报"端口 10801 被占用 (Strict Mode)"。更严重的是 xray 被移到隔离 cgroup(`dev-sidecar-xray-probe.scope`)，systemd `KillMode=control-group` 杀不到它，旧 xray 成孤儿进程持续占端口。修复：`stop()` 改为 `await` 等 `close` 事件(3 秒超时 SIGKILL 兜底)，确保进程退出、端口释放后才返回。
 - **修复 Xray bootstrap probe 全失败时复用旧节点** (fork). `packages/core/src/modules/plugin/xray/index.js` 在 bootstrap probe 返回 0 个可用节点时，旧逻辑有两层 fallback：(1) 复用上次 `config.json` 的节点，(2) 复用缓存数据库里 `stable=true` 但未重新 probe 的节点。两者的节点来源都是缓存数据库，既然数据库已确认无可用节点，这些节点大概率也已失效。继续用只会填充 config.json 全是 dead 节点，误导 observatory 反复探测已知失效节点，浪费探测周期。修复：两层 fallback 全部移除，probe 全失败时 config.json 只包含手动预置节点(`cfg.nodes`)，无预置节点则只有 Direct/Block。Stage3 探测出新节点后通过热刷新(API ado/rmo)动态注入 config.json。
+- **修复 Stage3 探测 URL 与 Stage1/observatory 标准不一致** (fork). Stage3 缓存探测用 `probeUrl`（`gstatic.com/generate_204`，宽松，只测 443 连接），但 xray observatory 运行时用 `observatoryProbeUrl`（`chatgpt.com/cdn-cgi/trace`，严格，CF 防护/TLS 握手）。Stage3 用 gstatic.com 筛出的节点送进 observatory 后全标为 dead，balancer 无节点可选，所有流量走 direct。修复：Stage3 探测 URL 改为 `observatoryProbeUrl`，和 Stage1/observatory 统一标准。
+- **修复 xray 异常退出后 currentLiveNodeTags 不一致** (fork). xray 崩溃后 process.js 自动重启用固定模板（无 proxy 节点），但 `currentLiveNodeTags` 仍有旧节点，后续 ado/rmo 基于错误状态操作。修复：process.js 添加 `onUnexpectedExit` 回调，xray 崩溃时清空 `currentLiveNodeTags`、`nextProxyTagIndex`、`liveConfigHasProxyNodes`、sticky 状态。
+- **修复每批次注入 rmo 先删 Map 再调 API 导致不一致** (fork). 每批次注入的 rmo 先从 `currentLiveNodeTags` 删除再调 `removeOutbounds`，API 失败时 Map 和 xray 实际状态不一致。修复：改为先调 API，成功后才删 Map。同时 rmo 前检查 sticky 锁定节点是否被移除，如果是则先 `removeBalancerOverride` 解锁。
 
 ### Changed
+- **config.json 改为固定模板，Stage1/Stage3 用 ado/rmo 动态注入** (fork). `genConfig` 即使无 proxy 节点也总是生成 balancer + 路由规则 + observatory，config.json 成为固定模板（direct/block/balancer/observatory，无 proxy 节点）。dev-sidecar 启动后立即启动 xray（固定模板），Stage1 bootstrap 探测成功后用 `ado` 注入节点（等待 API 就绪）。Stage3 移除冷启动重写 config.json + 重启分支，统一走 ado/rmo 热刷新。config.json 永不修改（固定模板），主 xray 进程不再因 Stage3 而重启。
+- **Stage3 每批次注入节点** (fork). Stage3 每批次探测完成后，立即用 `ado` 注入本批次成功节点到 live xray（不等一轮完成），`rmo` 移除超限节点（FIFO）。更及时注入可用节点，缩短从探测到可用的时间。
 - **移除 `config.json.bak` 备份机制** (fork). `config.json.bak` 原用于 Stage2 读取"上次启动时的节点快照"作为订阅去重比对的来源。随着 Phase 2 热刷新（config.json 不再被 Stage3 同步写回）和 bootstrap 不再 fallback 到旧 config.json 节点，备份已无用途。Stage2 现在直接读 `config.json`。移除了 `backupFileIfExists()` 辅助函数、`liveConfigBakPath` 变量/参数、`config.json.bak` 创建逻辑、`configSourcePath` fallback 逻辑。
 
 ## [v2.2.6] - 2026-08-18
