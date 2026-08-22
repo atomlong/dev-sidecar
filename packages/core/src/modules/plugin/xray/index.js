@@ -935,7 +935,7 @@ function getProbeDir (xrayDir) {
 }
 
 function isProbeTempFileName (fileName) {
-  return /^(config|egress)-.*\.json$/i.test(String(fileName || ''))
+  return /^(config|egress|persistent)-.*\.json$/i.test(String(fileName || ''))
 }
 
 function cleanupProbeArtifacts (xrayDir) {
