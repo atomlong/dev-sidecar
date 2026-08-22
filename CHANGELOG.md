@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - **修复 xray 异常退出后 currentLiveNodeTags 不一致** (fork). xray 崩溃后 process.js 自动重启用固定模板（无 proxy 节点），但 `currentLiveNodeTags` 仍有旧节点，后续 ado/rmo 基于错误状态操作。修复：process.js 添加 `onUnexpectedExit` 回调，xray 崩溃时清空 `currentLiveNodeTags`、`nextProxyTagIndex`、`liveConfigHasProxyNodes`、sticky 状态。
 - **修复每批次注入 rmo 先删 Map 再调 API 导致不一致** (fork). 每批次注入的 rmo 先从 `currentLiveNodeTags` 删除再调 `removeOutbounds`，API 失败时 Map 和 xray 实际状态不一致。修复：改为先调 API，成功后才删 Map。同时 rmo 前检查 sticky 锁定节点是否被移除，如果是则先 `removeBalancerOverride` 解锁。
 - **修复每批次注入 rmo 移除策略不合理** (fork). 旧逻辑用 FIFO（移除最早插入的节点），不适用于 xray 节点选择场景——节点质量（延时/可用性）才是关键，而非插入顺序。修复：rmo 改为查询缓存中各节点的 `delay`/`failureStreak`，优先移除失效节点（delay≤0 或 failureStreak≥3），不够再按延时降序移除健康节点（移除延时最高的，保留延时最低的）。缓存查询失败时跳过 rmo（不盲目移除），等下一批次重试。
+- **修复 `persistent-*.json` 探测临时文件未清理** (fork). `isProbeTempFileName` 正则只匹配 `config-` 和 `egress-` 前缀，不匹配 `persistent-`，导致常驻探测子进程的 config 文件在 dev-sidecar 重启后不会被 `cleanupStaleProbeArtifacts` 清理，每次重启积累一个文件。修复：正则添加 `persistent-` 前缀。
 
 ### Changed
 - **config.json 改为固定模板，Stage1/Stage3 用 ado/rmo 动态注入** (fork). `genConfig` 即使无 proxy 节点也总是生成 balancer + 路由规则 + observatory，config.json 成为固定模板（direct/block/balancer/observatory，无 proxy 节点）。dev-sidecar 启动后立即启动 xray（固定模板），Stage1 bootstrap 探测成功后用 `ado` 注入节点（等待 API 就绪）。Stage3 移除冷启动重写 config.json + 重启分支，统一走 ado/rmo 热刷新。config.json 永不修改（固定模板），主 xray 进程不再因 Stage3 而重启。
