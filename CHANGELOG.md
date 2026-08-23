@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.2.8] - Unreleased
+
+### Changed
+- **WebUI 重构：合并探测页 + 局部刷新 + 国家 emoji** (fork). `packages/gui/extra/webui/index.html` 重写：合并"Xray 节点"和"探测状态"为"探测"页（Stage1/Stage2/Stage3 三卡片），去掉"上轮汇总"。Stage1 卡片显示主 xray 进程状态/当前选中节点（含国家 emoji）/出站节点数，右下角放 Balancer 锁定/解锁控件 + 时长下拉（锁定时禁用），完整 20 节点详情表可折叠展开（列排序）。Stage2 卡片显示开关/间隔/下一轮预计时间/上轮耗时/上轮抓取数。Stage3 卡片显示开关/轮次/批次进度/节点进度/耗时/下一轮时间/本轮可用/本轮失败。仪表盘新增版本号卡（`GET /api/version`，含 dev-sidecar + Xray core + Node.js 三版本），端口卡补充 31180 HTTP 代理，去掉"重启服务"按钮。日志页加手动刷新按钮 + 自动刷新切换 + 间隔下拉（2s/5s/10s/30s）。所有面板改局部刷新（`textContent` 更新，不重建 DOM），避免 10s 自动刷新时界面抖动。缓存/配置页骨架优先渲染（固定卡片布局立即显示 + `-` 占位 + "加载中..." tbody，API 返回后局部填充）。国家字段用 `String.fromCodePoint` 算法生成 emoji 国旗（ISO 2 字母代码），内联 `TwemojiCountryFlags.woff2` 字体（base64 data URL）解决 Linux Chromium 不渲染国旗 emoji 问题。导航精简为 5 项（仪表盘/探测/缓存/日志/配置）。
+- **Stage1 bootstrap 后立即临时锁定出口节点** (fork). 解决"启动后 5 分钟内无可用出口"问题（observatory `probeInterval=300s`，第一次探完前 balancer 无延时数据无法 leastPing 选节点）。Stage1 ado 注入完成后立即调用 `overrideBalancer` 锁定延时最低的节点，sticky 状态通过 `setTimeout(probeInterval * 1000)` 自动到期后 `removeBalancerOverride` 解锁，让 observatory 的 leastPing 策略接管。手动解锁会 `clearTimeout` 取消自动解锁 timer，与定时器互斥无竞态。
+- **WebUI Xray 节点字段提取规则** (fork). 从 `_TypedMessage_`（带尾部下划线）提取协议，从 `proxySettings.server`（trojan）或 `proxySettings.vnext`（vless）提取地址，从 `streamSettings.protocolName` 提取传输协议，从 `securitySettings[0].serverName` 提取 SNI，从 `metricsRes.observatory`（不是 `observation`）提取延时和存活。
+- **WebUI Balancer 改为解析式展示** (fork). 不再展示 YAML 原文，解析出当前选中节点 tag 显示；锁定/解锁按钮 + 时长下拉框（5min/10min/30min/1h/24h/永久）右侧布局。
+- **WebUI 延时显示单位** (fork). 延时直接显示毫秒（不除以 1e6）。
+- **远程配置未启用时不删除已有文件** (fork). `packages/core/src/config-api.js` 的 `downloadRemoteConfig` / `doDownloadRemoteConfig` 原逻辑在远程配置未启用或 URL 为空时调用 `deleteRemoteConfigFile` 删除本地文件。用户可能手动放置了 `remote_config_personal.json5`，不应被空 URL 删除。改为只跳过下载，不删除已有文件。
+- **config.update 用 mergeWith 替代 merge 避免数组合并** (fork). `packages/core/src/config-api.js` 的 `update(partConfig)` 原用 `lodash.merge` 合并配置，对数组字段（如 `plugin.xray.rules`）会按索引合并而非整体替换，导致用户想替换整个数组时旧元素残留。改为 `lodash.mergeWith` + customizer，对源端数组返回 `srcValue`（整体替换），同时 `cloneDeep` 目标避免污染原配置。
+
+### Added
+- **WebUI 监控面板** (fork). 新增 `packages/gui/extra/webui/index.html` 单页面 Web UI（端口 31182），用于无显示器服务器场景的 dev-sidecar 状态监控。面板包含：Dashboard（Xray/系统代理/服务器/Stage 状态概览）、Xray 节点（协议/地址/端口/SNI/传输/延时/存活状态 + 列排序）、缓存（统计卡片 + 已探测节点详情 + 国家分布 + 最优节点 + 订阅源）、Stage（探测进度/批次/候选数）、日志（tail 实时滚动）、配置（只读视图）、Balancer（解析式展示当前选中节点 + sticky 锁定/解锁下拉时长 5min/10min/30min/1h/24h/永久）。骨架优先渲染（`render(null)` 占位 → API 返回后填充），避免加载闪烁。每 10 秒自动刷新当前激活面板。
+- **`/api/xray/nodes` 节点列表 API** (fork). `packages/core/src/modules/plugin/webui/routes.js` 新增节点列表接口，调用 `xray api lso`（ListOutbounds）获取 live xray 进程的 outbound 列表，JSON.parse 后过滤 direct/block/metrics 节点，提取 protocol/address/port/SNI/transport 字段；合并 observatory metrics 数据（从 `/debug/vars` 拉取）展示延时和存活状态。
+- **`/api/xray/cache/nodes` 分页节点接口** (fork). 新增缓存节点分页接口（`page`/`pageSize`/`sort` 参数），`sort=smart` 时按延时升序 + 失效节点置底。
+- **`/api/xray/cache/stats` 缓存统计接口** (fork). 返回 `{ totalNodes, dbSizeBytes, countryDistribution }`，新增 `packages/core/src/modules/plugin/xray/cache.js` 的 `readCountryDistribution(cacheFilePath, limit)` SQL `GROUP BY country` 聚合国家分布。
+- **`/api/xray/probed-stats` 已探测节点统计接口** (fork). 读取 `probed-node-stats.json`，返回 `{ totalProbed, countryDistribution, nodes }`。
+- **`/api/xray/balancer` 返回 sticky 状态** (fork). balancer 接口返回 `{ balancer, xrayEnabled, sticky }`，sticky 来自 `getStickyStatus()`（比解析 balancer 文本更可靠）。
+- **`/api/xray/sticky` POST/DELETE 锁定/解锁接口** (fork). POST `duration` 参数（秒），0 表示永久（10 年）；DELETE 手动解锁，会 `clearTimeout` 取消自动解锁 timer，避免重复触发。
+- **`getStageStatus` 扩展 Stage1/2/3 字段** (fork). `packages/core/src/modules/plugin/xray/index.js` 的 `getStageStatus()` 从 6 个字段扩展为结构化输出：`stage1`（processStarted/livePort/apiPort/metricsPort/liveNodes/currentSelectTag）、`stage2`（enabled/intervalHours/lastSyncAt/lastSyncDurationMs/lastSyncFetchedCount/nextSyncAt/nextSyncOverdue）、`stage3`（isRunning/generation/roundStartedAt/nextRefreshAt/totalDue/processed/batchIndex/plannedBatchCount/successBatchCount/availableCount/explicitFailureCount/removedCount）。`nextRefreshAt` 改为真实时间戳（替换原 `Date.now()+1` 占位符）。新增 `getLiveNodeFingerprints()` 方法返回 `tag→fingerprint` 反向映射，供 `/api/xray/nodes` 关联 country，不暴露到 `getStageStatus` 避免响应过大。
+- **Stage2 同步耗时/抓取数持久化** (fork). `packages/core/src/modules/plugin/xray/cache.js` 新增 `setStage2LastSyncStats(cacheFilePath, durationMs, fetchedCount)` 和 `getStage2LastSyncStats(cacheFilePath)`，持久化到 SQLite cache meta（`stage2_last_sync_duration_ms`/`stage2_last_sync_fetched_count`）。`index.js` Stage2 同步开始时记录 `stage2SyncStartedAt`，完成后写入耗时和 `subscriptionNodeCount`。Stage2 下一轮预计时间 = `lastSyncAt + intervalHours*3600*1000`（超过当前时间显示"待触发"，因 Stage2 在 Stage3 轮末按需触发，非定时调度）。
+- **Stage3 轮次计时暴露** (fork). `index.js` 新增外层变量 `stage3RoundStartedAt`/`stage3NextRefreshAt`/`stage3Progress`，在 `refreshCacheFromCacheOnly` 入口、批次成功、轮次结束 3 个 `nextDelay` 计算点更新。WebUI 实时显示本轮耗时和下一轮触发时间。
+- **`/api/xray/nodes` 关联 country/exitIp** (fork). `routes.js` 的 `/api/xray/nodes` 路由调 `getLiveNodeFingerprints()` 拿 `tag→fingerprint`，再用 `readCacheEntriesByFingerprints` 查缓存，返回 `nodeMetadata: {tag: {country, exitIp, owner}}`，前端展示节点所属国家。
+
+### Fixed
+- **恢复 Stage1 bootstrap 探测** (fork). v2.2.7 commit 92601af3 误删了 Stage1 bootstrap 探测逻辑（`readCacheEntriesForStartup` → `probeNodesBatch` → `annotateProbeEntries` → 按 delay/country/owner 过滤 → 排序 → 切片 `startupNodeLimit`），导致启动后无节点注入。已重新实现：bootstrap 探测成功后通过 `ado` 注入 `startupNodeLimit` 个节点（默认 20）到 live xray 进程。
+- **修复 `refreshCacheFromCacheOnly` 未设置 `isStageRunning`** (fork). `refreshCacheFromCacheOnly` 函数入口未设置 `isStageRunning = true`，导致 Stage3 运行时 Dashboard 显示"空闲"。修复：入口处设 `true`，`finally` 块设 `false`。
+- **修复 WebUI Xray 面板 enabled 读取错误** (fork). 前端从 `stage/status` 读取 `enabled` 字段（不存在），导致 Xray 状态显示"关"。修复：改为从 `status.plugin.xray.enabled` 读取，支持 3 态显示（关/启动中/开）。
+- **修复 `xray lso` 返回 JSON 字符串未解析** (fork). `/api/xray/nodes` 接口直接 `JSON.stringify` 了 `xray lso` 的 stdout 字符串，前端 `nodes.map is not a function` 报错。修复：后端 `JSON.parse` 后取 `outbounds` 数组。
+- **修复 `bootstrapSelectedEntries` 变量作用域** (fork). 变量声明在 `if` 块内部，ado 注入块访问时报 `ReferenceError: bootstrapSelectedEntries is not defined`。修复：将声明提到外层作用域（与 `startupNodes` 同级）。
+- **修复 `www-authenticate` 响应头被错误拆分导致 `docker buildx imagetools inspect` 失败** (fork). `packages/mitmproxy/src/lib/proxy/mitmproxy/createRequestHandler.js` 用 `split(',')` 拆分 `www-authenticate` 头，无法区分"多个 challenge 之间的逗号"与"单个 Bearer challenge 内 auth-param 参数分隔逗号"。Docker registry 返回的单个 Bearer challenge（`Bearer realm="...",service="...",scope="..."`）被错误拆成多段，导致 `docker buildx imagetools inspect` 的 Go HTTP 客户端无法解析完整 challenge，OAuth token 获取流程中断，报 `unexpected status from HEAD request: 401 Unauthorized`。修复：移除 `split(',')`，保留字符串原值传给 `res.setHeader()`——单行含逗号分隔的多 challenge 符合 RFC 7235，HTTP/1 与 HTTP/2 模块均能正确处理字符串头值。
+- **修复 MITM 叶子证书缺有效 Authority Key Identifier 导致 OpenSSL 3.2+ 验证失败** (fork). `packages/mitmproxy/src/lib/proxy/tls/tlsUtils.js` 的 `createFakeCertificateByDomain` / `createFakeCertificateByCA` 用 `{ name: 'authorityKeyIdentifier' }` 不给 `keyIdentifier` 值，node-forge 1.4.0 据此序列化出空 AKI（OID 存在但无 keyIdentifier）。OpenSSL 3.2+ 严格校验器判为 `Missing Authority Key Identifier` 并拒签，经 dev-sidecar 访问任何被 MITM 的 HTTPS 站点都报 `SSLCertVerificationError`；OpenSSL 3.0 宽松故长期被掩盖。修复：改为 `{ name: 'authorityKeyIdentifier', keyIdentifier: caCert.generateSubjectKeyIdentifier().getBytes() }`，叶子 AKI 指向 issuer CA 的 SKI。仅改叶子签发，CA 证书不变，客户端无需重新信任；叶子证书纯内存 LRU 缓存，重启即用新逻辑重签。
+
 ## [v2.2.7] - 2026-08-21
 
 ### Fixed

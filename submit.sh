@@ -48,6 +48,7 @@ PRIVATE_PATTERNS=(
     "^submit\.sh"
     "^doc/xray-stage3-persistent-probe"
     "^doc/xray-devops\.md"
+    "^doc/webui-refactor-plan\.md"
 )
 
 # Construct Regex from list

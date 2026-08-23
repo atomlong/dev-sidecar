@@ -1278,7 +1278,7 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
           console.error = () => {}
           console.warn = () => {}
           try {
-            let parsedChunkCount = 0
+            let parsedChunk_count = 0
             const streamingReadable = countReadableBytes(activeReadable, async (bytes) => {
               if (!shouldLogDetail && shouldLogLargeSubscriptionDetail({ bytes })) {
                 await logLargeSubscriptionBeforeParse(bytes, 'stream-bytes-threshold')
@@ -2188,6 +2188,14 @@ const Plugin = function (context) {
   let nextProxyTagIndex = 0
   let stickyTimer = null
   let stickyTag = null
+  // Stage3 round timing — exposed via getStageStatus for WebUI
+  let stage3RoundStartedAt = 0  // ms timestamp of current/last Stage3 round start
+  let stage3NextRefreshAt = 0   // ms timestamp of next scheduled Stage3 round
+  // Stage3 progress snapshot — updated during refreshCacheFromCacheOnly for WebUI
+  let stage3Progress = {
+    totalDue: 0, processed: 0, batchIndex: 0, plannedBatchCount: 0,
+    successBatchCount: 0, availableCount: 0, explicitFailureCount: 0, removedCount: 0,
+  }
   let stickyOpChain = Promise.resolve()
 
   function registerTransientProbeController (controller) {
@@ -2783,6 +2791,7 @@ const Plugin = function (context) {
       // last selected node set.
       const startupSelectEnabled = isStartupSelectEnabled(cfg)
       let startupNodes = []
+      let bootstrapSelectedEntries = []
       let reusedLiveConfig = false
       let liveApiPort = 0
       let liveMetricsPort = 0
@@ -2804,10 +2813,69 @@ const Plugin = function (context) {
       }
 
       if (!reusedLiveConfig) {
-        // 如果 cache probe 全失败，不复用上次 config.json 的旧节点。
-        // 旧 config.json 的节点来源也是缓存数据库，既然数据库已无可用节点，
-        // 旧节点大概率也已失效，继续用只会误导 observatory 标记为 dead。
-        // 仅保留手动预置节点（cfg.nodes）作为兜底。
+        // Stage1 bootstrap: read probed candidates from cache, burst-probe them,
+        // select the best ones to inject via ado after xray starts.
+        if (startupSelectEnabled) {
+          const bootstrapCandidateLimit = getBootstrapCandidateLimit(cfg)
+          const bootstrapCandidateQuery = buildCacheEntryQueryOptions({
+            allowedCountries,
+            allowedOwners,
+            limit: bootstrapCandidateLimit,
+            probedOnly: true,
+          })
+          // Drop file cache before SQLite read to avoid cgroup peak
+          if (process.platform === 'linux') {
+            xrayCache.dropSqliteFileCache(cachePath)
+            xrayCache.reclaimCgroupMemory(150 * 1024 * 1024)
+          }
+          const bootstrapCandidateEntries = xrayCache.readCacheEntriesForStartup(cachePath, bootstrapCandidateQuery)
+          const bootstrapCandidates = bootstrapCandidateEntries
+            .filter(entry => parser.isParsedNodeValid(entry.node))
+            .map(entry => entry.node)
+          xrayCache.dropSqliteFileCache(cachePath)
+
+          log.info(`Xray 启动预检查: source=nodes-cache, bootstrapCandidates=${bootstrapCandidateEntries.length}, supported=${bootstrapCandidates.length}`)
+
+          let bootstrapSelectedEntriesLocal = []
+          if (bootstrapCandidates.length > 0) {
+            try {
+              const bootstrapProbeResult = await probeNodesBatch({
+                binPath,
+                cfg,
+                xrayDir,
+                batchNodes: bootstrapCandidates,
+                timeoutMs: 0,
+                probeSamples: getBootstrapProbeSamples(cfg),
+                probeUrl: cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl,
+              })
+              const annotatedBootstrapEntries = await annotateProbeEntries(bootstrapProbeResult.entries, {
+                binPath,
+                xrayDir,
+                existingEntries: bootstrapCandidateEntries,
+                log,
+                useEgressMetadata: false,
+              })
+              const bootstrapByDelay = maxDelayMs > 0
+                ? annotatedBootstrapEntries.filter(entry => Number.isFinite(entry.delay) && entry.delay <= maxDelayMs)
+                : annotatedBootstrapEntries
+              const bootstrapByCountry = await filterEntriesByCountries(bootstrapByDelay, allowedCountries)
+              const bootstrapByOwner = await filterEntriesByOwners(bootstrapByCountry, allowedOwners)
+              bootstrapSelectedEntriesLocal = xrayCache.sortCacheEntries(bootstrapByOwner).slice(0, startupNodeLimit)
+              log.info(`Xray 启动前快速复检: tested=${bootstrapCandidates.length}, available=${annotatedBootstrapEntries.length}, selected=${bootstrapSelectedEntries.length}`)
+            } catch (error) {
+              log.warn('Xray 启动前快速复检失败:', error)
+            }
+          }
+
+          bootstrapSelectedEntries = bootstrapSelectedEntriesLocal
+          const startupNodeCandidates = []
+          appendItems(startupNodeCandidates, bootstrapSelectedEntries.map(entry => entry.node))
+          startupNodes = xrayCache.deduplicateNodes(startupNodeCandidates).slice(0, startupNodeLimit)
+          log.info(`Xray 启动节点候选: bootstrapSelected=${bootstrapSelectedEntries.length}, startupSelected=${startupNodes.length}`)
+          if (startupNodes.length === 0) {
+            log.warn('Xray 警告: 未找到任何可用节点，将只启用 Direct/Block')
+          }
+        }
 
         // Prepend manual nodes from cfg.nodes — these are user-specified nodes
         // that must always be included in the live config, bypassing the
@@ -2906,6 +2974,33 @@ const Plugin = function (context) {
               }
               liveConfigHasProxyNodes = currentLiveNodeTags.size > 0
               log.info(`Xray 第一阶段 ado 注入: added=${addResult.addedTags.length}/${nodesToAdd.length}, liveNodes=${currentLiveNodeTags.size}`)
+
+              // Immediately override balancer to the lowest-delay node so traffic
+              // can flow without waiting for observatory's first probe cycle (probeInterval=300s).
+              // The override auto-expires after probeInterval seconds, at which point
+              // observatory has probed all nodes and leastPing strategy takes over.
+              if (currentLiveNodeTags.size > 0 && bootstrapSelectedEntries.length > 0) {
+                const bestEntry = bootstrapSelectedEntries[0]
+                const bestFp = xrayCache.fingerprintNode(bestEntry.node)
+                const bestTag = bestFp ? currentLiveNodeTags.get(bestFp) : null
+                if (bestTag) {
+                  const probeIntervalSec = normalizePositiveInt(cfg.probeInterval, pluginConfig.probeInterval) || 300
+                  try {
+                    await xrayApi.overrideBalancer(currentBinPath, currentLiveApiPort, 'balancer-proxy', bestTag)
+                    stickyTag = bestTag
+                    // Auto-unlock after one probe cycle so leastPing can take over
+                    stickyTimer = setTimeout(() => {
+                      stickyTag = null
+                      stickyTimer = null
+                      xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
+                      log.info(`Xray 第一阶段临时锁定已自动解除: tag=${bestTag}`)
+                    }, probeIntervalSec * 1000)
+                    log.info(`Xray 第一阶段已临时锁定出口节点: tag=${bestTag}, delay=${bestEntry.delay}ms, ${probeIntervalSec}s 后自动解锁`)
+                  } catch (e) {
+                    log.warn(`Xray 第一阶段锁定出口节点失败: ${e.message}`)
+                  }
+                }
+              }
             } catch (error) {
               log.warn(`Xray 第一阶段 ado 注入失败: ${error.message}`)
             }
@@ -3055,6 +3150,39 @@ const Plugin = function (context) {
 
     async disableSticky () {
       return stickyOpChain.then(async () => {
+        if (!currentLiveApiPort || !currentBinPath) {
+          throw new Error('Xray API 不可用，无法解锁')
+        }
+
+        // Refuse unlock if observatory has no alive nodes. This happens during
+        // the first probeInterval after startup (observatory's first probe cycle
+        // doesn't start until probeInterval elapses). Removing the override now
+        // would leave balancer's leastPing with no data → no selection → traffic drops.
+        if (currentLiveMetricsPort) {
+          let aliveCount = -1
+          try {
+            aliveCount = await new Promise((resolve) => {
+              const req = http.get(`http://127.0.0.1:${currentLiveMetricsPort}/debug/vars`, (res) => {
+                let data = ''
+                res.on('data', (c) => { data += c })
+                res.on('end', () => {
+                  try {
+                    const m = JSON.parse(data)
+                    const obs = (m && (m.observatory || m.burstObservatory || m.Observatory || m.BurstObservatory)) || {}
+                    resolve(Object.values(obs).filter(s => s && s.alive).length)
+                  } catch { resolve(-1) }
+                })
+              })
+              req.setTimeout(3000, () => { req.destroy(new Error('timeout')); resolve(-1) })
+              req.on('error', () => resolve(-1))
+            })
+          } catch { aliveCount = -1 }
+          if (aliveCount === 0) {
+            const waitSec = pluginConfig.probeInterval || 300
+            throw new Error(`observatory 还在首次探测中，balancer 暂无可用节点数据。请等待探测完成（最多 ${waitSec} 秒）后再解锁，否则 balancer 将无节点可选。`)
+          }
+        }
+
         if (stickyTimer) {
           clearTimeout(stickyTimer)
           stickyTimer = null
@@ -3168,9 +3296,11 @@ const Plugin = function (context) {
       totalAddedCount += initialSyncStats.addedCount
       totalCountryReadyCount += initialSyncStats.countryReadyCount
 
+      let stage2SyncStartedAt = 0
       if (shouldSkipSubscriptionFetch) {
         log.info(`Xray 订阅抓取已跳过: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
       } else {
+        stage2SyncStartedAt = Date.now()
         const initialStage2SeenNodeKeys = collectUniqueNodeKeys(localCandidateNodes)
         if (!xrayCache.resetStage2SeenNodeKeys(cachePath, initialStage2SeenNodeKeys)) {
           throw new Error('Xray stage2 seen-node initialization failed')
@@ -3255,6 +3385,10 @@ const Plugin = function (context) {
       const subscriptionFetchMode = shouldSkipSubscriptionFetch ? 'skipped' : 'loaded'
       if (subscriptionFetchMode === 'loaded') {
         xrayCache.setStage2LastRemoteFetchAt(cachePath)
+        // Persist sync duration + fetched count for WebUI Stage2 status display
+        if (stage2SyncStartedAt > 0) {
+          xrayCache.setStage2LastSyncStats(cachePath, Date.now() - stage2SyncStartedAt, subscriptionNodeCount)
+        }
       }
       const effectiveCacheLabel = subscriptionSyncDecision.effectiveCacheCount == null ? 'n/a' : subscriptionSyncDecision.effectiveCacheCount
 
@@ -3331,14 +3465,15 @@ const Plugin = function (context) {
       }
 
       if (isStageRunning) {
-        log.info('Xray 缓存周期探测: Stage2 正在运行，跳过本轮 Stage3')
+        log.info('Xray 缓存周期探测: Stage 正在运行，跳过本轮 Stage3')
         const nextDelay = getCacheRefreshIntervalSeconds(cfg) * 1000
         scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
         return
       }
 
-      // Stage3 cache maintenance (migration/retire/compact/reclaim) has been
-      // removed from the per-round entry path. The database schema is still
+      isStageRunning = true
+        // Stage3 cache maintenance (migration/retire/compact/reclaim) has been
+        // removed from the per-round entry path. The database schema is still
       // checked and migrated automatically inside openSqliteCache() on every
       // open, so removing the explicit migration call is safe — it only
       // removes the redundant batch migration that was already complete
@@ -3349,6 +3484,7 @@ const Plugin = function (context) {
 
       const generation = ++refreshGeneration
       const roundStartedAt = Date.now()
+      stage3RoundStartedAt = roundStartedAt
       const cacheRefreshInterval = getCacheRefreshIntervalSeconds(cfg) * 1000
 
       // 在 countCacheEntries 之前回收：Stage1 启动期间读取配置/缓存已累积
@@ -3410,6 +3546,7 @@ const Plugin = function (context) {
           // non-fatal
         }
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
+        stage3NextRefreshAt = Date.now() + nextDelay
         writeStage3RoundSummary({
           xrayDir,
           summary: {
@@ -3489,6 +3626,12 @@ const Plugin = function (context) {
       let processedCount = 0
       let lastScannedRowId = 0
       const roundAvailableNodeKeys = new Set()
+      // Initialize WebUI progress snapshot with planned totals
+      stage3Progress = {
+        totalDue: totalDueCandidateCount, processed: 0, batchIndex: 0,
+        plannedBatchCount, successBatchCount: 0, availableCount: 0,
+        explicitFailureCount: 0, removedCount: 0,
+      }
 
       while (processedCount < totalDueCandidateCount) {
         if (generation !== refreshGeneration) {
@@ -3630,6 +3773,12 @@ const Plugin = function (context) {
           availableCount += batchWritePlan.availableCount
           removedCount += batchWritePlan.removedCount
           explicitFailureCount += batchWritePlan.explicitFailureCount
+          // Update WebUI progress snapshot after each successful batch
+          stage3Progress = {
+            totalDue: totalDueCandidateCount, processed: processedCount,
+            batchIndex, plannedBatchCount, successBatchCount,
+            availableCount, explicitFailureCount, removedCount,
+          }
           partialCoverageCount += batchWritePlan.partialCoverageCount
           for (const nodeKey of batchWritePlan.availableNodeKeys) {
             if (nodeKey) {
@@ -3819,6 +3968,7 @@ const Plugin = function (context) {
       if (successBatchCount === 0) {
         log.warn('Xray 缓存周期探测: 所有批次都失败，保留原缓存')
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
+        stage3NextRefreshAt = Date.now() + nextDelay
         const nextRefreshAt = xrayCache.formatLocalTimestamp(new Date(Date.now() + nextDelay))
         writeStage3RoundSummary({
           xrayDir,
@@ -3841,7 +3991,13 @@ const Plugin = function (context) {
             explicitFailureCount,
             partialCoverageCount,
             nextRefreshAt,
-            subscriptions: xrayCache.readSubscriptionAvailabilitySummary(cachePath).filter(subscription => subscription.configured),
+            subscriptions: xrayCache.readSubscriptionAvailabilitySummary(cachePath).filter(subscription => subscription.configured)
+              .sort((left, right) => {
+                if (left.availableNodeCount !== right.availableNodeCount) {
+                  return right.availableNodeCount - left.availableNodeCount
+                }
+                return left.sortOrder - right.sortOrder
+              }),
           },
         })
         scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
@@ -3883,6 +4039,7 @@ const Plugin = function (context) {
         }
 
         const nextDelay = resolveNextCacheRefreshDelay(roundStartedAt, cacheRefreshInterval)
+        stage3NextRefreshAt = Date.now() + nextDelay
         const nextRefreshAt = xrayCache.formatLocalTimestamp(new Date(Date.now() + nextDelay))
         const summaryPath = writeStage3RoundSummary({
           xrayDir,
@@ -3964,6 +4121,7 @@ const Plugin = function (context) {
         })
       }
       } finally {
+        isStageRunning = false
         await stopEgressProbe()
         await stopPersistentProbe()
       }
@@ -4009,6 +4167,84 @@ const Plugin = function (context) {
         }
       }
       injectedRules.length = 0
+    },
+
+    getStageStatus () {
+      const cfg = globalConfig.get().plugin?.xray || {}
+      const cachePath = currentXrayDir ? path.join(currentXrayDir, 'nodes_cache.sqlite') : ''
+
+      // Stage2 metadata
+      let stage2 = null
+      if (cachePath) {
+        try {
+          const lastFetchAt = xrayCache.getStage2LastRemoteFetchAt(cachePath)
+          const syncStats = xrayCache.getStage2LastSyncStats(cachePath)
+          const intervalHours = getSubscriptionSyncIntervalHours(cfg)
+          const intervalMs = intervalHours * 3600 * 1000
+          const lastFetchMs = lastFetchAt > 0 ? lastFetchAt * 1000 : 0
+          // Estimated next sync: last fetch + interval. Stage2 triggers at Stage3
+          // round end when this time has elapsed, so it's an estimate, not exact.
+          const nextSyncAt = lastFetchMs > 0 ? lastFetchMs + intervalMs : 0
+          stage2 = {
+            enabled: isSubscriptionSyncEnabled(cfg),
+            intervalHours,
+            lastSyncAt: lastFetchMs,
+            lastSyncDurationMs: syncStats.durationMs,
+            lastSyncFetchedCount: syncStats.fetchedCount,
+            nextSyncAt,
+            nextSyncOverdue: nextSyncAt > 0 && Date.now() > nextSyncAt,
+          }
+        } catch { /* cache not available */ }
+      }
+
+      return {
+        // Legacy fields (kept for backward compat)
+        isStageRunning,
+        refreshGeneration,
+        liveNodes: currentLiveNodeTags.size,
+        livePort: currentLivePort,
+        apiPort: currentLiveApiPort,
+        metricsPort: currentLiveMetricsPort,
+        // Real next refresh time (replaces the Date.now()+1 placeholder)
+        nextRefreshAt: stage3NextRefreshAt || null,
+
+        // Stage1: live xray process
+        stage1: {
+          processStarted: currentLivePort > 0,
+          livePort: currentLivePort,
+          apiPort: currentLiveApiPort,
+          metricsPort: currentLiveMetricsPort,
+          liveNodes: currentLiveNodeTags.size,
+          currentSelectTag: stickyTag,
+        },
+
+        // Stage2: subscription sync
+        stage2,
+
+        // Stage3: cache probe round
+        stage3: {
+          isRunning: isStageRunning,
+          generation: refreshGeneration,
+          roundStartedAt: stage3RoundStartedAt,
+          nextRefreshAt: stage3NextRefreshAt,
+          totalDue: stage3Progress.totalDue,
+          processed: stage3Progress.processed,
+          batchIndex: stage3Progress.batchIndex,
+          plannedBatchCount: stage3Progress.plannedBatchCount,
+          successBatchCount: stage3Progress.successBatchCount,
+          availableCount: stage3Progress.availableCount,
+          explicitFailureCount: stage3Progress.explicitFailureCount,
+          removedCount: stage3Progress.removedCount,
+        },
+      }
+    },
+
+    // Reverse map tag -> fingerprint, used by /api/xray/nodes to join country
+    // from cache. Not exposed via getStageStatus to keep that response small.
+    getLiveNodeFingerprints () {
+      return Object.fromEntries(
+        Array.from(currentLiveNodeTags.entries()).map(([fp, tag]) => [tag, fp])
+      )
     },
   }
 

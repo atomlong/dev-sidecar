@@ -406,11 +406,8 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
         const HTTP2_FORBIDDEN = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'http2-settings'])
         Object.keys(proxyRes.headers).forEach((key) => {
           if (proxyRes.headers[key] !== undefined) {
-            // https://github.com/nodejitsu/node-http-proxy/issues/362
+            // 不用 split(',') 拆分：单个 Bearer challenge 的 auth-param 亦以逗号分隔（如 Docker registry 的 realm/service/scope），拆分会破坏 docker buildx imagetools inspect 的 OAuth 流程；多 challenge 合并为单行符合 RFC 7235
             if (WWW_AUTH_HEADER_RE.test(key)) {
-              if (proxyRes.headers[key]) {
-                proxyRes.headers[key] = proxyRes.headers[key] && proxyRes.headers[key].split(',')
-              }
               key = 'www-authenticate'
             }
             if (HTTP2_FORBIDDEN.has(key)) {

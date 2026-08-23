@@ -20,6 +20,8 @@ const SQLITE_WAL_AUTO_CHECKPOINT_PAGES = 4096
 const SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024
 const SQLITE_IN_CLAUSE_CHUNK_SIZE = 500
 const CACHE_META_STAGE2_LAST_REMOTE_FETCH_AT = 'stage2_last_remote_fetch_at'
+const CACHE_META_STAGE2_LAST_SYNC_DURATION_MS = 'stage2_last_sync_duration_ms'
+const CACHE_META_STAGE2_LAST_SYNC_FETCHED_COUNT = 'stage2_last_sync_fetched_count'
 const COMPACT_CACHE_V2_SCHEMA_VERSION = 1
 const COMPACT_CACHE_V2_HASH_BYTES = 16
 
@@ -686,6 +688,58 @@ function getStage2LastRemoteFetchAt (cacheFilePath) {
     return Number.isFinite(value) && value > 0 ? value : 0
   } catch {
     return 0
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
+// Record Stage2 last sync metadata (duration + fetched node count).
+// Called after Stage2 subscription sync completes.
+function setStage2LastSyncStats (cacheFilePath, durationMs, fetchedCount) {
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  if (!fs.existsSync(sqlitePath)) {
+    return false
+  }
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: true })
+    if (!db) {
+      return false
+    }
+    setCacheMetaValue(db, CACHE_META_STAGE2_LAST_SYNC_DURATION_MS, String(Math.max(0, Math.floor(durationMs || 0))))
+    setCacheMetaValue(db, CACHE_META_STAGE2_LAST_SYNC_FETCHED_COUNT, String(Math.max(0, Math.floor(fetchedCount || 0))))
+    return true
+  } catch {
+    return false
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
+// Read Stage2 last sync stats. Returns { durationMs, fetchedCount }.
+function getStage2LastSyncStats (cacheFilePath) {
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  if (!fs.existsSync(sqlitePath)) {
+    return { durationMs: 0, fetchedCount: 0 }
+  }
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath, { lowFileCache: true })
+    if (!db) {
+      return { durationMs: 0, fetchedCount: 0 }
+    }
+    const dur = Number(getCacheMetaValue(db, CACHE_META_STAGE2_LAST_SYNC_DURATION_MS))
+    const cnt = Number(getCacheMetaValue(db, CACHE_META_STAGE2_LAST_SYNC_FETCHED_COUNT))
+    return {
+      durationMs: Number.isFinite(dur) && dur > 0 ? dur : 0,
+      fetchedCount: Number.isFinite(cnt) && cnt > 0 ? cnt : 0,
+    }
+  } catch {
+    return { durationMs: 0, fetchedCount: 0 }
   } finally {
     if (db) {
       db.close()
@@ -2903,6 +2957,41 @@ function countCacheEntries (cacheFilePath, filters = {}) {
   return countSqliteCacheEntries(cacheFilePath, filters)
 }
 
+// Country distribution: aggregate node counts grouped by country.
+// Returns an array of { country, count } sorted by count DESC.
+function readCountryDistribution (cacheFilePath, limit = 100) {
+  const sqlitePath = getSqliteCachePath(cacheFilePath)
+  if (!sqlitePath || !fs.existsSync(sqlitePath)) {
+    return []
+  }
+  let db = null
+  try {
+    db = openSqliteCache(cacheFilePath)
+    if (!db) {
+      return []
+    }
+    if (!hasCompactV2Data(db)) {
+      return []
+    }
+    const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 100
+    const rows = db.prepare(
+      `SELECT country, COUNT(*) AS cnt
+       FROM node_runtime_v2
+       WHERE country IS NOT NULL AND country != ''
+       GROUP BY country
+       ORDER BY cnt DESC
+       LIMIT ?`
+    ).all(safeLimit)
+    return rows.map(r => ({ country: r.country || '', count: Number(r.cnt) || 0 }))
+  } catch {
+    return []
+  } finally {
+    if (db) {
+      db.close()
+    }
+  }
+}
+
 function sortCacheEntries (entries) {
   return [...entries].sort((left, right) => {
     const leftStable = left.stable === true
@@ -3059,6 +3148,7 @@ module.exports = {
   getStage2DiagnosticPaths,
   countCacheEntries,
   readCacheEntries,
+  readCountryDistribution,
   readCacheRowIds: readSqliteCacheRowIds,
   readCacheEntriesByRowIds: readSqliteCacheEntriesByRowIds,
   readCacheEntriesForRefreshByRowIds: readSqliteCacheEntriesForRefreshByRowIds,
@@ -3072,6 +3162,8 @@ module.exports = {
   readCacheEntriesByNodeIds,
   setStage2LastRemoteFetchAt,
   getStage2LastRemoteFetchAt,
+  setStage2LastSyncStats,
+  getStage2LastSyncStats,
   readSubscriptionAvailabilitySummary,
   readCacheNodes,
   buildCacheEntriesFromObservatory,
