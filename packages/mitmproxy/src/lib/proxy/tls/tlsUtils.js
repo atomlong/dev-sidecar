@@ -163,6 +163,7 @@ utils.createFakeCertificateByDomain = async function (caKey, caCert, domain, map
     timeStamping: true,
   }, {
     name: 'authorityKeyIdentifier',
+    keyIdentifier: caCert.generateSubjectKeyIdentifier().getBytes(),
   }])
   cert.sign(caKey, forge.md.sha256.create())
 
@@ -221,6 +222,7 @@ utils.createFakeCertificateByCA = async function (caKey, caCert, originCertifica
     timeStamping: true,
   }, {
     name: 'authorityKeyIdentifier',
+    keyIdentifier: caCert.generateSubjectKeyIdentifier().getBytes(),
   }])
   cert.sign(caKey, forge.md.sha256.create())
 

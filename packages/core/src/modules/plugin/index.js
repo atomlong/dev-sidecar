@@ -4,4 +4,5 @@ module.exports = {
   pip: require('./pip'),
   overwall: require('./overwall'),
   xray: require('./xray'),
+  webui: require('./webui'),
 }

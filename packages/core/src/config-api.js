@@ -35,9 +35,7 @@ const configApi = {
   },
   async downloadRemoteConfig () {
     if (get().app.remoteConfig.enabled !== true) {
-      // 删除保存的远程配置文件
-      configApi.deleteRemoteConfigFile()
-      configApi.deleteRemoteConfigFile('_personal')
+      // 远程配置未启用时不删除已有文件，只跳过下载
       return
     }
 
@@ -47,8 +45,8 @@ const configApi = {
   },
   doDownloadRemoteConfig (remoteConfigUrl, suffix = '') {
     if (!remoteConfigUrl) {
-      // 删除保存的远程配置文件
-      configApi.deleteRemoteConfigFile(suffix)
+      // URL 为空时不删除已有文件，只跳过下载
+      // （用户可能手动放置了 remote_config_personal.json5，不应被空 URL 删除）
       return
     }
 
@@ -239,7 +237,8 @@ const configApi = {
     return configApi.set(userConfig) || {}
   },
   update (partConfig) {
-    const newConfig = lodash.merge(configApi.get(), partConfig)
+    const mergeCustomizer = (objValue, srcValue) => Array.isArray(srcValue) ? srcValue : undefined
+    const newConfig = lodash.mergeWith(lodash.cloneDeep(configApi.get()), partConfig, mergeCustomizer)
     configApi.save(newConfig)
   },
   get,

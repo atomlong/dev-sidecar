@@ -106,6 +106,9 @@ importers:
       winreg:
         specifier: ^1.2.5
         version: 1.2.5
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.0
     devDependencies:
       chai:
         specifier: ^4.5.0
