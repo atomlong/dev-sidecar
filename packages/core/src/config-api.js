@@ -193,6 +193,19 @@ const configApi = {
    * @param newConfig
    */
   save (newConfig) {
+    // Strip Xray plugin's auto-injected intercepts before persisting — they
+    // are runtime state regenerated on every xray start, not user config.
+    const persistConfig = lodash.cloneDeep(newConfig)
+    const intercepts = persistConfig?.server?.intercepts
+    if (intercepts && typeof intercepts === 'object') {
+      for (const domain of Object.keys(intercepts)) {
+        const entry = intercepts[domain]
+        if (entry?.['.*']?.desc === 'Auto-injected by Xray Plugin') {
+          delete intercepts[domain]
+        }
+      }
+    }
+
     // 对比默认config的异同
     const defConfig = configApi.cloneDefault()
 
@@ -207,7 +220,7 @@ const configApi = {
     }
 
     // 计算新配置与默认配置（启用远程配置时，含远程配置）的差异
-    const diffConfig = mergeApi.doDiff(defConfig, newConfig)
+    const diffConfig = mergeApi.doDiff(defConfig, persistConfig)
 
     // 将差异作为用户配置保存到 config.json 中
     const configPath = configLoader.getUserConfigPath()
