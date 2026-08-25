@@ -430,3 +430,87 @@ describe('webui ws module', () => {
     assert.strictEqual(typeof wsModule.createWsServer, 'function')
   })
 })
+
+describe('reInjectXrayRules', () => {
+  const { reInjectXrayRules } = require('../src/modules/plugin/webui/routes')
+
+  function makeSpy () {
+    const calls = { removeRules: 0, injectRules: [] }
+    return {
+      calls,
+      api: {
+        async removeRules () { calls.removeRules++ },
+        async injectRules (rules, port) { calls.injectRules.push({ rules, port }) },
+      },
+    }
+  }
+
+  function makeConfig (xrayOverride, xrayPort) {
+    return {
+      get: () => ({
+        server: { setting: { xrayPort } },
+        plugin: { xray: xrayOverride },
+      }),
+    }
+  }
+
+  it('calls removeRules then injectRules with rules and port when xray enabled', async () => {
+    const { calls, api } = makeSpy()
+    const rules = [{ domain: 'a.com', balancerTag: 'b1' }]
+    const config = makeConfig({ enabled: true, rules }, 10801)
+    await reInjectXrayRules(config, api)
+    assert.strictEqual(calls.removeRules, 1)
+    assert.strictEqual(calls.injectRules.length, 1)
+    assert.deepStrictEqual(calls.injectRules[0].rules, rules)
+    assert.strictEqual(calls.injectRules[0].port, 10801)
+  })
+
+  it('calls removeRules first, injectRules second (order matters)', async () => {
+    const order = []
+    const api = {
+      async removeRules () { order.push('removeRules') },
+      async injectRules () { order.push('injectRules') },
+    }
+    const config = makeConfig({ enabled: true, rules: [] }, 10801)
+    await reInjectXrayRules(config, api)
+    assert.deepStrictEqual(order, ['removeRules', 'injectRules'])
+  })
+
+  it('skips injectRules when xray disabled (but still calls removeRules)', async () => {
+    const { calls, api } = makeSpy()
+    const config = makeConfig({ enabled: false, rules: [] }, 10801)
+    await reInjectXrayRules(config, api)
+    assert.strictEqual(calls.removeRules, 1)
+    assert.strictEqual(calls.injectRules.length, 0)
+  })
+
+  it('skips injectRules when xrayPort is 0', async () => {
+    const { calls, api } = makeSpy()
+    const config = makeConfig({ enabled: true, rules: [{ domain: 'a.com' }] }, 0)
+    await reInjectXrayRules(config, api)
+    assert.strictEqual(calls.removeRules, 1)
+    assert.strictEqual(calls.injectRules.length, 0)
+  })
+
+  it('skips injectRules when rules is not an array', async () => {
+    const { calls, api } = makeSpy()
+    const config = makeConfig({ enabled: true, rules: null }, 10801)
+    await reInjectXrayRules(config, api)
+    assert.strictEqual(calls.removeRules, 1)
+    assert.strictEqual(calls.injectRules.length, 0)
+  })
+
+  it('calls injectRules with empty array (injectRules handles it internally)', async () => {
+    const { calls, api } = makeSpy()
+    const config = makeConfig({ enabled: true, rules: [] }, 10801)
+    await reInjectXrayRules(config, api)
+    assert.strictEqual(calls.removeRules, 1)
+    assert.strictEqual(calls.injectRules.length, 1)
+    assert.deepStrictEqual(calls.injectRules[0].rules, [])
+  })
+
+  it('does not throw when xrayApi is undefined (swallows errors)', async () => {
+    const config = makeConfig({ enabled: true, rules: [{ domain: 'a.com' }] }, 10801)
+    await assert.doesNotReject(() => reInjectXrayRules(config, undefined))
+  })
+})
