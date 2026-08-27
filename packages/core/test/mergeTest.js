@@ -90,3 +90,42 @@ const result = lodash.isEqual(doMergeResult, doMergeExpect)
 console.log('check merge result:', result)
 console.log('\r')
 assert.strictEqual(result, true)
+
+// doMerge: config.json 中的空数组不应清空已合并出的对象字段
+// （bug: preSetIpList: [] 持久化后，每次启动都清空远程配置的全部预设 IP）
+{
+  const merged = { server: { preSetIpList: { 'google.com': '8.137.102.117' } } }
+  const userConfig = { server: { preSetIpList: [] } }
+  mergeApi.doMerge(merged, userConfig)
+  assert.strictEqual(lodash.isPlainObject(merged.server.preSetIpList), true, '空数组不应把对象字段清空成数组')
+  assert.deepStrictEqual(merged.server.preSetIpList, { 'google.com': '8.137.102.117' })
+
+  // 数组字段对数组的整体替换语义不受影响（如 plugin.xray.rules）
+  const merged2 = { plugin: { xray: { rules: [{ domain: 'a.com' }] } } }
+  const userConfig2 = { plugin: { xray: { rules: [] } } }
+  mergeApi.doMerge(merged2, userConfig2)
+  assert.deepStrictEqual(merged2.plugin.xray.rules, [], '数组字段仍应被空数组整体替换')
+}
+
+// doDiff: 空数组对对象字段是类型错误，不应写入 diff（否则持久化 [] 污染 config.json）
+{
+  const diff = mergeApi.doDiff(
+    { server: { preSetIpList: { 'google.com': '8.137.102.117' } } },
+    { server: { preSetIpList: [] } },
+  )
+  assert.strictEqual(
+    diff.server && diff.server.preSetIpList,
+    undefined,
+    '空数组 vs 对象不应产生 diff（写入侧防御）',
+  )
+
+  // 数组字段的正常 diff 语义不受影响：[] 清空数组字段、变更数组整体替换
+  const diff2 = mergeApi.doDiff({ g: [1, 2] }, { g: [] })
+  assert.deepStrictEqual(diff2.g, [], '数组字段应仍被空数组整体替换')
+  const diff3 = mergeApi.doDiff({ d: [1, 2, 3] }, { d: [1, 2, 3, 4] })
+  assert.deepStrictEqual(diff3.d, [1, 2, 3, 4])
+
+  // 对象字段用 {} 收窄是合法操作，不受防御影响（逐键 null 才是删除语义）
+  const diff4 = mergeApi.doDiff({ f: { x: 1 } }, { f: { x: null } })
+  assert.strictEqual(diff4.f.x, null)
+}

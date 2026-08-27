@@ -125,6 +125,13 @@ function createRouter (context) {
     })
   }
 
+  // Helper: validate that a PUT body is a plain object.
+  // Arrays like [] must be rejected — e.g. preSetIpList: [] persisted to
+  // config.json would wipe out all preset IPs merged from remote configs.
+  function isPlainObject (value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+  }
+
   // Helper: get xray paths
   function getXrayPaths () {
     const cfg = globalConfig.get()
@@ -642,6 +649,10 @@ function createRouter (context) {
 
     if (method === 'PUT' && pathname === '/api/config') {
       const body = await readBody(req)
+      if (!isPlainObject(body)) {
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'Config body must be a JSON object' })
+        return
+      }
       try {
         globalConfig.update(body)
         // Hot reload
@@ -656,6 +667,10 @@ function createRouter (context) {
 
     if (method === 'PUT' && pathname === '/api/intercepts') {
       const body = await readBody(req)
+      if (!isPlainObject(body)) {
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'Intercepts body must be a JSON object (domain -> rule mapping)' })
+        return
+      }
       try {
         globalConfig.update({ server: { intercepts: body } })
         try { await ctxServer.reload() } catch { /* ignore */ }
@@ -669,6 +684,11 @@ function createRouter (context) {
 
     if (method === 'PUT' && pathname === '/api/presetiplist') {
       const body = await readBody(req)
+      if (!isPlainObject(body)) {
+        // [] would be persisted by doDiff and then wipe all preset IPs on merge
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'preSetIpList body must be a JSON object (domain -> ip mapping), not an array' })
+        return
+      }
       try {
         globalConfig.update({ server: { preSetIpList: body } })
         try { await ctxServer.reload() } catch { /* ignore */ }
@@ -682,6 +702,11 @@ function createRouter (context) {
 
     if (method === 'PUT' && pathname === '/api/xray/rules') {
       const body = await readBody(req)
+      if (!Array.isArray(body)) {
+        // rules 是数组字段；传对象会被 mergeWith 畸形合并进数组字段
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'xray rules body must be a JSON array' })
+        return
+      }
       try {
         globalConfig.update({ plugin: { xray: { rules: body } } })
         await reInjectXrayRules(globalConfig)

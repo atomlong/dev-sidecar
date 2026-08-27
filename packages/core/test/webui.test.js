@@ -282,6 +282,73 @@ describe('webui write operations', () => {
     assert.ok(data.status === 'ok')
   })
 
+  // 空数组一旦持久化到 config.json，启动时 doMerge 会清空远程配置的全部预设 IP
+  it('PUT /api/presetiplist with empty array returns 400', async () => {
+    const r = await fetch(`${baseUrl}/api/presetiplist`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '[]',
+    })
+    assert.strictEqual(r.status, 400)
+    const data = await r.json()
+    assert.strictEqual(data.code, 'INVALID_BODY')
+  })
+
+  it('PUT /api/presetiplist with non-object body returns 400', async () => {
+    const r = await fetch(`${baseUrl}/api/presetiplist`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '"string"',
+    })
+    assert.strictEqual(r.status, 400)
+    const data = await r.json()
+    assert.strictEqual(data.code, 'INVALID_BODY')
+  })
+
+  it('PUT /api/intercepts with empty array returns 400', async () => {
+    const r = await fetch(`${baseUrl}/api/intercepts`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '[]',
+    })
+    assert.strictEqual(r.status, 400)
+    const data = await r.json()
+    assert.strictEqual(data.code, 'INVALID_BODY')
+  })
+
+  it('PUT /api/config with array body returns 400', async () => {
+    const r = await fetch(`${baseUrl}/api/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '[1,2,3]',
+    })
+    assert.strictEqual(r.status, 400)
+    const data = await r.json()
+    assert.strictEqual(data.code, 'INVALID_BODY')
+  })
+
+  it('PUT /api/xray/rules with object body returns 400 (must be array)', async () => {
+    const r = await fetch(`${baseUrl}/api/xray/rules`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"domain":"a.com"}',
+    })
+    assert.strictEqual(r.status, 400)
+    const data = await r.json()
+    assert.strictEqual(data.code, 'INVALID_BODY')
+  })
+
+  it('PUT /api/xray/rules with array body returns 200 (empty array is legal)', async () => {
+    const r = await fetch(`${baseUrl}/api/xray/rules`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '[]',
+    })
+    assert.strictEqual(r.status, 200)
+    const data = await r.json()
+    assert.ok(data.status === 'ok')
+  })
+
   it('PUT /api/config with invalid JSON returns error', async () => {
     const r = await fetch(`${baseUrl}/api/config`, {
       method: 'PUT',

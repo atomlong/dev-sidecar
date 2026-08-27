@@ -291,3 +291,9 @@ module.exports = (serverConfig) => {
   }
   return options
 }
+
+// domainMapRegexply 把 undefined/[]/{} 都规范化为 {origin:{}}（truthy），
+// 热重载时必须检查 origin 内容非空才替换，否则空表会覆盖运行中正常的 preSetIpList
+module.exports.shouldReplacePreSetIpList = (newPreSet) => {
+  return Boolean(newPreSet && newPreSet.origin && Object.keys(newPreSet.origin).length > 0)
+}
