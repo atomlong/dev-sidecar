@@ -37,6 +37,12 @@ function doDiff (oldObj, newObj) {
     }
     // 新的值为数组时，直接取新值
     if (lodash.isArray(newValue)) {
+      // 空数组对对象字段是类型错误（如 preSetIpList: []），持久化后会在启动时
+      // 清空合并出的预设 IP；跳过不写入 diff，避免污染 config.json
+      if (newValue.length === 0 && lodash.isPlainObject(oldValue)) {
+        delete tempObj[key]
+        continue
+      }
       diffObj[key] = newValue
       delete tempObj[key]
       continue
@@ -79,6 +85,11 @@ module.exports = {
     return lodash.mergeWith(oldObj, newObj, (objValue, srcValue) => {
       if (lodash.isArray(objValue)) {
         return srcValue
+      }
+      // 空数组是类型错误（schema 为对象），不应清空已合并出的对象字段
+      // 例如 config.json 中的 preSetIpList: [] 会清空远程配置的全部预设 IP
+      if (lodash.isArray(srcValue) && srcValue.length === 0 && lodash.isPlainObject(objValue)) {
+        return objValue
       }
     })
   },

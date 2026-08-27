@@ -109,8 +109,11 @@ const api = {
         if (newProxyOptions.dnsConfig.mapping) {
           currentProxyOptions.dnsConfig.mapping = newProxyOptions.dnsConfig.mapping
         }
-        if (newProxyOptions.dnsConfig.preSetIpList) {
-          currentProxyOptions.dnsConfig.preSetIpList = newProxyOptions.dnsConfig.preSetIpList
+        // domainMapRegexply 把 undefined/[]/{} 都规范化为 {origin:{}}，
+        // 不能用 truthy 判断——空表会覆盖运行中正常的 preSetIpList
+        const newPreSet = newProxyOptions.dnsConfig.preSetIpList
+        if (ProxyOptions.shouldReplacePreSetIpList(newPreSet)) {
+          currentProxyOptions.dnsConfig.preSetIpList = newPreSet
         }
       }
 
