@@ -1055,6 +1055,7 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
   const onBatchAccepted = typeof options.onBatchAccepted === 'function' ? options.onBatchAccepted : null
   const onAcceptedNodes = typeof options.onAcceptedNodes === 'function' ? options.onAcceptedNodes : null
   const onAcceptedNodeKeys = typeof options.onAcceptedNodeKeys === 'function' ? options.onAcceptedNodeKeys : null
+  const onSubscriptionProgress = typeof options.onSubscriptionProgress === 'function' ? options.onSubscriptionProgress : null
   const subscriptions = maintainLocalNodeArray ? [] : null
   const stage2SeenFilter = stage2SeenCachePath ? xrayCache.createStage2SeenNodeFilter(stage2SeenCachePath) : null
   let pendingAcceptedNodeKeys = []
@@ -1236,6 +1237,9 @@ async function loadSubscriptionNodes (subscriptionUrls, log, options = {}) {
           subscriptions.push(subscriptionSnapshot)
         }
         batchSubscriptions.push(subscriptionSnapshot)
+        if (onSubscriptionProgress) {
+          try { onSubscriptionProgress(subscriptionIndex, total, acceptedUniqueNodeCount) } catch { /* progress callback must not break fetch */ }
+        }
         try {
           log.info(`正在更新订阅: ${subscriptionLabel}`)
           await reclaimStage2SqliteMemory('pre-subscription-download', {
@@ -2183,6 +2187,11 @@ const Plugin = function (context) {
   let currentBinPath = ''
   let liveConfigHasProxyNodes = false
   let isStageRunning = false
+  // True only while Stage2 remote subscription fetch is in progress
+  let isStage2Running = false
+  // Live Stage2 round runtime data for WebUI (null when idle)
+  let stage2Runtime = null
+  // { startedAt, totalSubscriptions, currentSubscription, fetchedNodes }
   // Track live node-to-tag mapping for API-based hot refresh (Phase 2)
   const currentLiveNodeTags = new Map() // fingerprint -> tag
   let nextProxyTagIndex = 0
@@ -3107,6 +3116,8 @@ const Plugin = function (context) {
         liveConfigPath,
         cachePath,
       }).catch((error) => {
+        isStage2Running = false
+        stage2Runtime = null
         log.warn('Xray 后台节点刷新任务失败:', error)
       })
     },
@@ -3355,6 +3366,13 @@ const Plugin = function (context) {
         log.info(`Xray 订阅抓取已跳过: effectiveCache=${subscriptionSyncDecision.effectiveCacheCount}, lowWatermark=${subscriptionSyncDecision.lowWatermark}, subscriptions=${Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0}`)
       } else {
         stage2SyncStartedAt = Date.now()
+        isStage2Running = true
+        stage2Runtime = {
+          startedAt: stage2SyncStartedAt,
+          totalSubscriptions: Array.isArray(cfg.subscriptions) ? cfg.subscriptions.length : 0,
+          currentSubscription: 0,
+          fetchedNodes: 0,
+        }
         const initialStage2SeenNodeKeys = collectUniqueNodeKeys(localCandidateNodes)
         if (!xrayCache.resetStage2SeenNodeKeys(cachePath, initialStage2SeenNodeKeys)) {
           throw new Error('Xray stage2 seen-node initialization failed')
@@ -3363,6 +3381,13 @@ const Plugin = function (context) {
         const subscriptionResult = await loadSubscriptionNodes(cfg.subscriptions, log, {
           nodeTarget: [],
           stage2SeenCachePath: cachePath,
+          onSubscriptionProgress: (current, total, fetchedNodes) => {
+            if (stage2Runtime) {
+              stage2Runtime.currentSubscription = current
+              stage2Runtime.totalSubscriptions = total
+              stage2Runtime.fetchedNodes = fetchedNodes
+            }
+          },
           onAcceptedNodeKeys: (acceptedNodeKeys, sourceMeta = {}) => {
             const nodeKeys = Array.isArray(acceptedNodeKeys) ? acceptedNodeKeys : []
             if (nodeKeys.length === 0 || !sourceMeta.sourceKey) {
@@ -3436,6 +3461,9 @@ const Plugin = function (context) {
         return
       }
 
+      // if/else 汇合后的固定出口：订阅抓取（无论真实拉取还是跳过）已结束
+      isStage2Running = false
+      stage2Runtime = null
       const subscriptionFetchMode = shouldSkipSubscriptionFetch ? 'skipped' : 'loaded'
       if (subscriptionFetchMode === 'loaded') {
         xrayCache.setStage2LastRemoteFetchAt(cachePath)
@@ -4162,6 +4190,8 @@ const Plugin = function (context) {
             } catch (stage2Error) {
               log.warn('Xray Stage3 后触发 Stage2 失败:', stage2Error)
             } finally {
+              isStage2Running = false
+              stage2Runtime = null
               isStageRunning = false
             }
           }
@@ -4239,14 +4269,24 @@ const Plugin = function (context) {
           // Estimated next sync: last fetch + interval. Stage2 triggers at Stage3
           // round end when this time has elapsed, so it's an estimate, not exact.
           const nextSyncAt = lastFetchMs > 0 ? lastFetchMs + intervalMs : 0
+          const stage2Enabled = isSubscriptionSyncEnabled(cfg)
+          // Stage2 触发点在 Stage3 轮末：到期后的第一个 Stage3 轮结束时。
+          // nextTriggerAt = max(到期时间, 下一轮 Stage3 开始时间) 的近似值。
+          const nextTriggerAt = stage2Enabled ? Math.max(nextSyncAt || 0, stage3NextRefreshAt || 0) : 0
           stage2 = {
-            enabled: isSubscriptionSyncEnabled(cfg),
+            enabled: stage2Enabled,
+            state: !stage2Enabled ? 'off' : (isStage2Running ? 'running' : 'idle'),
             intervalHours,
             lastSyncAt: lastFetchMs,
             lastSyncDurationMs: syncStats.durationMs,
             lastSyncFetchedCount: syncStats.fetchedCount,
             nextSyncAt,
             nextSyncOverdue: nextSyncAt > 0 && Date.now() > nextSyncAt,
+            nextTriggerAt,
+            // 本轮实时数据（state === 'running' 时有效）
+            startedAt: stage2Runtime ? stage2Runtime.startedAt : 0,
+            progress: stage2Runtime ? { current: stage2Runtime.currentSubscription, total: stage2Runtime.totalSubscriptions } : null,
+            fetched: stage2Runtime ? stage2Runtime.fetchedNodes : syncStats.fetchedCount,
           }
         } catch { /* cache not available */ }
       }
@@ -4277,7 +4317,8 @@ const Plugin = function (context) {
 
         // Stage3: cache probe round
         stage3: {
-          isRunning: isStageRunning,
+          enabled: isCacheRefreshEnabled(cfg),
+          state: !isCacheRefreshEnabled(cfg) ? 'off' : (isStageRunning ? 'running' : 'idle'),
           generation: refreshGeneration,
           roundStartedAt: stage3RoundStartedAt,
           nextRefreshAt: stage3NextRefreshAt,
