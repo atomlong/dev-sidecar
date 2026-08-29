@@ -2473,9 +2473,11 @@ case "$cmd" in
         fi
         
         # 4. Push Release Branch
-        # Push local public branch to remote release branch
+        # Push local public branch to remote release branch.
+        # --force-with-lease: fast-forwards normally; a diverged remote (re-release
+        # after CI-fix retag cycles) is overwritten only if we know the remote ref.
         log_info "Pushing local $BRANCH_PUBLIC to origin/$release_branch..."
-        if git push origin "$BRANCH_PUBLIC:refs/heads/$release_branch"; then
+        if git push --force-with-lease origin "$BRANCH_PUBLIC:refs/heads/$release_branch"; then
             log_info "Successfully pushed release branch: $release_branch"
         else
             log_error "Failed to push release branch."
@@ -2488,8 +2490,16 @@ case "$cmd" in
         
         log_info "Tagging commit $target_commit as $tag_name..."
         if git tag -f "$tag_name" "$target_commit"; then
-             log_info "Pushing tag $tag_name..."
-             git push origin "$tag_name"
+            # Re-release (tag already exists on remote) requires a force push — a
+            # plain push fails with "! [rejected] ... already exists" (seen in the
+            # seven-round v2.2.8 release). The local tag always points at our own
+            # $BRANCH_PUBLIC tip, so overwriting is safe.
+            if git ls-remote --tags --exit-code origin "refs/tags/$tag_name" >/dev/null 2>&1; then
+                log_info "Tag $tag_name already exists on remote — force-pushing (re-release)."
+                git push --force origin "$tag_name"
+            else
+                git push origin "$tag_name"
+            fi
         else
              log_error "Failed to create tag locally."
              exit 1
