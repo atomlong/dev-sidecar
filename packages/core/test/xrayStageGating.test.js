@@ -1684,3 +1684,68 @@ describe('xray stage gating', function () {
     }
   })
 })
+
+describe('evaluateStage2PostRoundTrigger (Stage3 轮末 Stage2 触发守卫)', () => {
+  const { evaluateStage2PostRoundTrigger } = xrayIndex.__test
+  const HOUR = 3600
+
+  function base (overrides = {}) {
+    return {
+      generation: 1,
+      refreshGeneration: 1,
+      enabled: true,
+      stage2Busy: false,
+      lastFetchAtSec: Math.floor(Date.now() / 1000) - 25 * HOUR, // 25h 前
+      nowMs: Date.now(),
+      intervalHours: 24,
+      ...overrides,
+    }
+  }
+
+  it('距上次抓取超过间隔时触发', () => {
+    const r = evaluateStage2PostRoundTrigger(base())
+    assert.strictEqual(r.trigger, true)
+    assert.strictEqual(r.elapsedHours, 25)
+    assert.strictEqual(r.intervalHours, 24)
+  })
+
+  it('恰好到达间隔时触发（>= 含边界）', () => {
+    const r = evaluateStage2PostRoundTrigger(base({ lastFetchAtSec: Math.floor(Date.now() / 1000) - 24 * HOUR }))
+    assert.strictEqual(r.trigger, true)
+  })
+
+  it('间隔未到时不触发', () => {
+    const r = evaluateStage2PostRoundTrigger(base({ lastFetchAtSec: Math.floor(Date.now() / 1000) - 23 * HOUR }))
+    assert.strictEqual(r.trigger, false)
+  })
+
+  it('从未抓取过（lastFetchAtSec=0）视为必须触发（elapsedHours=Infinity）', () => {
+    const r = evaluateStage2PostRoundTrigger(base({ lastFetchAtSec: 0 }))
+    assert.strictEqual(r.trigger, true)
+    assert.strictEqual(r.elapsedHours, Infinity)
+  })
+
+  it('stage2Busy=true 时不触发（防与启动后台 Stage2 并发——v2.2.8 死代码回归保护）', () => {
+    // 关键约束：调用点必须传 isStage2Running 而非 isStageRunning。
+    // 轮末段运行在 refreshCacheFromCacheOnly 体内，isStageRunning 恒 true，
+    // 若守卫用了它，周期性 Stage2 触发将永远不执行（历史 bug）。
+    const r = evaluateStage2PostRoundTrigger(base({ stage2Busy: true }))
+    assert.strictEqual(r.trigger, false)
+  })
+
+  it('generation 失效（新一轮已启动）时不触发', () => {
+    const r = evaluateStage2PostRoundTrigger(base({ generation: 1, refreshGeneration: 2 }))
+    assert.strictEqual(r.trigger, false)
+  })
+
+  it('enabled=false 时不触发', () => {
+    const r = evaluateStage2PostRoundTrigger(base({ enabled: false }))
+    assert.strictEqual(r.trigger, false)
+  })
+
+  it('intervalHours 无效（NaN/0/负数）时不触发', () => {
+    assert.strictEqual(evaluateStage2PostRoundTrigger(base({ intervalHours: Number.NaN })).trigger, false)
+    assert.strictEqual(evaluateStage2PostRoundTrigger(base({ intervalHours: 0 })).trigger, false)
+    assert.strictEqual(evaluateStage2PostRoundTrigger(base({ intervalHours: -1 })).trigger, false)
+  })
+})

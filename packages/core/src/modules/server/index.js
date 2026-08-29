@@ -117,6 +117,13 @@ const serverApi = {
     // Pass V8 flags to the mitmproxy child process via execArgv.
     // --expose-gc exposes global.gc for explicit GC during stage3 cache refresh.
     // --max-old-space-size caps V8 old space of the mitmproxy child process.
+    // --heapsnapshot-signal registers a SIGUSR2 handler so `kill -USR2 <pid>`
+    // writes a .heapsnapshot for leak diagnosis WITHOUT killing the process
+    // (unhandled SIGUSR2 terminates by POSIX default). Snapshot writing is
+    // stop-the-world (~seconds) and files land in --diagnostic-dir (clean up
+    // periodically; they can be hundreds of MB). No same-signal conflict:
+    // --report-signal is NOT set — use process.report.writeReport() at runtime
+    // if a diagnostic report is ever needed. POSIX only; inert on Windows.
     // Note: this only affects the mitmproxy Node.js child process, NOT the xray
     // probe binary (which is a Go executable spawned separately and moved to an
     // isolated cgroup).
@@ -125,8 +132,9 @@ const serverApi = {
     // + FakeServersCenter LRU 256 个 http2.createSecureServer + forge cert/key,
     // 在 sub2api 高并发 huggingface.co SNI 突发下 live object 实测可超 94.5MB
     // (pooled:0.0, mark-compact ineffective → SIGABRT)。提到 192MB 留 12 倍余量。
+    const diagnosticDir = path.join(serverConfig.setting.userBasePath || '.', 'logs')
     const serverProcess = fork(mitmproxyPath, [runningConfigPath], {
-      execArgv: ['--expose-gc', '--max-old-space-size=192'],
+      execArgv: ['--expose-gc', '--max-old-space-size=192', '--heapsnapshot-signal=SIGUSR2', `--diagnostic-dir=${diagnosticDir}`],
     })
     server = {
       id: serverProcess.pid,

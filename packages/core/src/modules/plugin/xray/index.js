@@ -643,6 +643,25 @@ function getSubscriptionSyncDecision ({ cachePath, cfg }) {
   }
 }
 
+// Stage3 轮末按需触发 Stage2 的守卫评估（纯函数，便于回归测试）。
+// 关键约束：轮末段运行在 refreshCacheFromCacheOnly 体内，其入口已置
+// isStageRunning=true——守卫必须用"订阅抓取进行中"（isStage2Running）而非
+// isStageRunning，否则恒 false（v2.2.8 修复的死代码 bug：周期性 Stage2
+// 触发从未执行过，长期运行的服务订阅永不刷新）。
+function evaluateStage2PostRoundTrigger ({ generation, refreshGeneration, enabled, stage2Busy, lastFetchAtSec, nowMs, intervalHours }) {
+  let elapsedHours = Infinity
+  if (lastFetchAtSec > 0) {
+    elapsedHours = Math.floor((nowMs / 1000 - lastFetchAtSec) / 3600)
+  }
+  const trigger = generation === refreshGeneration
+    && enabled === true
+    && stage2Busy === false
+    && Number.isFinite(intervalHours)
+    && intervalHours > 0
+    && elapsedHours >= intervalHours
+  return { trigger, elapsedHours, intervalHours }
+}
+
 function getLocalInputStatePath (cachePath) {
   return path.join(path.dirname(cachePath), LOCAL_INPUT_STATE_FILE_NAME)
 }
@@ -4171,29 +4190,36 @@ const Plugin = function (context) {
 
         // After Stage3 completes, check if Stage2 needs to run (periodic
         // subscription refresh). This runs independently of Stage3 node
-        // refresh and is guarded by isStageRunning to prevent overlap.
-        if (generation === refreshGeneration && isSubscriptionSyncEnabled(cfg) && !isStageRunning) {
-          const lastFetchAt = xrayCache.getStage2LastRemoteFetchAt(cachePath)
-          const intervalHours = getSubscriptionSyncIntervalHours(cfg)
-          const elapsedHours = lastFetchAt > 0 ? Math.floor((Date.now() / 1000 - lastFetchAt) / 3600) : Infinity
-          if (elapsedHours >= intervalHours) {
-            log.info(`Xray Stage3 后触发 Stage2: 距上次远端抓取 ${elapsedHours === Infinity ? 'never' : elapsedHours + 'h'}, 间隔 ${intervalHours}h`)
-            isStageRunning = true
-            try {
-              await api.refreshCacheFromSourcesOnce({
-                binPath,
-                cfg,
-                xrayDir,
-                liveConfigPath: currentLiveConfigPath,
-                cachePath,
-              })
-            } catch (stage2Error) {
-              log.warn('Xray Stage3 后触发 Stage2 失败:', stage2Error)
-            } finally {
-              isStage2Running = false
-              stage2Runtime = null
-              isStageRunning = false
-            }
+        // refresh. stage2Busy must be isStage2Running ("subscription fetch in
+        // progress"), NOT isStageRunning — the latter is still true here
+        // (this tail runs inside refreshCacheFromCacheOnly, which set it on
+        // entry), so using it made this periodic trigger dead code (v2.2.8 fix).
+        const stage2PostRound = evaluateStage2PostRoundTrigger({
+          generation,
+          refreshGeneration,
+          enabled: isSubscriptionSyncEnabled(cfg),
+          stage2Busy: isStage2Running,
+          lastFetchAtSec: xrayCache.getStage2LastRemoteFetchAt(cachePath),
+          nowMs: Date.now(),
+          intervalHours: getSubscriptionSyncIntervalHours(cfg),
+        })
+        if (stage2PostRound.trigger) {
+          log.info(`Xray Stage3 后触发 Stage2: 距上次远端抓取 ${stage2PostRound.elapsedHours === Infinity ? 'never' : stage2PostRound.elapsedHours + 'h'}, 间隔 ${stage2PostRound.intervalHours}h`)
+          isStageRunning = true
+          try {
+            await api.refreshCacheFromSourcesOnce({
+              binPath,
+              cfg,
+              xrayDir,
+              liveConfigPath: currentLiveConfigPath,
+              cachePath,
+            })
+          } catch (stage2Error) {
+            log.warn('Xray Stage3 后触发 Stage2 失败:', stage2Error)
+          } finally {
+            isStage2Running = false
+            stage2Runtime = null
+            isStageRunning = false
           }
         }
 
@@ -4358,6 +4384,7 @@ module.exports = {
     ...testHelpers,
     applyStage3ProbeResults,
     classifyRefreshPriority,
+    evaluateStage2PostRoundTrigger,
     getFailureBackoffMs,
     isParsedNodeValid: parser.isParsedNodeValid,
     selectStage3RefreshCandidates,

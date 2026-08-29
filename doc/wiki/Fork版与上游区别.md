@@ -130,7 +130,18 @@ packages/core/src/modules/plugin/xray/
 
 ---
 
-## 6. 新增：Linux 原生打包与 systemd 集成
+## 6. 新增：WebUI 监控面板（无显示器服务器运维）
+
+- **路径**：`packages/core/src/modules/plugin/webui/`（后端插件）+ `packages/gui/extra/webui/index.html`（单文件前端）
+- **定位**：为 headless Linux 服务器提供浏览器运维面板，弥补 GUI 在无显示器环境不可用的缺口
+- **端口**：31182（HTTP，默认只监听 127.0.0.1；远程访问需配 token）
+- **页面**：仪表盘（服务/版本/端口/内存/操作）、探测（Stage1 主进程 + Stage2 订阅同步三态/进度/耗时/抓取 + Stage3 缓存探测三态/批次进度 + Balancer 锁定控件 + 节点表）、缓存（统计/国家分布/最优节点/分页）、日志（tail 实时滚动）、配置（只读 + JSON 编辑写回）
+- **API**：27 个 HTTP 接口（见 [webui-api.md](../webui-api.md)）+ WebSocket 状态推送
+- **上游对比**：上游仅有 Electron GUI，无任何 Web 运维界面
+
+---
+
+## 7. 新增：Linux 原生打包与 systemd 集成
 
 ### 打包脚本
 - `packages/gui/pkg/before-pack.cjs` — 打包前准备
@@ -152,7 +163,7 @@ packages/core/src/modules/plugin/xray/
 
 ---
 
-## 7. 新增：submit.sh 私有/公有分支分离
+## 8. 新增：submit.sh 私有/公有分支分离
 
 - **文件**：`submit.sh`（2600+ 行）
 - **用途**：管理 fork 的私有（develop）和公有（master）分支分离提交
@@ -167,7 +178,7 @@ packages/core/src/modules/plugin/xray/
 
 ---
 
-## 8. 配置差异
+## 9. 配置差异
 
 ### 远程配置 URL
 - **上游**：`https://raw.githubusercontent.com/docmirror/dev-sidecar-config/...`
@@ -182,7 +193,7 @@ packages/core/src/modules/plugin/xray/
 
 ---
 
-## 9. 代理流量路由总结
+## 10. 代理流量路由总结
 
 ```
 客户端请求
@@ -209,7 +220,7 @@ packages/core/src/modules/plugin/xray/
 
 ---
 
-## 10. 与上游同步策略
+## 11. 与上游同步策略
 
 - **上游**：`https://github.com/docmirror/dev-sidecar.git`（remote: `upstream`）
 - **Fork 主仓库**：`https://github.com/atomlong/dev-sidecar.git`（remote: `origin`）

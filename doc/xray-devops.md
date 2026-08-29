@@ -21,6 +21,41 @@ Xray 插件在 Stage3（后台运行时）会定期从缓存刷新节点列表�
 - `Xray Stage3 后API热刷新失败，回退到重启: <error>` — API 失败，已回滚到重启路径
 - `Xray Stage3 后热刷新完成` — 无论 API 还是重启路径，最终完成
 
+## Stage1 sticky 自动锁定时序（v2.2.8+）
+
+启动时 Stage1 bootstrap 注入节点后，balancer 的 leastPing 策略还没有 observatory 数据（observatory 只在周期边界发现 ado 注入的新节点），此时若无锁定则**流量直接失败**（v2.2.6 起无 `fallbackTag: direct`，防止暴露真实 IP）。因此：
+
+1. **Stage1 注入后立即锁定**延时最低的节点（`Xray 第一阶段已临时锁定出口节点: tag=proxy_N`）
+2. **自动解锁带防护**：`probeInterval`（默认 300s）到期时先查 observatory alive 节点数——为 0 则**延长锁定 60s**（`延长锁定 60s (第 N/5 次)`，最多 5 次），有数据才解除，避免 leastPing 无数据可选
+3. **热刷新移除锁定节点时改锁**：Stage3 轮末热刷新若移除了 sticky 锁定节点（`sticky 锁定节点 proxy_N 将被移除，稍后改锁新节点`），改为**锁定剩余节点中延时最低者**（数据来自 Stage3 刚探测的缓存），而非裸解锁
+4. 手动解锁（WebUI 按钮 / `DELETE /api/xray/sticky`）在 observatory 无 alive 节点时会**拒绝**并提示等待
+
+## Stage2 订阅抓取触发机制（v2.2.8+）
+
+Stage2 不是定时调度，触发点有两个：
+1. **服务启动时**：`start()` 后台触发一次（受 `subscriptionSyncLowWatermark` 水位与 24h 冷却双守卫）
+2. **Stage3 每轮结束时**：距上次远端抓取超过 `subscriptionSyncIntervalHours`（默认 24h）则触发（`Xray Stage3 后触发 Stage2: 距上次远端抓取 Xh, 间隔 24h`）
+
+> **历史缺陷提示**：v2.2.8 之前第 2 个触发点是死代码（守卫误用 `isStageRunning`，在 `refreshCacheFromCacheOnly` 体内恒为 true），长期不重启的服务订阅永不刷新、节点池逐渐枯竭。v2.2.8 修复后真实生效——**长期运行的服务首次会在日志中看到该触发**。
+
+运行状态可经 WebUI 探测页或 `GET /api/xray/stage/status` 查看：`stage2.state`（off/idle/running）、`progress`（正在抓第几个订阅）、`fetched`（本轮已抓取节点数）、`nextTriggerAt`（预计触发时间）。
+
+## mitmproxy 子进程内存诊断（SIGUSR2 堆快照）
+
+mitmproxy Node 子进程带 `--heapsnapshot-signal=SIGUSR2 --diagnostic-dir=~/.dev-sidecar/logs` 启动，疑似内存泄漏时随时取证：
+
+```shell
+MPID=$(pgrep -f 'mitmproxy.js' | head -1)
+kill -USR2 $MPID   # 进程不会被杀死：写快照后恢复（stop-the-world ~秒级）
+ls -lh ~/.dev-sidecar/logs/*.heapsnapshot
+```
+
+- 用 **Chrome DevTools**（`chrome://inspect` → Memory → Load）加载 `.heapsnapshot`，间隔取 3 份做**三快照法**对比，找 Retained Size 持续增长的对象
+- 快照几十至几百 MB，取证后**及时删除**
+- **只对 mitmproxy PID 发 USR2**——未加 flag 的进程（主进程/xray）收 USR2 会按 POSIX 默认行为被杀死
+- 诊断报告无需信号：运行时 `process.report.writeReport()` 即可（将来可挂 WebUI 端点）
+- 事件循环卡死时 JS 层信号 handler 也无法执行——取证要在进程存活时发信号
+
 ## 运行时调试命令
 
 Xray 主进程启动后会开放两个本地调试端口，写入 `~/.dev-sidecar/running.json` 的 `app.status.plugin.xray`：
