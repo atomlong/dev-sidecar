@@ -129,3 +129,14 @@ assert.strictEqual(result, true)
   const diff4 = mergeApi.doDiff({ f: { x: 1 } }, { f: { x: null } })
   assert.strictEqual(diff4.f.x, null)
 }
+
+// doDiff: 默认配置中不存在的新字段，空数组是合法的用户自定义空表
+// （写入 [] 合法——oldValue 为空时走"新增字段直接取新值"分支，不触发防御）
+{
+  const diff = mergeApi.doDiff({}, { customList: [] })
+  assert.deepStrictEqual(diff.customList, [], '新增字段（旧值为空）的空数组应原样写入 diff')
+  // 但注意启动合并侧：合并目标也没有该键时，[] 生效为空表（无对象可清空，无危害）
+  const merged = {}
+  mergeApi.doMerge(merged, { customList: [] })
+  assert.deepStrictEqual(merged.customList, [])
+}
