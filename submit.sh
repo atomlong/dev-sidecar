@@ -2003,7 +2003,9 @@ get_unsynced_public_commits() {
         # CHANGELOG-normalized picks). patch-id detection (git cherry) mismatches
         # these because exclusion/normalization changes the diff shape, which made
         # every re-sync replay them and die on conflicts (seen in v2.2.8 aftermath).
-        if grep -q "^${commit}$" .submit-synced 2>/dev/null; then
+        # The map lives on the PRIVATE branch (never on master) — read it from there
+        # via git show; a plain file read here would miss it (we are on master).
+        if git show "$private_branch":.submit-synced 2>/dev/null | grep -q "^${commit}$"; then
             continue
         fi
         if [ -n "${unsynced_commit_map["$commit"]:-}" ]; then
@@ -2097,13 +2099,13 @@ attempt_public_cherry_pick() {
 
     log_info "Cherry-picking: $commit"
     if git cherry-pick -x --allow-empty "$commit"; then
-        echo "$commit" >> .submit-synced
+        SYNCED_COMMITS="$SYNCED_COMMITS$commit "
         return 0
     fi
 
     if continue_public_cherry_pick_if_resolved "$commit"; then
         log_info "rerere auto-resolved commit: $commit"
-        echo "$commit" >> .submit-synced
+        SYNCED_COMMITS="$SYNCED_COMMITS$commit "
         return 0
     fi
 
@@ -2123,7 +2125,7 @@ attempt_public_cherry_pick() {
     if git cherry-pick -x --no-commit --allow-empty "$commit" 2>/dev/null; then
         # No conflicts (or rerere resolved them all).
         git commit --no-edit --allow-empty
-        echo "$commit" >> .submit-synced
+        SYNCED_COMMITS="$SYNCED_COMMITS$commit "
         log_info "Cherry-pick succeeded (no conflicts): $commit"
         return 0
     fi
@@ -2131,7 +2133,7 @@ attempt_public_cherry_pick() {
     # Conflicts remain — resolve each conflicted file entirely from "our" side.
     if resolve_unmerged_public_paths_with_strategy "$strategy" && continue_public_cherry_pick_if_resolved "$commit"; then
         log_info "Force auto-resolved commit with per-file strategy '$strategy': $commit"
-        echo "$commit" >> .submit-synced
+        SYNCED_COMMITS="$SYNCED_COMMITS$commit "
         return 0
     fi
 
@@ -2187,7 +2189,7 @@ attempt_public_cherry_pick_excluding_private() {
     # Nothing public remains (pure-private commit degenerate case) → skip.
     if git diff --cached --quiet && git diff --quiet; then
         git cherry-pick --quit 2>/dev/null || true
-        echo "$commit" >> .submit-synced
+        SYNCED_COMMITS="$SYNCED_COMMITS$commit "
         log_info "No public changes remain after exclusion, skipped: $commit"
         return 0
     fi
@@ -2199,7 +2201,7 @@ attempt_public_cherry_pick_excluding_private() {
     # Record in the sync map: exclusion changed the diff shape so patch-id
     # (git cherry) can never match this commit again — without the record the
     # next sync replays it forever.
-    echo "$commit" >> .submit-synced
+    SYNCED_COMMITS="$SYNCED_COMMITS$commit "
     log_info "Cherry-picked with private files excluded: $commit"
     return 0
 }
@@ -2498,6 +2500,9 @@ case "$cmd" in
 
     --push-public)
         log_info "Syncing public changes from $BRANCH_PRIVATE to $BRANCH_PUBLIC..."
+        # Source SHAs successfully synced this run — recorded into .submit-synced
+        # back on the private branch after the push (see the tail of this case).
+        SYNCED_COMMITS=""
         public_conflict_strategy=$(validate_public_conflict_strategy)
         if [ -n "$public_conflict_strategy" ]; then
             log_info "Automatic public conflict retry strategy: $public_conflict_strategy"
@@ -2686,6 +2691,20 @@ case "$cmd" in
         # be committed directly to master twice during the v2.2.8 release.
         if git checkout "$BRANCH_PRIVATE" 2>/dev/null; then
             log_info "Switched back to source branch '$BRANCH_PRIVATE'."
+            # Record this run's synced SHAs into the private-branch map so the
+            # next sync skips them (patch-id can never match excluded picks).
+            if [ -n "$SYNCED_COMMITS" ]; then
+                for sha in $SYNCED_COMMITS; do
+                    echo "$sha" >> .submit-synced
+                done
+                if ! git diff --quiet -- .submit-synced 2>/dev/null; then
+                    if git add .submit-synced && git commit -q -m "submit.sh: record synced SHAs ($(echo $SYNCED_COMMITS | wc -w) commits)"; then
+                        log_info "Synced SHAs recorded to .submit-synced and committed."
+                    else
+                        log_warn "Recorded SHAs into .submit-synced but could not auto-commit — commit it yourself."
+                    fi
+                fi
+            fi
         else
             log_warn "Could not switch back to '$BRANCH_PRIVATE' — you are still on '$(git branch --show-current)'."
         fi
