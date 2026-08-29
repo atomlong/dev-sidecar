@@ -18,6 +18,10 @@ const probe = require('./probe')
 const geoip = require('./geoip')
 const cgroupUtil = require('./util.cgroup')
 const xrayApi = require('./xray_api')
+const {
+  createStickyAutoUnlockTimer,
+  pickStickySurvivorTag,
+} = require('./sticky')
 const { getXrayExePath } = require('../../../shell/scripts/extra-path/index')
 
 const STAGE2_CACHE_SYNC_CHUNK_SIZE = 2000
@@ -2214,8 +2218,8 @@ const Plugin = function (context) {
   // Track live node-to-tag mapping for API-based hot refresh (Phase 2)
   const currentLiveNodeTags = new Map() // fingerprint -> tag
   let nextProxyTagIndex = 0
-  let stickyTimer = null
   let stickyTag = null
+  let stickyUnlockLabel = ''
   // Stage3 round timing — exposed via getStageStatus for WebUI
   let stage3RoundStartedAt = 0  // ms timestamp of current/last Stage3 round start
   let stage3NextRefreshAt = 0   // ms timestamp of next scheduled Stage3 round
@@ -2272,31 +2276,73 @@ const Plugin = function (context) {
   // Observatory discovers ado-injected nodes only at its next cycle boundary,
   // so the first probeInterval after startup may end before any data exists;
   // in that case extend the lock by 60s (up to MAX_STICKY_AUTO_UNLOCK_EXTENSIONS).
-  const STICKY_AUTO_UNLOCK_EXTENSION_MS = 60 * 1000
-  const MAX_STICKY_AUTO_UNLOCK_EXTENSIONS = 5
-  function armStickyAutoUnlock (logLabel, delayMs) {
-    if (stickyTimer) {
-      clearTimeout(stickyTimer)
-      stickyTimer = null
-    }
-    let extensions = 0
-    const fire = async () => {
-      stickyTimer = null
-      const aliveCount = await fetchLiveObservatoryAliveCount()
-      if (aliveCount === 0 && extensions < MAX_STICKY_AUTO_UNLOCK_EXTENSIONS) {
-        extensions++
-        log.info(`${logLabel}: observatory 尚无可用节点数据，延长锁定 60s (第 ${extensions}/${MAX_STICKY_AUTO_UNLOCK_EXTENSIONS} 次)`)
-        stickyTimer = setTimeout(fire, STICKY_AUTO_UNLOCK_EXTENSION_MS)
-        return
-      }
+  // Cap/chaining/extension semantics live in ./sticky (unit-tested); index.js
+  // only supplies the xray side effects.
+  const stickyUnlockTimer = createStickyAutoUnlockTimer({
+    getAliveCount: fetchLiveObservatoryAliveCount,
+    onExtend: (extensions, maxExtensions) => {
+      log.info(`${stickyUnlockLabel}: observatory 尚无可用节点数据，延长锁定 60s (第 ${extensions}/${maxExtensions} 次)`)
+    },
+    onUnlock: async () => {
       const heldTag = stickyTag
       stickyTag = null
       if (currentLiveApiPort && currentBinPath) {
         await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
       }
-      log.info(`${logLabel}: tag=${heldTag}`)
+      log.info(`${stickyUnlockLabel}: tag=${heldTag}`)
+    },
+  })
+
+  function armStickyAutoUnlock (logLabel, delayMs) {
+    stickyUnlockLabel = logLabel
+    stickyUnlockTimer.arm(delayMs)
+  }
+
+  // Best live tag to hold the override: lowest valid cache delay, else the
+  // first survivor. Returns null when nothing survives.
+  function pickOverrideSurvivorTag (cacheFilePath, excludeTags) {
+    const survivors = []
+    for (const [fp, tag] of currentLiveNodeTags) {
+      if (!excludeTags.includes(tag)) {
+        survivors.push([fp, tag])
+      }
     }
-    stickyTimer = setTimeout(fire, delayMs)
+    if (survivors.length === 0) {
+      return null
+    }
+    const delayByFp = new Map()
+    try {
+      const entries = xrayCache.readCacheEntriesByFingerprints(cacheFilePath, survivors.map(([fp]) => fp))
+      for (const e of entries) {
+        const fp = xrayCache.fingerprintNode(e.node)
+        if (fp) {
+          delayByFp.set(fp, Number(e.delay))
+        }
+      }
+    } catch { /* cache unavailable — first survivor is good enough */ }
+    return pickStickySurvivorTag({ survivors, getDelay: fp => delayByFp.get(fp) })
+  }
+
+  // Before rmo removes the override-target node, move the override to a
+  // survivor. Bare release would leave leastPing without observatory data
+  // (first probeInterval after start) selecting nothing → traffic goes direct.
+  async function migrateOverrideBeforeRemove (cacheFilePath, tagsToRemove, logLabel) {
+    const newTag = pickOverrideSurvivorTag(cacheFilePath, tagsToRemove)
+    if (newTag) {
+      try {
+        await xrayApi.overrideBalancer(currentBinPath, currentLiveApiPort, 'balancer-proxy', newTag)
+        log.info(`${logLabel}: sticky 锁定节点被移除，已改锁存活节点 tag=${newTag} (原 ${stickyTag})`)
+        stickyTag = newTag // keep the original unlock timer — duration semantics unchanged
+        return
+      } catch (e) {
+        log.warn(`${logLabel}: 改锁存活节点失败: ${e.message}`)
+      }
+    }
+    // No survivor (everything live is being removed) or override failed — release.
+    await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
+    stickyUnlockTimer.disarm()
+    stickyTag = null
+    log.warn(`${logLabel}: sticky 锁定节点被移除${newTag ? '' : '且无存活节点'}，已解除锁定`)
   }
 
   function cleanupStaleProbeArtifacts () {
@@ -2448,15 +2494,11 @@ const Plugin = function (context) {
           log.info(`Xray Stage3 后API热刷新: 添加 ${addResult.addedTags.length}/${nodesToAdd.length} 个节点`)
         }
         // Then remove bad nodes (existing connections to them continue, new ones go to fresh nodes)
-        let stickyNodeRemoved = false
         if (tagsToRemove.length > 0) {
-          // If sticky-locked node is being removed, remember to re-lock below —
-          // a bare release would leave leastPing with no data → no selection.
+          // Migrate the override off removed nodes BEFORE rmo — bare release
+          // would leave leastPing without observatory data → no selection.
           if (stickyTag && tagsToRemove.includes(stickyTag)) {
-            log.warn(`Xray Stage3 后API热刷新: sticky 锁定节点 ${stickyTag} 将被移除，稍后改锁新节点`)
-            stickyNodeRemoved = true
-            if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
-            stickyTag = null
+            await migrateOverrideBeforeRemove(cachePath, tagsToRemove, 'Xray Stage3 后API热刷新')
           }
           const results = await xrayApi.removeOutbounds(currentBinPath, currentLiveApiPort, tagsToRemove)
           for (const r of results) {
@@ -2475,36 +2517,6 @@ const Plugin = function (context) {
         }
         liveConfigHasProxyNodes = currentLiveNodeTags.size > 0
         log.info(`Xray Stage3 后API热刷新完成: liveNodes=${currentLiveNodeTags.size}, kept=${keptNodes.length}, added=${nodesToAdd.length}, removed=${tagsToRemove.length}`)
-        // Re-lock the balancer to the best remaining node (by cache delay) so
-        // traffic keeps flowing until observatory probes the swapped-in nodes.
-        if (stickyNodeRemoved && stickyTag == null && currentLiveNodeTags.size > 0) {
-          try {
-            const liveFingerprints = [...currentLiveNodeTags.keys()]
-            const liveEntries = xrayCache.readCacheEntriesByFingerprints(cachePath, liveFingerprints)
-            let bestFp = null
-            let bestDelay = Infinity
-            for (const e of liveEntries) {
-              const d = Number(e.delay)
-              if (Number.isFinite(d) && d > 0 && d < bestDelay) {
-                bestDelay = d
-                bestFp = xrayCache.fingerprintNode(e.node)
-              }
-            }
-            const newTag = bestFp ? currentLiveNodeTags.get(bestFp) : null
-            if (newTag && Number.isFinite(bestDelay)) {
-              await xrayApi.overrideBalancer(currentBinPath, currentLiveApiPort, 'balancer-proxy', newTag)
-              stickyTag = newTag
-              const probeIntervalSec = normalizePositiveInt(cfg.probeInterval, pluginConfig.probeInterval) || 300
-              armStickyAutoUnlock('Xray 热刷新改锁节点已自动解除', probeIntervalSec * 1000)
-              log.info(`Xray Stage3 后API热刷新: sticky 节点被移除，已改锁延时最低的新节点: tag=${newTag}, delay=${bestDelay}ms`)
-            } else {
-              await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
-              log.warn('Xray Stage3 后API热刷新: sticky 节点被移除且无可改锁节点，已解除锁定')
-            }
-          } catch (e) {
-            log.warn(`Xray Stage3 后API热刷新: 改锁新节点失败: ${e.message}`)
-          }
-        }
         return
       } catch (error) {
         log.warn(`Xray Stage3 后API热刷新失败，回退到重启: ${error.message}`)
@@ -2529,6 +2541,17 @@ const Plugin = function (context) {
       observatoryEnableConcurrency: true,
     })
     writeJsonFile(currentLiveConfigPath, liveConfig)
+    // Capture the locked node's fingerprint against the OLD tag map — the map
+    // is rebuilt below with reassigned tags, so the lock must migrate by fp.
+    let heldStickyFp = null
+    if (stickyTag) {
+      for (const [fp, tag] of currentLiveNodeTags) {
+        if (tag === stickyTag) {
+          heldStickyFp = fp
+          break
+        }
+      }
+    }
     liveConfigHasProxyNodes = selectedNodes.length > 0
     currentLiveNodeTags.clear()
     selectedNodes.forEach((node, i) => {
@@ -2542,8 +2565,9 @@ const Plugin = function (context) {
     event.fire('status', { key: 'plugin.xray.apiPort', value: currentLiveApiPort })
     log.info(`Xray Stage3 后热刷新 live config: proxyNodes=${selectedNodes.length}, kept=${keptNodes.length}, fresh=${selectedNodes.length - keptNodes.length} -> ${currentLiveConfigPath}`)
 
-    // xray restart clears balancer override — reset sticky state
-    if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
+    // xray restart clears balancer override — reset sticky state (re-applied below)
+    const heldUnlockAt = stickyUnlockTimer.getUnlockAt()
+    stickyUnlockTimer.disarm()
     stickyTag = null
 
     try {
@@ -2554,6 +2578,32 @@ const Plugin = function (context) {
       }
       event.fire('status', { key: 'plugin.xray.enabled', value: true })
       log.info('Xray Stage3 后热刷新: live 进程已重启并注入规则')
+      // Restart also wiped observatory data — leastPing selects nothing for a
+      // full probeInterval, so re-apply the lock (same node, else best survivor)
+      if (currentLiveApiPort && currentBinPath && currentLiveNodeTags.size > 0) {
+        const apiReady = await waitForProxyPortReady({ proxyPort: currentLiveApiPort, timeoutMs: 5000 })
+        if (apiReady) {
+          let newTag = heldStickyFp ? currentLiveNodeTags.get(heldStickyFp) : null
+          if (!newTag) {
+            newTag = pickOverrideSurvivorTag(cachePath, [])
+          }
+          if (newTag) {
+            try {
+              await xrayApi.overrideBalancer(currentBinPath, currentLiveApiPort, 'balancer-proxy', newTag)
+              stickyTag = newTag
+              const remainingMs = heldUnlockAt > Date.now()
+                ? heldUnlockAt - Date.now()
+                : (normalizePositiveInt(cfg.probeInterval, pluginConfig.probeInterval) || 300) * 1000
+              armStickyAutoUnlock('Xray 热刷新重启后锁定已自动解除', remainingMs)
+              log.info(`Xray Stage3 后热刷新: 已重新锁定出口节点 tag=${newTag}`)
+            } catch (e) {
+              log.warn(`Xray Stage3 后热刷新: 重新锁定出口节点失败: ${e.message}`)
+            }
+          }
+        } else {
+          log.warn('Xray Stage3 后热刷新: 重启后 API 端口未就绪，跳过重新锁定')
+        }
+      }
     } catch (error) {
       log.warn('Xray Stage3 后热刷新: live 进程重启失败:', error)
     }
@@ -3051,7 +3101,7 @@ const Plugin = function (context) {
           currentLiveNodeTags.clear()
           nextProxyTagIndex = 0
           liveConfigHasProxyNodes = false
-          if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
+          stickyUnlockTimer.disarm()
           stickyTag = null
         },
       })
@@ -3145,10 +3195,7 @@ const Plugin = function (context) {
       refreshGeneration += 1
       clearCacheRefreshTimer()
       // Clear sticky state before awaits to prevent enableSticky racing during close
-      if (stickyTimer) {
-        clearTimeout(stickyTimer)
-        stickyTimer = null
-      }
+      stickyUnlockTimer.disarm()
       const heldStickyTag = stickyTag
       stickyTag = null
       // Remove balancer override before stopping xray (best-effort)
@@ -3204,16 +3251,13 @@ const Plugin = function (context) {
     // --- Sticky balancer: lock exit IP for a duration ---
 
     resetStickyState () {
-      if (stickyTimer) {
-        clearTimeout(stickyTimer)
-        stickyTimer = null
-      }
+      stickyUnlockTimer.disarm()
       stickyTag = null
     },
 
     async getStickyStatus () {
       return {
-        active: stickyTimer !== null,
+        active: stickyUnlockTimer.isArmed(),
         tag: stickyTag,
         apiPort: currentLiveApiPort,
       }
@@ -3267,10 +3311,7 @@ const Plugin = function (context) {
           throw new Error(`observatory 还在首次探测中，balancer 暂无可用节点数据。请等待探测完成（最多 ${waitSec} 秒）后再解锁，否则 balancer 将无节点可选。`)
         }
 
-        if (stickyTimer) {
-          clearTimeout(stickyTimer)
-          stickyTimer = null
-        }
+        stickyUnlockTimer.disarm()
         const heldTag = stickyTag
         stickyTag = null
         if (currentLiveApiPort && currentBinPath) {
@@ -3948,11 +3989,10 @@ const Plugin = function (context) {
                 }
                 if (toRemove.length > 0) {
                   const tagsToRemove = toRemove.map(({ tag }) => tag)
-                  // Release sticky lock if the locked node is being removed
+                  // Migrate the override off trimmed nodes BEFORE rmo — bare
+                  // release leaves leastPing without data → no selection
                   if (stickyTag && tagsToRemove.includes(stickyTag)) {
-                    await xrayApi.removeBalancerOverride(currentBinPath, currentLiveApiPort, 'balancer-proxy').catch(() => {})
-                    if (stickyTimer) { clearTimeout(stickyTimer); stickyTimer = null }
-                    stickyTag = null
+                    await migrateOverrideBeforeRemove(cachePath, tagsToRemove, `Xray Stage3 批次 ${batchIndex} rmo`)
                   }
                   try {
                     await xrayApi.removeOutbounds(currentBinPath, currentLiveApiPort, tagsToRemove)
