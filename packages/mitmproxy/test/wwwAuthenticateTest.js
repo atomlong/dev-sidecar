@@ -7,14 +7,19 @@
 // 修复：移除 split(',')，保留字符串原值传给 res.setHeader()。
 const assert = require('node:assert')
 const http = require('node:http')
+const fs = require('node:fs')
 const path = require('node:path')
 
 const mitmproxy = require('../src/lib/proxy')
 const dnsUtil = require('../src/lib/dns')
 
 const REPO = path.resolve(__dirname, '..')
-const CA_CERT = '/home/uif79392/.dev-sidecar/dev-sidecar.ca.crt'
-const CA_KEY = '/home/uif79392/.dev-sidecar/dev-sidecar.ca.key.pem'
+// CA 路径：优先环境变量，其次默认 userBasePath（CI runner 无 dev-sidecar CA 时跳过本套件）
+const os = require('node:os')
+const userBasePath = path.join(os.homedir(), '.dev-sidecar')
+const CA_CERT = process.env.DS_CA_CERT || path.join(userBasePath, 'dev-sidecar.ca.crt')
+const CA_KEY = process.env.DS_CA_KEY || path.join(userBasePath, 'dev-sidecar.ca.key.pem')
+const caAvailable = fs.existsSync(CA_CERT) && fs.existsSync(CA_KEY)
 
 // 起一个返回指定 www-authenticate 头的上游 HTTP 服务器
 function startUpstream (headerValue) {
@@ -98,7 +103,7 @@ function requestViaProxy (proxyPort, upstreamPort) {
   })
 }
 
-describe('www-authenticate 响应头处理', function () {
+;(caAvailable ? describe : describe.skip)('www-authenticate 响应头处理', function () {
   this.timeout(10000)
 
   let proxy
