@@ -10,7 +10,12 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-// 必须在 require config-api 之前设置 HOME——defaultConfig 在模块加载时求值 userBasePath
+// 必须在 require config-api 之前设置 HOME——defaultConfig 在模块加载时求值 userBasePath。
+// HOME 是进程级全局：mocha 单进程顺序跑所有测试文件，本文件字母序排最前，
+// 污染会让后续依赖真实 HOME 的测试（configTest/versionTest 等发真实网络请求）
+// 读到已删除的 tmpHome 而失败。必须在 after 中恢复 HOME 并 reload 单例配置。
+const originalHome = process.env.HOME
+const originalUserprofile = process.env.USERPROFILE
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-test-home-'))
 process.env.HOME = tmpHome
 delete process.env.USERPROFILE
@@ -95,6 +100,18 @@ describe('configApi 持久化防御（save/update/reload）', () => {
   })
 
   after(() => {
-    fs.rmSync(tmpHome, { recursive: true, force: true })
+    // 恢复进程级环境，让同进程后续测试文件回到真实 HOME 状态。
+    // reload 让 config-api 单例的内存配置也回到真实 HOME（否则 configTarget
+    // 仍指向 tmpHome 的残留状态）。不删 tmpHome：log appenders 仍指向其
+    // logs 目录，删除会导致后续测试写日志 ENOENT；tmp 目录由系统清理。
+    process.env.HOME = originalHome
+    if (originalUserprofile === undefined) {
+      delete process.env.USERPROFILE
+    } else {
+      process.env.USERPROFILE = originalUserprofile
+    }
+    try {
+      configApi.reload()
+    } catch { /* 真实 HOME 无配置文件时 reload 走默认，允许 */ }
   })
 })

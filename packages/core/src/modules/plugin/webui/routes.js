@@ -112,16 +112,18 @@ function createRouter (context) {
     }
   }
 
-  // Helper: read body
+  // Helper: read body. Resolves null for invalid JSON so route-level type
+  // checks reject it with 400 — rejecting here would escape the route's try
+  // (readBody is awaited before it) and crash the process as unhandled.
   function readBody (req) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       let data = ''
       req.on('data', (chunk) => { data += chunk })
       req.on('end', () => {
         try { resolve(data ? JSON.parse(data) : {}) }
-        catch (e) { reject(new Error('Invalid JSON body')) }
+        catch (e) { resolve(null) }
       })
-      req.on('error', reject)
+      req.on('error', () => resolve(null))
     })
   }
 
@@ -584,6 +586,10 @@ function createRouter (context) {
 
     if (method === 'POST' && pathname === '/api/xray/sticky') {
       const body = await readBody(req)
+      if (!isPlainObject(body)) {
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'sticky body must be a JSON object' })
+        return
+      }
       const duration = parseInt(body.duration) || 300
       // duration=0 means permanent (use a very large value)
       const actualDuration = duration === 0 ? 86400 * 365 * 10 : duration
