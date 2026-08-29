@@ -2126,7 +2126,65 @@ attempt_public_cherry_pick() {
     log_error "Automatic retry with strategy '$strategy' failed for commit: $commit"
 
     log_error "Leaving repository on public branch for manual conflict resolution."
+    log_warn "NOTE: You are now on branch '$(git branch --show-current)' with possible partial state."
+    log_warn "      Run 'git cherry-pick --abort || git reset --hard && git checkout $BRANCH_PRIVATE' to return to a clean source branch."
     return 1
+}
+
+# Description: Cherry-pick a MIXED commit (public + private files) with file-level
+#              exclusion instead of skipping the whole commit.
+#              Whole-commit skipping (the old behavior) starved master of public
+#              files whenever one commit mixed code with private docs — seen in
+#              the v2.2.8 release where 3e74127f (WebUI code + private plan doc)
+#              was skipped entirely, leaving master without the WebUI plugin and
+#              breaking every later commit touching those files.
+# Usage: attempt_public_cherry_pick_excluding_private <commit> <strategy>
+# Return: 0 success (or nothing public remained — skipped), 1 failure
+attempt_public_cherry_pick_excluding_private() {
+    local commit="$1"
+    local strategy="$2"
+
+    log_info "Mixed commit (public + private files), applying with file-level exclusion: $commit"
+    if ! git cherry-pick -x --no-commit --allow-empty "$commit" 2>/dev/null; then
+        # Public-file conflicts — reuse the existing per-file strategy resolution.
+        if ! resolve_unmerged_public_paths_with_strategy "$strategy"; then
+            log_error "Failed to resolve conflicts in mixed commit: $commit"
+            return 1
+        fi
+    fi
+
+    # Strip every private-file change from the index / worktree:
+    #  - file absent on master (HEAD): new private file → unstage + delete worktree copy
+    #  - file present on master (HEAD): should not happen (master must stay public),
+    #    but restore the HEAD version as a safety net.
+    local file
+    local OLD_IFS="$IFS"
+    IFS=$'\n'
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        is_private_file "$file" || continue
+        if git cat-file -e "HEAD:$file" 2>/dev/null; then
+            git checkout HEAD -- "$file" 2>/dev/null || true
+        else
+            git rm --cached -q --ignore-unmatch -- "$file" 2>/dev/null || true
+            rm -f -- "$file" 2>/dev/null || true
+        fi
+    done < <(git show --name-only --format= "$commit")
+    IFS="$OLD_IFS"
+
+    # Nothing public remains (pure-private commit degenerate case) → skip.
+    if git diff --cached --quiet && git diff --quiet; then
+        git cherry-pick --quit 2>/dev/null || true
+        log_info "No public changes remain after exclusion, skipped: $commit"
+        return 0
+    fi
+
+    if ! git commit -C "$commit" 2>/dev/null; then
+        log_error "Failed to commit excluded version of: $commit"
+        return 1
+    fi
+    log_info "Cherry-picked with private files excluded: $commit"
+    return 0
 }
 
 # ==========================================
@@ -2567,7 +2625,13 @@ case "$cmd" in
                 IFS="$OLD_IFS"
                 
                 if [ "$is_private" -eq 1 ]; then
-                    log_info "Skipping private commit: $commit"
+                    # Mixed/pure-private commit: apply with file-level exclusion
+                    # instead of skipping the whole commit (old behavior starved
+                    # master of public files mixed into the same commit).
+                    if ! attempt_public_cherry_pick_excluding_private "$commit" "$public_conflict_strategy"; then
+                        trap - EXIT
+                        exit 1
+                    fi
                     continue
                 fi
                 
@@ -2600,6 +2664,14 @@ case "$cmd" in
         rm -f "$PRIVATE_DIFF_FILE" "$PUBLIC_DIFF_FILE"
         echo ""
         log_info "Sync and Push completed successfully."
+        # Return to the source branch so follow-up work lands on develop (the
+        # private source of truth). Staying silently on master caused fixes to
+        # be committed directly to master twice during the v2.2.8 release.
+        if git checkout "$BRANCH_PRIVATE" 2>/dev/null; then
+            log_info "Switched back to source branch '$BRANCH_PRIVATE'."
+        else
+            log_warn "Could not switch back to '$BRANCH_PRIVATE' — you are still on '$(git branch --show-current)'."
+        fi
         ;;
         
     *)
