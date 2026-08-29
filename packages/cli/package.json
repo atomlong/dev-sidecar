@@ -1,7 +1,7 @@
 {
   "name": "@docmirror/dev-sidecar-cli",
 
-  "version": "2.2.7",
+  "version": "2.2.8",
 
   "private": false,
   "description": "给开发者的加速代理工具",
