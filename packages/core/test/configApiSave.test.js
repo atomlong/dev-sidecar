@@ -5,6 +5,13 @@
 // 3. config.json 已有 [] 脏数据时，reload + save 自愈清除
 // 注：测试走 update()（WebUI/GUI 的真实路径），它先 clone 全量内存配置再 save；
 //     直接 save(部分配置) 会把缺失的顶层键记为删除标记并从内存清除，属 API 误用边界。
+//
+// **进程级 HOME 污染说明**：mocha 加载阶段执行所有文件顶层代码——本文件
+// 加载时改 process.env.HOME，会让同进程随后加载的上游裸脚本测试（versionTest
+// 等顶层发真实网络请求并断言）捕获坏数据后 throw 崩掉整个 run。现已依赖
+// .mocharc.json 的 --parallel（每文件独立 worker 进程）隔离此污染；after 钩子
+// 仍恢复 HOME + reload 单例，保证同 worker 内后续文件不受影响。
+// 独立运行：npx mocha test/configApiSave.test.js --exit
 const assert = require('node:assert')
 const fs = require('node:fs')
 const os = require('node:os')

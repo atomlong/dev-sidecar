@@ -31,12 +31,14 @@ describe('xray gen_config', () => {
       assert.deepStrictEqual(config.observatory.subjectSelector, ['proxy_'])
     })
 
-    it('prefix selector present even with zero nodes (observatory exists, balancer absent)', () => {
+    it('prefix selector present even with zero nodes (fixed template: balancer always generated)', () => {
       const config = genConfig(10801, [], [], 'https://example.com', 60, {
         observatoryEnableConcurrency: true,
       })
 
-      assert.strictEqual(config.routing.balancers.length, 0)
+      // v2.2.7 fixed-template behavior: genConfig always emits the balancer
+      // framework so ado-injected nodes are routable even from an empty start.
+      assert.strictEqual(config.routing.balancers.length, 1)
       // observatory is still generated with the prefix selector
       assert.ok(config.observatory)
       assert.deepStrictEqual(config.observatory.subjectSelector, ['proxy_'])

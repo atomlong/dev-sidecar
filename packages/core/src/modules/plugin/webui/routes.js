@@ -33,10 +33,11 @@ function getXrayCoreVersion () {
 // save() calls set(diffConfig) which resets in-memory intercepts to the
 // persisted state (Auto-injected entries stripped), so any save/update/reload
 // route must re-inject xray rules to keep tunnel routing alive.
-// xrayApiOverride lets tests spy on calls without the global singleton.
+// xrayApiOverride !== undefined (including null from a test context) skips the
+// global expose require — loading expose in tests has process-wide side effects.
 async function reInjectXrayRules (globalConfig, xrayApiOverride) {
   try {
-    const xrayApi = xrayApiOverride || require('../../../expose').api.plugin.xray
+    const xrayApi = xrayApiOverride !== undefined ? xrayApiOverride : require('../../../expose').api.plugin.xray
     await xrayApi?.removeRules?.()
     const xrayCfg = globalConfig.get().plugin.xray
     const xrayPort = globalConfig.get().server.setting.xrayPort
@@ -48,6 +49,7 @@ async function reInjectXrayRules (globalConfig, xrayApiOverride) {
 
 function createRouter (context) {
   const { config: globalConfig, event, log: ctxLog, server: ctxServer } = context
+  const ctxXrayApi = context.xrayApi
 
   // Helper: check if request is from localhost
   function isLocalhost (req) {
@@ -663,7 +665,7 @@ function createRouter (context) {
         globalConfig.update(body)
         // Hot reload
         try { await ctxServer.reload() } catch { /* ignore */ }
-        await reInjectXrayRules(globalConfig)
+        await reInjectXrayRules(globalConfig, ctxXrayApi)
         sendJson(res, 200, { status: 'ok', message: 'Config updated and hot-reloaded' })
       } catch (err) {
         sendJson(res, 500, { error: true, code: 'CONFIG_UPDATE_FAILED', message: err.message })
@@ -680,7 +682,7 @@ function createRouter (context) {
       try {
         globalConfig.update({ server: { intercepts: body } })
         try { await ctxServer.reload() } catch { /* ignore */ }
-        await reInjectXrayRules(globalConfig)
+        await reInjectXrayRules(globalConfig, ctxXrayApi)
         sendJson(res, 200, { status: 'ok', message: 'Intercepts updated' })
       } catch (err) {
         sendJson(res, 500, { error: true, code: 'CONFIG_UPDATE_FAILED', message: err.message })
@@ -698,7 +700,7 @@ function createRouter (context) {
       try {
         globalConfig.update({ server: { preSetIpList: body } })
         try { await ctxServer.reload() } catch { /* ignore */ }
-        await reInjectXrayRules(globalConfig)
+        await reInjectXrayRules(globalConfig, ctxXrayApi)
         sendJson(res, 200, { status: 'ok', message: 'preSetIpList updated' })
       } catch (err) {
         sendJson(res, 500, { error: true, code: 'CONFIG_UPDATE_FAILED', message: err.message })
@@ -715,7 +717,7 @@ function createRouter (context) {
       }
       try {
         globalConfig.update({ plugin: { xray: { rules: body } } })
-        await reInjectXrayRules(globalConfig)
+        await reInjectXrayRules(globalConfig, ctxXrayApi)
         sendJson(res, 200, { status: 'ok', message: 'xray rules updated' })
       } catch (err) {
         sendJson(res, 500, { error: true, code: 'CONFIG_UPDATE_FAILED', message: err.message })
@@ -752,7 +754,7 @@ function createRouter (context) {
           await globalConfig.downloadRemoteConfig()
           globalConfig.reload()
           try { await ctxServer.reload() } catch { /* ignore */ }
-          await reInjectXrayRules(globalConfig)
+          await reInjectXrayRules(globalConfig, ctxXrayApi)
           ctxLog.info('WebUI 远程配置更新完成')
         } catch (err) {
           ctxLog.error('WebUI 远程配置更新失败:', err)

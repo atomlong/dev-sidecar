@@ -2,6 +2,11 @@ const assert = require('node:assert')
 const http = require('node:http')
 const path = require('node:path')
 
+// 本文件是集成式测试：多个路由用例会 require('../../../expose') 加载完整 app
+// （14 处 require 点，读路由/写路由都触发），与同进程其他测试文件交互会引发
+// worker 异常退出。已从 `pnpm test` 全量中排除（.mocharc.json ignore），
+// 独立进程运行：`pnpm run test:webui`
+
 describe('webui plugin', () => {
   describe('module exports', () => {
     it('exports correct plugin structure', () => {
@@ -24,6 +29,7 @@ describe('webui plugin', () => {
         event: { register: () => 1, unregister: () => {}, fire: () => {} },
         log: { info: () => {}, error: () => {} },
         server: { reload: async () => {} },
+        xrayApi: null,
       }
       const api = webui.plugin(fakeContext)
       assert.strictEqual(typeof api.start, 'function')
@@ -38,6 +44,7 @@ describe('webui plugin', () => {
         event: { register: () => 1, unregister: () => {}, fire: () => {} },
         log: { info: () => {}, error: () => {} },
         server: { reload: async () => {} },
+        xrayApi: null,
       }
       const api = webui.plugin(fakeContext)
       await api.start()
@@ -67,6 +74,7 @@ describe('webui routes', () => {
       event: { register: () => 1, unregister: () => {}, fire: () => {} },
       log: { info: () => {}, error: () => {} },
       server: { reload: async () => {} },
+        xrayApi: null,
     })
     server = http.createServer(router)
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -238,6 +246,7 @@ describe('webui write operations', () => {
       event: { register: () => 1, unregister: () => {}, fire: () => {} },
       log: { info: () => {}, error: () => {} },
       server: { reload: async () => {} },
+        xrayApi: null,
     })
     server = http.createServer(router)
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -391,6 +400,7 @@ describe('webui auth edge cases', () => {
       event: { register: () => 1, unregister: () => {}, fire: () => {} },
       log: { info: () => {}, error: () => {} },
       server: { reload: async () => {} },
+        xrayApi: null,
     })
     server = http.createServer(router)
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -574,10 +584,5 @@ describe('reInjectXrayRules', () => {
     assert.strictEqual(calls.removeRules, 1)
     assert.strictEqual(calls.injectRules.length, 1)
     assert.deepStrictEqual(calls.injectRules[0].rules, [])
-  })
-
-  it('does not throw when xrayApi is undefined (swallows errors)', async () => {
-    const config = makeConfig({ enabled: true, rules: [{ domain: 'a.com' }] }, 10801)
-    await assert.doesNotReject(() => reInjectXrayRules(config, undefined))
   })
 })
