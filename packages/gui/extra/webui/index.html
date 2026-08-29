@@ -314,8 +314,9 @@ function initProbe() {
   <div class="stat"><div class="val" id="p-s2-status">-</div><div class="label">状态</div></div>
   <div class="stat"><div class="val" id="p-s2-interval">-</div><div class="label">间隔</div></div>
   <div class="stat"><div class="val" id="p-s2-next">-</div><div class="label">下一轮</div></div>
-  <div class="stat"><div class="val" id="p-s2-last">-</div><div class="label">上轮耗时</div></div>
-  <div class="stat"><div class="val" id="p-s2-fetched">-</div><div class="label">上轮抓取</div></div>
+  <div class="stat"><div class="val" id="p-s2-progress">-</div><div class="label">进度</div></div>
+  <div class="stat"><div class="val" id="p-s2-last">-</div><div class="label">耗时</div></div>
+  <div class="stat"><div class="val" id="p-s2-fetched">-</div><div class="label">抓取</div></div>
 </div>
 
 <div class="card"><h3>Stage 3：缓存探测</h3>
@@ -470,19 +471,22 @@ async function loadProbe(silent) {
 
     // Stage2
     const s2 = stage.stage2 || {};
-    setVal('p-s2-status', s2.enabled ? '已开启' : '已关闭');
+    setVal('p-s2-status', s2.state === 'off' ? '已关闭' : (s2.state === 'running' ? '运行中' : (s2.enabled ? '空闲' : '已关闭')));
     setVal('p-s2-interval', s2.intervalHours ? s2.intervalHours + 'h' : '-');
-    setVal('p-s2-next', s2.enabled ? (s2.nextSyncAt > 0 ? (s2.nextSyncOverdue ? '待触发' : fmtTime(s2.nextSyncAt)) : '-') : '-');
-    setVal('p-s2-last', s2.lastSyncDurationMs > 0 ? fmtDuration(s2.lastSyncDurationMs) : '-');
-    setVal('p-s2-fetched', s2.lastSyncFetchedCount > 0 ? s2.lastSyncFetchedCount : '-');
+    setVal('p-s2-next', s2.state === 'off' ? '-' : (s2.state === 'running' ? '-' : (s2.nextTriggerAt > 0 ? '约 ' + fmtTime(s2.nextTriggerAt) : '-')));
+    setVal('p-s2-progress', s2.state === 'running' && s2.progress ? (s2.progress.current + ' / ' + s2.progress.total) : '-');
+    setVal('p-s2-last', s2.state === 'running'
+      ? (s2.startedAt > 0 ? fmtDuration(Date.now() - s2.startedAt) : '-')
+      : (s2.lastSyncDurationMs > 0 ? fmtDuration(s2.lastSyncDurationMs) : '-'));
+    setVal('p-s2-fetched', s2.state === 'running' ? (s2.fetched != null ? s2.fetched : '-') : (s2.lastSyncFetchedCount > 0 ? s2.lastSyncFetchedCount : '-'));
 
     // Stage3
     const s3 = stage.stage3 || {};
-    setVal('p-s3-status', s3.isRunning ? '运行中' : '空闲');
+    setVal('p-s3-status', s3.state === 'off' ? '已关闭' : (s3.state === 'running' ? '运行中' : (s3.enabled === false ? '已关闭' : '空闲')));
     setVal('p-s3-gen', s3.generation ? '#'+s3.generation : '-');
     setVal('p-s3-batch', (s3.batchIndex || 0) + ' / ' + (s3.plannedBatchCount || 0));
     setVal('p-s3-processed', (s3.processed || 0) + ' / ' + (s3.totalDue || 0));
-    setVal('p-s3-duration', s3.roundStartedAt > 0 && s3.isRunning ? fmtDuration(Date.now() - s3.roundStartedAt) : '-');
+    setVal('p-s3-duration', s3.roundStartedAt > 0 && s3.state === 'running' ? fmtDuration(Date.now() - s3.roundStartedAt) : '-');
     setVal('p-s3-next', s3.nextRefreshAt > 0 ? fmtTime(s3.nextRefreshAt) + ' (' + fmtCountdown(s3.nextRefreshAt) + ')' : '-');
     setVal('p-s3-available', s3.availableCount || 0);
     setVal('p-s3-failed', (s3.explicitFailureCount || 0) + ' / ' + (s3.removedCount || 0));

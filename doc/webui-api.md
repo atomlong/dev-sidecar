@@ -331,15 +331,21 @@
   },
   "stage2": {
     "enabled": true,
+    "state": "idle",
     "intervalHours": 24,
     "lastSyncAt": 1787456878000,
     "lastSyncDurationMs": 12000,
     "lastSyncFetchedCount": 4321,
     "nextSyncAt": 1787543278000,
-    "nextSyncOverdue": false
+    "nextSyncOverdue": false,
+    "nextTriggerAt": 1787543278000,
+    "startedAt": 0,
+    "progress": null,
+    "fetched": 4321
   },
   "stage3": {
-    "isRunning": true,
+    "enabled": true,
+    "state": "running",
     "generation": 5,
     "roundStartedAt": 1787464504968,
     "nextRefreshAt": 1787468000000,
@@ -362,8 +368,15 @@
 | Stage1 | `processStarted` | 主 xray 进程是否启动（`livePort > 0`） |
 | Stage1 | `currentSelectTag` | 当前 balancer 选中节点（sticky 锁定时为锁定节点） |
 | Stage2 | `enabled` | 订阅同步是否开启（`subscriptionSyncEnabled`） |
+| Stage2 | `state` | 三态：`off`（已关闭）/ `idle`（空闲）/ `running`（远端订阅抓取进行中） |
 | Stage2 | `nextSyncAt` | 预计下次同步时间 = `lastSyncAt + intervalHours*3600*1000` |
 | Stage2 | `nextSyncOverdue` | `nextSyncAt` 已过期，等待 Stage3 轮末触发 |
+| Stage2 | `nextTriggerAt` | 预计触发时间 ≈ `max(nextSyncAt, 下一轮 Stage3 开始时间)`——Stage2 在 Stage3 轮末按需触发，实际触发点为满足间隔条件后的第一个 Stage3 轮结束时刻 |
+| Stage2 | `startedAt` | 本轮开始时间（ms 时间戳，`state === 'running'` 时有效，否则 0） |
+| Stage2 | `progress` | `{ current, total }` 当前正在抓取第几个订阅 / 订阅总数（`running` 时有效，否则 `null`） |
+| Stage2 | `fetched` | 已抓取节点数：`running` 时为本轮实时累计，`idle` 时等于 `lastSyncFetchedCount` |
+| Stage3 | `enabled` | 缓存周期探测是否开启（`cacheRefreshEnabled`） |
+| Stage3 | `state` | 三态：`off`（已关闭）/ `idle`（空闲）/ `running`（探测轮进行中） |
 | Stage3 | `roundStartedAt` | 本轮开始时间（ms 时间戳） |
 | Stage3 | `nextRefreshAt` | 下一轮触发时间（ms 时间戳，本轮结束时计算） |
 | Stage3 | `totalDue`/`processed` | 本轮到期候选数 / 已处理数 |
