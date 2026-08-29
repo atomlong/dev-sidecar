@@ -592,8 +592,10 @@ function createRouter (context) {
         sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'sticky body must be a JSON object' })
         return
       }
-      const duration = parseInt(body.duration) || 300
-      // duration=0 means permanent (use a very large value)
+      // duration=0 means permanent — must NOT fall through `|| 300`, which
+      // silently converted the "永久" option (0) into a 300s auto-unlock.
+      const rawDuration = parseInt(body.duration)
+      const duration = Number.isFinite(rawDuration) && rawDuration >= 0 ? rawDuration : 300
       const actualDuration = duration === 0 ? 86400 * 365 * 10 : duration
       try {
         const DevSidecar = require('../../../expose')
