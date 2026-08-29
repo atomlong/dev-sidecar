@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.2.8] - Unreleased
+## [v2.2.8] - 2026-08-29
 
 ### Changed
 - **WebUI 重构：合并探测页 + 局部刷新 + 国家 emoji** (fork). `packages/gui/extra/webui/index.html` 重写：合并"Xray 节点"和"探测状态"为"探测"页（Stage1/Stage2/Stage3 三卡片），去掉"上轮汇总"。Stage1 卡片显示主 xray 进程状态/当前选中节点（含国家 emoji）/出站节点数，右下角放 Balancer 锁定/解锁控件 + 时长下拉（锁定时禁用），完整 20 节点详情表可折叠展开（列排序）。Stage2 卡片显示开关/间隔/下一轮预计时间/上轮耗时/上轮抓取数。Stage3 卡片显示开关/轮次/批次进度/节点进度/耗时/下一轮时间/本轮可用/本轮失败。仪表盘新增版本号卡（`GET /api/version`，含 dev-sidecar + Xray core + Node.js 三版本），端口卡补充 31180 HTTP 代理，去掉"重启服务"按钮。日志页加手动刷新按钮 + 自动刷新切换 + 间隔下拉（2s/5s/10s/30s）。所有面板改局部刷新（`textContent` 更新，不重建 DOM），避免 10s 自动刷新时界面抖动。缓存/配置页骨架优先渲染（固定卡片布局立即显示 + `-` 占位 + "加载中..." tbody，API 返回后局部填充）。国家字段用 `String.fromCodePoint` 算法生成 emoji 国旗（ISO 2 字母代码），内联 `TwemojiCountryFlags.woff2` 字体（base64 data URL）解决 Linux Chromium 不渲染国旗 emoji 问题。导航精简为 5 项（仪表盘/探测/缓存/日志/配置）。
