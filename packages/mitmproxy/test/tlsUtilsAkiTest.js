@@ -12,6 +12,14 @@ const { execSync } = require('node:child_process')
 const forge = require('node-forge')
 const tlsUtils = require('../src/lib/proxy/tls/tlsUtils')
 
+// 真实落盘 CA 路径：优先环境变量，其次默认 userBasePath（CI runner 无 CA 时跳过依赖它的用例）
+const path = require('node:path')
+const os = require('node:os')
+const userBasePath = path.join(os.homedir(), '.dev-sidecar')
+const realCaCertPath = process.env.DS_CA_CERT || path.join(userBasePath, 'dev-sidecar.ca.crt')
+const realCaKeyPath = process.env.DS_CA_KEY || path.join(userBasePath, 'dev-sidecar.ca.key.pem')
+const realCaAvailable = fs.existsSync(realCaCertPath) && fs.existsSync(realCaKeyPath)
+
 // 生成一对 CA 证书 + 私钥（自签，含 SKI 扩展，模拟 dev-sidecar 运行时的 CA）
 function makeCA (cn = 'dev-sidecar Test CA') {
   const keys = forge.pki.rsa.generateKeyPair(2048)
@@ -110,13 +118,11 @@ describe('MITM 叶子证书 Authority Key Identifier', function () {
     assert.strictEqual(akiOf(leafPem), skiOf(caPem), '叶子 AKI 须指向 CA 的 SKI')
   })
 
-  it('对真实落盘 CA（~/.dev-sidecar）签发的叶子 AKI 等于该 CA 的 SKI', async () => {
-    const caCertPath = '/home/uif79392/.dev-sidecar/dev-sidecar.ca.crt'
-    if (!fs.existsSync(caCertPath)) {
-      this.skip()
-    }
-    const caKeyPem = fs.readFileSync('/home/uif79392/.dev-sidecar/dev-sidecar.ca.key.pem', 'utf8')
-    const caCertPem = fs.readFileSync(caCertPath, 'utf8')
+  // CI runner 无 dev-sidecar CA 时跳过（路径硬编码曾是地雷：this.skip 在箭头
+  // 函数里 this 非 mocha context，触发 TypeError 崩 CI——改用条件 it.skip）
+  ;(realCaAvailable ? it : it.skip)('对真实落盘 CA（~/.dev-sidecar）签发的叶子 AKI 等于该 CA 的 SKI', async () => {
+    const caKeyPem = fs.readFileSync(realCaKeyPath, 'utf8')
+    const caCertPem = fs.readFileSync(realCaCertPath, 'utf8')
     const caCert = forge.pki.certificateFromPem(caCertPem)
     const caKey = forge.pki.privateKeyFromPem(caKeyPem)
     const { cert } = await tlsUtils.createFakeCertificateByDomain(
