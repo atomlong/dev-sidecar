@@ -42,9 +42,11 @@ function makeCA (cn = 'dev-sidecar Test CA') {
 
 // 用 openssl 解析 PEM 证书，提取指定扩展的 hex 值行，避免 node-forge 扩展
 // ASN.1 内部结构差异导致的比较错误。AKI/SKI 行格式：<Label>:\n  <hex>\n
+// 临时文件用 os.tmpdir()（写死 /tmp 在 Windows 解析为 D:\tmp 会 ENOENT）
+const tmpCertPath = path.join(os.tmpdir(), '_aki_cert.pem')
 function getExtHexFromOpenssl (pem, extLabel) {
-  fs.writeFileSync('/tmp/_aki_cert.pem', pem)
-  const text = execSync('openssl x509 -in /tmp/_aki_cert.pem -noout -text', { encoding: 'utf8' })
+  fs.writeFileSync(tmpCertPath, pem)
+  const text = execSync(`openssl x509 -in "${tmpCertPath}" -noout -text`, { encoding: 'utf8' })
   const idx = text.indexOf(extLabel)
   if (idx < 0) return null
   const match = text.slice(idx + extLabel.length).match(/\n\s*([0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2})+)/)
