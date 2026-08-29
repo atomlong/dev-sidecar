@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.2.9] - Unreleased
+
+### Fixed
+- **修复 WebUI 节点表 shadowsocks 家族协议的地址/端口列显示为空** (fork). `packages/gui/extra/webui/index.html` 的节点字段提取链只处理了 trojan（`proxySettings.server`）和 vless/vmess（`proxySettings.vnext`）两种结构——shadowsocks-2022（`xray.proxy.shadowsocks_2022.ClientConfig`）的地址/端口是 `proxySettings` **顶层扁平字段**（`address`/`port` 直接在下），旧 shadowsocks 是 `proxySettings.servers[]`，两者都匹配不到 → 节点详情表的地址/端口列显示空。修复：提取链补全 ss-2022 扁平 `proxySettings.address/port` 与旧 ss 的 `proxySettings.servers[0]` 两级回退。实测：`proxy_150`（shadowsocks-2022 节点）从地址/端口全空修复为 `130.61.233.63 | 59924` 完整显示，国家关联（🇩🇪 DE）不受影响。
+
 ## [v2.2.8] - 2026-08-29
 
 ### Changed
