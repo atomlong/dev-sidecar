@@ -1,0 +1,6 @@
+{
+  "timeout": 10000,
+  "parallel": true,
+  "jobs": 2,
+  "ignore": ["test/webui.test.js"]
+}
