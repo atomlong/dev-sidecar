@@ -49,6 +49,7 @@ PRIVATE_PATTERNS=(
     "^doc/xray-stage3-persistent-probe"
     "^doc/xray-devops\.md"
     "^doc/webui-refactor-plan\.md"
+    "^\.submit-synced"
 )
 
 # Construct Regex from list
@@ -1998,6 +1999,13 @@ get_unsynced_public_commits() {
     done
 
     for commit in $candidate_commits; do
+        # .submit-synced records source SHAs already synced (file-level excluded or
+        # CHANGELOG-normalized picks). patch-id detection (git cherry) mismatches
+        # these because exclusion/normalization changes the diff shape, which made
+        # every re-sync replay them and die on conflicts (seen in v2.2.8 aftermath).
+        if grep -q "^${commit}$" .submit-synced 2>/dev/null; then
+            continue
+        fi
         if [ -n "${unsynced_commit_map["$commit"]:-}" ]; then
             echo "$commit"
         fi
@@ -2089,11 +2097,13 @@ attempt_public_cherry_pick() {
 
     log_info "Cherry-picking: $commit"
     if git cherry-pick -x --allow-empty "$commit"; then
+        echo "$commit" >> .submit-synced
         return 0
     fi
 
     if continue_public_cherry_pick_if_resolved "$commit"; then
         log_info "rerere auto-resolved commit: $commit"
+        echo "$commit" >> .submit-synced
         return 0
     fi
 
@@ -2113,6 +2123,7 @@ attempt_public_cherry_pick() {
     if git cherry-pick -x --no-commit --allow-empty "$commit" 2>/dev/null; then
         # No conflicts (or rerere resolved them all).
         git commit --no-edit --allow-empty
+        echo "$commit" >> .submit-synced
         log_info "Cherry-pick succeeded (no conflicts): $commit"
         return 0
     fi
@@ -2120,6 +2131,7 @@ attempt_public_cherry_pick() {
     # Conflicts remain — resolve each conflicted file entirely from "our" side.
     if resolve_unmerged_public_paths_with_strategy "$strategy" && continue_public_cherry_pick_if_resolved "$commit"; then
         log_info "Force auto-resolved commit with per-file strategy '$strategy': $commit"
+        echo "$commit" >> .submit-synced
         return 0
     fi
 
@@ -2175,6 +2187,7 @@ attempt_public_cherry_pick_excluding_private() {
     # Nothing public remains (pure-private commit degenerate case) → skip.
     if git diff --cached --quiet && git diff --quiet; then
         git cherry-pick --quit 2>/dev/null || true
+        echo "$commit" >> .submit-synced
         log_info "No public changes remain after exclusion, skipped: $commit"
         return 0
     fi
@@ -2183,6 +2196,10 @@ attempt_public_cherry_pick_excluding_private() {
         log_error "Failed to commit excluded version of: $commit"
         return 1
     fi
+    # Record in the sync map: exclusion changed the diff shape so patch-id
+    # (git cherry) can never match this commit again — without the record the
+    # next sync replays it forever.
+    echo "$commit" >> .submit-synced
     log_info "Cherry-picked with private files excluded: $commit"
     return 0
 }
