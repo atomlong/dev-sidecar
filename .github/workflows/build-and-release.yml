@@ -126,7 +126,11 @@ jobs:
       - name: "test packages/core"
         run: |
           cd packages/core;
-          pnpm run test;
+          # Windows: mocha 8.4 parallel 的多 worker 在 Windows runner 上收尾时
+          # workerpool 静默崩溃（122 passing 后 exit 1 无 failing 显示），
+          # 用 --jobs 1 保留每文件独立进程隔离、绕开多 worker bug
+          if [ "$RUNNER_OS" = "Windows" ]; then pnpm run test -- --jobs 1; else pnpm run test; fi;
+        shell: bash
 
       - name: "test packages/mitmproxy"
         run: |
