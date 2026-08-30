@@ -4,6 +4,8 @@
 >
 > 所有接口返回 JSON。非 2xx 响应体含 `{ error: true, code, message }`。
 >
+> **所有 `/api/*` 响应为 gzip 压缩**——非浏览器消费方请确保客户端透明解压（curl 需 `--compressed`；Python httpx / Node fetch 默认处理）。
+>
 > 写操作（POST/PUT/DELETE）默认需要本地校验；读操作（GET）公开。未来如启用 token 认证，所有 `/api/*` 需带 `Authorization: Bearer <token>`，`/api/version` 和 `/api/health` 例外。
 
 ## 通用
@@ -253,25 +255,73 @@
 |---|---|---|---|
 | `page` | number | `1` | 页码 |
 | `pageSize` | number | `50` | 每页条数 |
-| `sort` | string | `smart` | 排序策略，`smart` = 延时升序 + 失效置底 |
+| `sort` | string | `smart` | 排序策略：`smart` = stable 优先 + 延时升序；`delay` = 延时升序；`stable` = stable 优先 |
 
 **响应** `200`
 ```json
 {
   "rows": [
-    { "country": "FR", "protocol": "trojan", "address": "172.67.149.60", "delay": 879, "stable": true }
+    {
+      "tag": "",
+      "protocol": "trojan",
+      "address": "172.67.149.60",
+      "port": 443,
+      "delay": 879,
+      "country": "FR",
+      "owner": "OVH SAS",
+      "failureStreak": 0,
+      "stable": true,
+      "exitIp": "51.15.243.182",
+      "updatedAt": "2026-08-30T13:18:27.000+08:00"
+    }
   ],
-  "total": 560546,
   "page": 1,
-  "pageSize": 50
+  "pageSize": 50,
+  "returned": 50
 }
 ```
 
+`address`/`port` 按协议结构提取：trojan/旧 ss = `settings.servers[0]`；vless/vmess = `settings.vnext[0]`；ss-2022 = 扁平 `settings.address/port`。
+
 ### GET /api/xray/cache/nodes/export
 
-导出缓存节点为文件（用于备份/迁移）。触发后台导出任务，结果缓存 30s。
+按条件查询缓存节点并导出（供下游消费方起独立 xray / 维护节点池）。同步响应；限流 10s/次（`429 RATE_LIMITED`），同参数响应缓存 30s。
 
-**响应** `200` `{ "status": "accepted" }` 或 `{ "status": "ready", "url": "/api/xray/cache/nodes/export?download=token" }`
+**查询参数**
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `format` | string | `sharelink` | `sharelink` = 分享链接数组；`outbound` = 完整 xray outbound JSON（含凭据，tag 重编为 `proxy_0..N`，可直接起独立 xray）；`full` = 含 address/port/分享链接/元数据的对象数组 |
+| `includeMeta` | bool | `true` | `format=outbound` 时返回 `meta` 数组（与 `outbounds` 按 tag 一一对应），`false` 时为 `null` |
+| `country` | string | 无 | 国家过滤，逗号分隔多选（如 `US,DE,SG`），空 = 不限 |
+| `available` | bool | `false` | `true` = 只返回 `delay>0` 且 `failureStreak < maxFailureStreak` 的可用节点 |
+| `maxFailureStreak` | int | `3` | `available` 的连败阈值，消费方可按场景调大 |
+| `maxDelay` | int | `0` | 延时上限（毫秒），`0` = 不限 |
+| `owner` | string | 无 | 节点提供方关键词过滤（不区分大小写子串匹配） |
+| `sort` | string | `smart` | `smart` = stable 优先 + 延时升序；`delay` = 延时升序；`stable` = stable 优先 |
+| `shuffle` | bool | `false` | `true` = 取 top `2×limit` 候选池，不放回随机抽样 `limit` 个 |
+| `limit` | int | `100` | 上限 500，超限返回 `400 LIMIT_TOO_LARGE` |
+| `offset` | int | `0` | 分页偏移（`shuffle=true` 时忽略） |
+
+**响应** `200`（`format=outbound` 示例）
+```json
+{
+  "data": {
+    "outbounds": [
+      { "protocol": "trojan", "settings": { "servers": [{ "address": "1.2.3.4", "port": 443, "password": "..." }] }, "streamSettings": { "network": "tcp" }, "tag": "proxy_0" }
+    ],
+    "meta": [
+      { "tag": "proxy_0", "exitIp": "51.15.243.182", "country": "FR", "delay": 879, "failureStreak": 0, "stable": true }
+    ]
+  },
+  "total": 12345,
+  "returned": 100
+}
+```
+
+- `data.outbounds` 数据源为缓存里的标准 outbound JSON（非 live API 的 TypedMessage 格式），可直接用于启动独立 xray 进程。
+- `data.meta[].exitIp` 供消费方做出口 IP 冷却记录；`stable` 为布尔。
+- `total` = **过滤后的**可用总数（非全库数），消费方可据此判断节点池是否快耗尽。
+- 非 2xx：`400 LIMIT_TOO_LARGE`（limit>500）；`429 RATE_LIMITED`（10s 限流，`retryAfter` 秒）。
 
 ### GET /api/xray/cache/subscriptions
 
