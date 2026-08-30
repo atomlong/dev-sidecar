@@ -2219,6 +2219,7 @@ const Plugin = function (context) {
   const currentLiveNodeTags = new Map() // fingerprint -> tag
   let nextProxyTagIndex = 0
   let stickyTag = null
+  let stickyDurationMs = 0
   let stickyUnlockLabel = ''
   // Stage3 round timing — exposed via getStageStatus for WebUI
   let stage3RoundStartedAt = 0  // ms timestamp of current/last Stage3 round start
@@ -3253,13 +3254,20 @@ const Plugin = function (context) {
     resetStickyState () {
       stickyUnlockTimer.disarm()
       stickyTag = null
+      stickyDurationMs = 0
     },
 
     async getStickyStatus () {
+      const active = stickyUnlockTimer.isArmed()
+      const unlockAt = stickyUnlockTimer.getUnlockAt()
+      // xray 重启 re-apply 等路径不经过 enableSticky,stickyDurationMs 为 0 — 回退为剩余时长
+      const durationMs = active ? (stickyDurationMs || Math.max(0, unlockAt - Date.now())) : 0
       return {
-        active: stickyUnlockTimer.isArmed(),
+        active,
         tag: stickyTag,
         apiPort: currentLiveApiPort,
+        durationMs,
+        unlockAt,
       }
     },
 
@@ -3285,6 +3293,7 @@ const Plugin = function (context) {
         // Auto-release after duration (release is deferred until observatory
         // has alive-node data — see armStickyAutoUnlock)
         const ms = Math.max(1, Number(duration) || 300) * 1000
+        stickyDurationMs = ms
         armStickyAutoUnlock('Xray sticky 锁定已到期自动解除', ms)
 
         log.info(`Xray sticky 锁定已启用: tag=${tag}, duration=${duration}s`)
