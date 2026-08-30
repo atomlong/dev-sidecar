@@ -10,6 +10,7 @@ const {
   applyStage3ProbeResults,
   classifyRefreshPriority,
   getFailureBackoffMs,
+  selectLiveInjectableEntries,
   selectStage3RefreshCandidates,
 } = xrayIndex.__test
 
@@ -1788,5 +1789,40 @@ describe('evaluateStage2PostRoundTrigger (Stage3 轮末 Stage2 触发守卫)', (
     assert.strictEqual(evaluateStage2PostRoundTrigger(base({ intervalHours: Number.NaN })).trigger, false)
     assert.strictEqual(evaluateStage2PostRoundTrigger(base({ intervalHours: 0 })).trigger, false)
     assert.strictEqual(evaluateStage2PostRoundTrigger(base({ intervalHours: -1 })).trigger, false)
+  })
+})
+
+describe('selectLiveInjectableEntries (Stage3 批次注入的国家/owner 筛选)', function () {
+  const mkEntry = (country, owner) => ({ country, owner, delay: 100, node: createNode('1.2.3.4', 443) })
+
+  it('allowedCountries 白名单外的节点（如 HK）不得注入 live', async function () {
+    const entries = [mkEntry('HK', 'TENCENT BUILDING'), mkEntry('SG', 'AMAZON.COM, INC.'), mkEntry('JP', 'DATACAMP LIMITED')]
+    const allowed = await selectLiveInjectableEntries(entries, ['US', 'DE', 'SG', 'FR', 'GB'], [])
+    assert.strictEqual(allowed.length, 1)
+    assert.strictEqual(allowed[0].country, 'SG')
+  })
+
+  it('country 未知（探测失败）在白名单非空时不得注入', async function () {
+    const entries = [mkEntry('', ''), mkEntry('DE', 'OVH SAS')]
+    const allowed = await selectLiveInjectableEntries(entries, ['DE'], [])
+    assert.strictEqual(allowed.length, 1)
+    assert.strictEqual(allowed[0].country, 'DE')
+  })
+
+  it('allowedOwners 排除项（!cloudflare）同样约束批次注入', async function () {
+    const entries = [mkEntry('DE', 'CLOUDFLARE, INC.'), mkEntry('GB', 'GCI NETWORK SOLUTIONS LIMITED')]
+    const allowed = await selectLiveInjectableEntries(entries, [], ['!cloudflare'])
+    assert.strictEqual(allowed.length, 1)
+    assert.ok(!/cloudflare/i.test(allowed[0].owner))
+  })
+
+  it('筛选为空时全量放行（未配置筛选的行为不变）', async function () {
+    const entries = [mkEntry('HK', 'TENCENT BUILDING'), mkEntry('JP', 'DATACAMP LIMITED')]
+    const allowed = await selectLiveInjectableEntries(entries, [], [])
+    assert.strictEqual(allowed.length, 2)
+  })
+
+  it('空输入返回空数组', async function () {
+    assert.deepStrictEqual(await selectLiveInjectableEntries([], ['SG'], []), [])
   })
 })

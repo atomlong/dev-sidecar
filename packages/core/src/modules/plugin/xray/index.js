@@ -870,6 +870,17 @@ async function collectBootstrapCandidateEntries (entries, allowedCountries, allo
   }
 }
 
+// Live injection (ado) candidate filter — Stage3 per-batch injection shares
+// the same country/owner allowlist as Stage1 bootstrap and round-end fill;
+// unfiltered ado here leaked out-of-list nodes (e.g. HK) into the live pool.
+async function selectLiveInjectableEntries (availableEntries, allowedCountries, allowedOwners) {
+  if (!Array.isArray(availableEntries) || availableEntries.length === 0) {
+    return []
+  }
+  const { entries } = await collectBootstrapCandidateEntries(availableEntries, allowedCountries, allowedOwners, availableEntries.length)
+  return entries
+}
+
 function openDownloadReadable (url, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const client = url.startsWith('https') ? https : http
@@ -3952,8 +3963,12 @@ const Plugin = function (context) {
             const availableEntries = batchWritePlan.updatedEntries.filter(
               e => Number.isFinite(e.delay) && e.delay > 0 && parser.isParsedNodeValid(e.node)
             )
+            const injectableEntries = await selectLiveInjectableEntries(availableEntries, cfg.allowedCountries, cfg.allowedOwners)
+            if (injectableEntries.length < availableEntries.length) {
+              log.info(`Xray Stage3 批次 ${batchIndex} 注入前国家/owner筛选: ${injectableEntries.length}/${availableEntries.length} 通过`)
+            }
             const nodesToAdd = []
-            for (const entry of availableEntries) {
+            for (const entry of injectableEntries) {
               const fp = xrayCache.fingerprintNode(entry.node)
               if (fp && !currentLiveNodeTags.has(fp)) {
                 const tag = `proxy_${nextProxyTagIndex++}`
@@ -4445,6 +4460,7 @@ module.exports = {
     evaluateStage2PostRoundTrigger,
     getFailureBackoffMs,
     isParsedNodeValid: parser.isParsedNodeValid,
+    selectLiveInjectableEntries,
     selectStage3RefreshCandidates,
     toLocalTimestampAfterMs,
   },
