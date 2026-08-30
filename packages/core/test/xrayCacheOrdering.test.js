@@ -214,6 +214,53 @@ describe('xray cache ordering', () => {
   })
 
   // eslint-disable-next-line no-undef
+  it('filters availableOnly nodes by delay and failure streak threshold, and orders by delay/stable', () => {
+    if (!sqliteAvailable) {
+      return
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-cache-available-'))
+    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
+
+    try {
+      xrayCache.writeCache(cachePath, [
+        { node: createNode('1.1.1.1', 80), stable: true, delay: 100, source: 'background-probe', updatedAt: '2026-05-11T00:00:00.000+08:00', nextCheckAt: '2026-05-10T00:00:00.000+08:00', failureStreak: 0, country: 'US' },
+        { node: createNode('2.2.2.2', 80), stable: false, delay: 0, source: 'background-probe', updatedAt: '2026-05-11T00:00:00.000+08:00', nextCheckAt: '2026-05-10T00:00:00.000+08:00', failureStreak: 0, country: 'US' },
+        { node: createNode('3.3.3.3', 80), stable: false, delay: 200, source: 'background-probe', updatedAt: '2026-05-11T00:00:00.000+08:00', nextCheckAt: '2026-05-10T00:00:00.000+08:00', failureStreak: 3, country: 'DE' },
+        { node: createNode('4.4.4.4', 80), stable: false, delay: 300, source: 'background-probe', updatedAt: '2026-05-11T00:00:00.000+08:00', nextCheckAt: '2026-05-10T00:00:00.000+08:00', failureStreak: 1, country: 'DE' },
+        { node: createNode('5.5.5.5', 80), stable: true, delay: null, source: 'source-sync', updatedAt: '2026-05-11T00:00:00.000+08:00', nextCheckAt: '2026-05-10T00:00:00.000+08:00', failureStreak: 2, country: 'FR' },
+      ])
+
+      // availableOnly, default threshold 3: delay>0 AND failure_streak < 3
+      // -> 1.1.1.1 (100/0) and 4.4.4.4 (300/1); excludes delay=0, delay=NULL, streak=3.
+      const available = xrayCache.readCacheEntries(cachePath, { availableOnly: true, orderBy: 'rowid' })
+      const availableAddrs = available.map(entry => entry.node.settings.servers[0].address)
+      assert.deepStrictEqual(availableAddrs, ['1.1.1.1', '4.4.4.4'])
+      assert.strictEqual(xrayCache.countCacheEntries(cachePath, { availableOnly: true }), 2)
+
+      // maxFailureStreak=4 widens the threshold: streak=3 node (3.3.3.3) becomes available.
+      const widened = xrayCache.readCacheEntries(cachePath, { availableOnly: true, maxFailureStreak: 4, orderBy: 'rowid' })
+      assert.deepStrictEqual(widened.map(entry => entry.node.settings.servers[0].address), ['1.1.1.1', '3.3.3.3', '4.4.4.4'])
+      assert.strictEqual(xrayCache.countCacheEntries(cachePath, { availableOnly: true, maxFailureStreak: 4 }), 3)
+
+      // orderBy=delay: probed first, then delay ASC; writeCache normalizes
+      // delay=NULL to 0, so the unprobed tail ties on node_id ASC.
+      const byDelay = xrayCache.readCacheEntries(cachePath, { orderBy: 'delay' })
+      assert.deepStrictEqual(byDelay.map(entry => entry.node.settings.servers[0].address), ['1.1.1.1', '3.3.3.3', '4.4.4.4', '2.2.2.2', '5.5.5.5'])
+
+      // orderBy=stable: stable DESC first, then probed + delay ASC.
+      const byStable = xrayCache.readCacheEntries(cachePath, { orderBy: 'stable' })
+      assert.deepStrictEqual(byStable.map(entry => entry.node.settings.servers[0].address), ['1.1.1.1', '5.5.5.5', '3.3.3.3', '4.4.4.4', '2.2.2.2'])
+
+      // countryInclude composes with availableOnly.
+      const usAvailable = xrayCache.readCacheEntries(cachePath, { availableOnly: true, countryInclude: ['US'], orderBy: 'rowid' })
+      assert.deepStrictEqual(usAvailable.map(entry => entry.node.settings.servers[0].address), ['1.1.1.1'])
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  // eslint-disable-next-line no-undef
   it('mirrors subscription refs into compact v2 without dropping nodes', () => {
     if (!sqliteAvailable) {
       return

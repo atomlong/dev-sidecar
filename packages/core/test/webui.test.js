@@ -1,5 +1,7 @@
 const assert = require('node:assert')
+const fs = require('node:fs')
 const http = require('node:http')
+const os = require('node:os')
 const path = require('node:path')
 
 // 本文件是集成式测试：多个路由用例会 require('../../../expose') 加载完整 app
@@ -220,6 +222,171 @@ describe('webui routes', () => {
     const data = await r.json()
     assert.strictEqual(r.status, 200)
     assert.ok(data.metrics === null || data.reason || data.error === true)
+  })
+})
+
+describe('webui xray cache/export routes (seeded cache)', () => {
+  let server, baseUrl, tmpDir
+  let realDateNow
+  let fakeNow = 0
+  let exportClock = 0
+
+  before(async () => {
+    const { createRouter } = require('../src/modules/plugin/webui/routes')
+    const xrayCache = require('../src/modules/plugin/xray/cache')
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-webui-cache-'))
+    const xrayDir = path.join(tmpDir, 'xray')
+    fs.mkdirSync(xrayDir, { recursive: true })
+    const cachePath = path.join(xrayDir, 'nodes_cache.sqlite')
+
+    const ts = '2026-05-20T00:00:00.000+08:00'
+    // One node per protocol address shape: vless=vnext[], ss-2022=flat,
+    // trojan=server (singular), old ss=servers[].
+    xrayCache.writeCache(cachePath, [
+      { node: { protocol: 'vless', settings: { vnext: [{ address: '10.0.0.1', port: 443, users: [{ id: 'test-id' }] }] } }, stable: true, delay: 100, source: 'background-probe', updatedAt: ts, nextCheckAt: ts, failureStreak: 0, country: 'US' },
+      { node: { protocol: 'shadowsocks', settings: { address: '10.0.0.2', port: 8388, method: 'aes-128-gcm', password: 'pw' } }, stable: false, delay: 200, source: 'background-probe', updatedAt: ts, nextCheckAt: ts, failureStreak: 0, country: 'DE' },
+      { node: { protocol: 'trojan', settings: { servers: [{ address: '10.0.0.3', port: 443, password: 'pw' }] } }, stable: false, delay: 300, source: 'background-probe', updatedAt: ts, nextCheckAt: ts, failureStreak: 3, country: 'FR' },
+      { node: { protocol: 'shadowsocks', settings: { servers: [{ address: '10.0.0.4', port: 80, method: 'aes-128-gcm', password: 'pw' }] } }, stable: false, delay: 0, source: 'source-sync', updatedAt: ts, nextCheckAt: ts, failureStreak: 1, country: 'US' },
+    ])
+
+    const router = createRouter({
+      config: {
+        get: () => ({
+          server: { intercepts: {}, setting: { userBasePath: tmpDir } },
+          plugin: { xray: { enabled: false, port: 0, apiPort: 0, metricsPort: 0 }, webui: { token: '' } },
+          proxy: { enabled: false },
+        }),
+        update: () => {},
+        save: () => {},
+        downloadRemoteConfig: async () => {},
+        reload: () => {},
+      },
+      event: { register: () => 1, unregister: () => {}, fire: () => {} },
+      log: { info: () => {}, error: () => {} },
+      server: { reload: async () => {} },
+      xrayApi: null,
+    })
+    server = http.createServer(router)
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    baseUrl = `http://127.0.0.1:${server.address().port}`
+
+    // The export route's rate limit (10s) and response cache (30s) use the
+    // module-level Date.now() — fake the clock per export call.
+    realDateNow = Date.now
+    exportClock = realDateNow() + 60 * 60 * 1000
+    Date.now = () => (fakeNow > 0 ? fakeNow : realDateNow())
+  })
+
+  after(async () => {
+    Date.now = realDateNow
+    await new Promise((resolve) => server.close(resolve))
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  // Advance past the 10s rate limit and 30s response cache before each export call.
+  function nextExportClock () {
+    exportClock += 60 * 1000
+    fakeNow = exportClock
+  }
+
+  it('GET /api/xray/cache/nodes extracts address/port across protocol shapes', async () => {
+    const r = await fetch(`${baseUrl}/api/xray/cache/nodes?page=1&pageSize=50`)
+    const data = await r.json()
+    assert.strictEqual(r.status, 200)
+    assert.strictEqual(data.rows.length, 4)
+    const byAddr = {}
+    for (const row of data.rows) {
+      byAddr[row.address] = row
+    }
+    assert.strictEqual(byAddr['10.0.0.1'].port, 443) // vless via vnext[0]
+    assert.strictEqual(byAddr['10.0.0.2'].port, 8388) // ss-2022 flat
+    assert.strictEqual(byAddr['10.0.0.3'].port, 443) // trojan via server
+    assert.strictEqual(byAddr['10.0.0.4'].port, 80) // old ss via servers[0]
+    for (const row of data.rows) {
+      assert.ok(row.protocol)
+      assert.strictEqual(typeof row.country, 'string')
+      assert.strictEqual(typeof row.failureStreak, 'number')
+    }
+  })
+
+  it('GET /api/xray/cache/nodes/export?format=sharelink returns links without crashing', async () => {
+    nextExportClock()
+    const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=sharelink&limit=10`)
+    fakeNow = 0
+    assert.strictEqual(r.status, 200)
+    const data = await r.json()
+    assert.ok(Array.isArray(data.data))
+    assert.strictEqual(data.data.length, 4)
+    for (const link of data.data) {
+      assert.strictEqual(typeof link, 'string')
+      assert.ok(link.length > 0)
+    }
+    assert.strictEqual(data.total, 4)
+    assert.strictEqual(data.returned, 4)
+  })
+
+  it('export format=outbound with available/country filters returns aligned outbounds and meta', async () => {
+    nextExportClock()
+    const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&available=true&country=US,DE&sort=delay`)
+    fakeNow = 0
+    assert.strictEqual(r.status, 200)
+    const data = await r.json()
+    // Available US/DE: vless(100/streak 0) + ss2022(200/streak 0);
+    // trojan streak-3 excluded (default threshold 3), old ss delay-0 excluded.
+    assert.strictEqual(data.total, 2)
+    assert.strictEqual(data.returned, 2)
+    assert.strictEqual(data.data.outbounds.length, 2)
+    assert.strictEqual(data.data.outbounds[0].protocol, 'vless')
+    assert.strictEqual(data.data.outbounds[0].tag, 'proxy_0')
+    assert.strictEqual(data.data.outbounds[0].settings.vnext[0].address, '10.0.0.1')
+    assert.strictEqual(data.data.meta.length, 2)
+    assert.strictEqual(data.data.meta[0].tag, 'proxy_0')
+    assert.strictEqual(data.data.meta[0].stable, true)
+    assert.strictEqual(data.data.meta[0].country, 'US')
+    assert.strictEqual(data.data.meta[1].delay, 200)
+  })
+
+  it('export available=true with maxFailureStreak=5 admits streak-3 nodes', async () => {
+    nextExportClock()
+    const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&available=true&maxFailureStreak=5`)
+    fakeNow = 0
+    assert.strictEqual(r.status, 200)
+    const data = await r.json()
+    // vless(0) + ss2022(0) + trojan(3 < 5); old ss delay-0 still excluded.
+    assert.strictEqual(data.total, 3)
+    assert.strictEqual(data.data.outbounds.length, 3)
+    const delays = data.data.meta.map(m => m.delay).sort((a, b) => a - b)
+    assert.deepStrictEqual(delays, [100, 200, 300])
+  })
+
+  it('export includeMeta=false returns meta=null', async () => {
+    nextExportClock()
+    const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&includeMeta=false`)
+    fakeNow = 0
+    assert.strictEqual(r.status, 200)
+    const data = await r.json()
+    assert.strictEqual(data.data.meta, null)
+    assert.ok(data.data.outbounds.length > 0)
+  })
+
+  it('export second immediate call is rate limited (429)', async () => {
+    nextExportClock()
+    const r1 = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=sharelink`)
+    // No clock advance — second call must hit the 10s rate limit
+    const r2 = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=sharelink`)
+    fakeNow = 0
+    assert.strictEqual(r1.status, 200)
+    assert.strictEqual(r2.status, 429)
+    const body = await r2.json()
+    assert.strictEqual(body.code, 'RATE_LIMITED')
+  })
+
+  it('export limit>500 returns 400 before rate limiting', async () => {
+    const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?limit=501`)
+    assert.strictEqual(r.status, 400)
+    const data = await r.json()
+    assert.strictEqual(data.code, 'LIMIT_TOO_LARGE')
   })
 })
 
