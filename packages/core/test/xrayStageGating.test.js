@@ -610,7 +610,7 @@ describe('xray stage gating', function () {
     }
   })
 
-  it('applies stage3 explicit failures with backoff then tombstones on third strike', () => {
+  it('applies stage3 explicit failures with backoff then tombstones on fourth strike', () => {
     if (!sqliteAvailable) {
       return
     }
@@ -639,7 +639,7 @@ describe('xray stage gating', function () {
           source: 'background-probe',
           updatedAt: '2026-05-16T00:00:00.000+08:00',
           nextCheckAt: '2026-05-10T00:00:00.000+08:00',
-          failureStreak: 2,
+          failureStreak: 3,
         },
       ]
       xrayCache.writeCache(cachePath, targetBatch)
@@ -816,12 +816,12 @@ describe('xray stage gating', function () {
     assert.strictEqual(getFailureBackoffMs(-5), 7 * 24 * 60 * 60 * 1000)
   })
 
-  it('tombstones every third-strike failure even with duplicate and unknown observed fingerprints', () => {
+  it('tombstones every fourth-strike failure even with duplicate and unknown observed fingerprints', () => {
     if (!sqliteAvailable) {
       return
     }
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-stage3-third-strike-'))
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-stage3-fourth-strike-'))
     const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
 
     try {
@@ -837,7 +837,7 @@ describe('xray stage gating', function () {
           source: 'background-probe',
           updatedAt: '2026-05-16T00:00:00.000+08:00',
           nextCheckAt: '2026-05-10T00:00:00.000+08:00',
-          failureStreak: 2,
+          failureStreak: 3,
         },
         {
           node: node2,
@@ -846,7 +846,7 @@ describe('xray stage gating', function () {
           source: 'background-probe',
           updatedAt: '2026-05-16T00:00:00.000+08:00',
           nextCheckAt: '2026-05-10T00:00:00.000+08:00',
-          failureStreak: 2,
+          failureStreak: 3,
         },
       ]
 
@@ -1346,6 +1346,7 @@ describe('xray stage gating', function () {
         '2026-05-20T00:00:00.000+08:00',
         '2026-05-28T00:00:00.000+08:00',
         '2026-06-28T00:00:00.000+08:00',
+        '2026-09-26T00:00:00.000+08:00',
       ]
 
       for (let index = 0; index < roundTimes.length; index += 1) {
@@ -1360,15 +1361,15 @@ describe('xray stage gating', function () {
         })
         assert.strictEqual(xrayCache.writeCacheUpdates(cachePath, result.updatedEntries, currentEntries.map(entry => entry.node)), true)
 
-        if (index < 2) {
+        if (index < 3) {
           const remaining = xrayCache.readCacheEntries(cachePath)
           assert.strictEqual(remaining.length, 1)
           assert.strictEqual(remaining[0].failureStreak, index + 1)
         }
       }
 
-      const remainingAfterThird = xrayCache.readCacheEntries(cachePath)
-      assert.strictEqual(remainingAfterThird.length, 0)
+      const remainingAfterFourth = xrayCache.readCacheEntries(cachePath)
+      assert.strictEqual(remainingAfterFourth.length, 0)
       const outdatedSet = xrayCache.readOutdatedHashSet(cachePath, [fingerprint])
       assert.strictEqual(outdatedSet.has(fingerprint), true)
     } finally {

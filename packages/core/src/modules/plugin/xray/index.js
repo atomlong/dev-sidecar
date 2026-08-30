@@ -1785,7 +1785,9 @@ function applyStage3ProbeResults ({
     const nextFailureStreak = Math.max(1, normalizePositiveInt(existingEntry.failureStreak, 0) + 1)
     explicitFailureCount += 1
 
-    if (nextFailureStreak >= 3) {
+    // Delete only on the 4th consecutive failure — the [7,30,90]-day
+    // backoff ladder must be fully consumed first (min ~127 days of history).
+    if (nextFailureStreak >= 4) {
       removedCount += 1
       xrayCache.upsertOutdated(cachePath, fingerprint, now)
       continue
