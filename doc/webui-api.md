@@ -180,11 +180,11 @@
 {
   "balancer": "  - Selecting Override:\n    1   proxy_0\n  - Selects:\n    1   proxy_0",
   "xrayEnabled": true,
-  "sticky": { "active": true, "tag": "proxy_0", "apiPort": 45617 }
+  "sticky": { "active": true, "tag": "proxy_0", "apiPort": 45617, "durationMs": 315360000000, "unlockAt": 2103427714462 }
 }
 ```
 
-**说明** — `balancer` 是 `xray api bi` 的原始 stdout 文本（前端解析 `Selects:\s*\d+\s+(\S+)`）。`sticky` 来自插件内部状态（比解析文本可靠）。
+**说明** — `balancer` 是 `xray api bi` 的原始 stdout 文本（前端解析 `Selects:\s*\d+\s+(\S+)`）。`sticky` 来自插件内部状态（比解析文本可靠）：`durationMs` 为锁定时长毫秒（≥315360000000 即 10 年哨兵=永久；xray 重启 re-apply 等未经过 enableSticky 的路径回退为剩余时长），`unlockAt` 为计划解锁的 epoch 毫秒（未锁定时 `durationMs`/`unlockAt` 均为 0）。
 
 ### POST /api/xray/sticky
 
@@ -198,9 +198,11 @@
 | 值 | 含义 |
 |---|---|
 | `>0` | 锁定 N 秒后自动解锁 |
-| `0` | 永久锁定（内部用 10 年兜底） |
+| `0` | 永久锁定（映射为 10 年哨兵 315360000s，避免 `0 \|\| 300` falsy 陷阱） |
 
-**响应** `200` `{ "tag": "proxy_0", "duration": 300 }`
+**响应** `200` `{ "status": "ok", "duration": 315360000 }`（`duration` 为实际锁定秒数）
+
+**错误** `400` — `INVALID_BODY`（body 非 JSON 对象）；`500` — `STICKY_FAILED`（xray API 不可用或 balancer 尚无选中节点）
 
 ### DELETE /api/xray/sticky
 
@@ -208,7 +210,7 @@
 
 **安全检查** — 若 observatory 无 alive 节点（启动后首次探测周期内），拒绝解锁并返回错误，避免 balancer 无节点可选。
 
-**响应** `200` `{ "tag": "proxy_0" }`
+**响应** `200` `{ "status": "ok" }`
 
 **错误** `500` — `STICKY_FAILED`（消息含原因，如 "observatory 还在首次探测中..."）
 
