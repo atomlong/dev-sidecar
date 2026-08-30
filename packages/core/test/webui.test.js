@@ -375,8 +375,130 @@ describe('webui write operations', () => {
     assert.ok(r.status === 200 || r.status >= 400)
   })
 
-  // POST /api/xray/sticky and DELETE call require('../../../expose') which
-  // initializes the full app — needs integration testing, not unit testing.
+  // POST/DELETE /api/xray/sticky 的时长语义见下方 "webui xray sticky routes (injected plugin)"。
+})
+
+describe('webui xray sticky routes (injected plugin)', () => {
+  let server, baseUrl, plugin
+
+  before(async () => {
+    const { createRouter } = require('../src/modules/plugin/webui/routes')
+    plugin = {
+      enableCalls: [],
+      disableCalls: 0,
+      async enableSticky (opts) {
+        this.enableCalls.push(opts)
+        return { tag: 'proxy_x', duration: opts.duration }
+      },
+      async disableSticky () {
+        this.disableCalls++
+        return {}
+      },
+    }
+    const router = createRouter({
+      config: {
+        get: () => ({
+          server: { intercepts: {}, setting: { userBasePath: '/tmp' } },
+          plugin: { xray: { enabled: false }, webui: {} },
+          proxy: { enabled: false },
+        }),
+        update: () => {},
+        save: () => {},
+        downloadRemoteConfig: async () => {},
+        reload: () => {},
+      },
+      event: { register: () => 1, unregister: () => {}, fire: () => {} },
+      log: { info: () => {}, error: () => {} },
+      server: { reload: async () => {} },
+      xrayApi: null,
+      xrayPlugin: plugin,
+    })
+    server = http.createServer(router)
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address()
+    baseUrl = `http://127.0.0.1:${port}`
+  })
+
+  after(async () => {
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  beforeEach(() => {
+    plugin.enableCalls.length = 0
+    plugin.disableCalls = 0
+  })
+
+  it('POST duration=0 (永久) locks with the 10-year sentinel, not 300s', async () => {
+    const r = await fetch(`${baseUrl}/api/xray/sticky`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ duration: 0 }),
+    })
+    assert.strictEqual(r.status, 200)
+    const data = await r.json()
+    assert.strictEqual(data.status, 'ok')
+    assert.strictEqual(data.duration, 86400 * 365 * 10)
+    assert.deepStrictEqual(plugin.enableCalls, [{ duration: 86400 * 365 * 10 }])
+  })
+
+  it('POST duration=600 passes through unchanged', async () => {
+    const r = await fetch(`${baseUrl}/api/xray/sticky`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ duration: 600 }),
+    })
+    assert.strictEqual(r.status, 200)
+    assert.deepStrictEqual(plugin.enableCalls, [{ duration: 600 }])
+  })
+
+  it('POST missing/invalid/negative duration falls back to 300s', async () => {
+    for (const body of ['{}', '{"duration":"abc"}', '{"duration":-5}']) {
+      const r = await fetch(`${baseUrl}/api/xray/sticky`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+      assert.strictEqual(r.status, 200)
+    }
+    assert.deepStrictEqual(plugin.enableCalls, [{ duration: 300 }, { duration: 300 }, { duration: 300 }])
+  })
+
+  it('POST non-JSON body returns 400 INVALID_BODY without calling the plugin', async () => {
+    const r = await fetch(`${baseUrl}/api/xray/sticky`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not json',
+    })
+    assert.strictEqual(r.status, 400)
+    const data = await r.json()
+    assert.strictEqual(data.code, 'INVALID_BODY')
+    assert.strictEqual(plugin.enableCalls.length, 0)
+  })
+
+  it('POST plugin failure returns 500 STICKY_FAILED', async () => {
+    const orig = plugin.enableSticky
+    plugin.enableSticky = async () => { throw new Error('xray api unavailable') }
+    try {
+      const r = await fetch(`${baseUrl}/api/xray/sticky`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ duration: 300 }),
+      })
+      assert.strictEqual(r.status, 500)
+      const data = await r.json()
+      assert.strictEqual(data.code, 'STICKY_FAILED')
+    } finally {
+      plugin.enableSticky = orig
+    }
+  })
+
+  it('DELETE unlocks via disableSticky', async () => {
+    const r = await fetch(`${baseUrl}/api/xray/sticky`, { method: 'DELETE' })
+    assert.strictEqual(r.status, 200)
+    const data = await r.json()
+    assert.strictEqual(data.status, 'ok')
+    assert.strictEqual(plugin.disableCalls, 1)
+  })
 })
 
 describe('webui auth edge cases', () => {

@@ -288,6 +288,7 @@ function initProbe() {
         <option value="86400">24 小时</option>
         <option value="0">永久</option>
       </select>
+      <span id="p-sticky-info" class="muted" style="font-size:12px;"></span>
     </span>
   </div>
   <div class="collapsible-header" onclick="toggleStage1Nodes()" style="margin-top:12px;">
@@ -461,17 +462,32 @@ async function loadProbe(silent) {
     }
     const btn = $('p-sticky-btn');
     const sel = $('p-sticky-dur');
+    const info = $('p-sticky-info');
     if (btn && sel) {
       if (isSticky) {
         btn.textContent = '解锁';
         btn.className = 'btn danger';
         btn.onclick = unsticky;
         sel.disabled = true;
+        // 把选项恢复为真实锁定时长，避免刷新后停留在默认"5 分钟"误导用户
+        const durMs = Number(stickyInfo.durationMs) || 0;
+        const permanent = durMs >= 315360000000; // routes 的"永久"哨兵值（10 年）
+        if (permanent) {
+          sel.value = '0';
+        } else if (durMs > 0) {
+          const sec = Math.round(durMs / 1000);
+          if (sel.querySelector('option[value="' + sec + '"]')) sel.value = String(sec);
+        }
+        if (info) {
+          info.textContent = permanent ? '已锁定：永久'
+            : (stickyInfo.unlockAt > Date.now() ? '已锁定：剩余 ' + fmtDuration(stickyInfo.unlockAt - Date.now()) : '已锁定');
+        }
       } else {
         btn.textContent = '锁定';
         btn.className = 'btn';
         btn.onclick = sticky;
         sel.disabled = false;
+        if (info) info.textContent = '';
       }
     }
 

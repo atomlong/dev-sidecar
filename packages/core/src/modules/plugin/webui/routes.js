@@ -50,6 +50,8 @@ async function reInjectXrayRules (globalConfig, xrayApiOverride) {
 function createRouter (context) {
   const { config: globalConfig, event, log: ctxLog, server: ctxServer } = context
   const ctxXrayApi = context.xrayApi
+  // sticky 插件操作:优先用注入的实现（单测）;生产回退到 expose
+  const resolveXrayPlugin = () => context.xrayPlugin || require('../../../expose').api.plugin.xray
 
   // Helper: check if request is from localhost
   function isLocalhost (req) {
@@ -417,8 +419,7 @@ function createRouter (context) {
         // Also return sticky status from the plugin's internal state (more reliable than parsing balancer text)
         let sticky = { active: false, tag: null }
         try {
-          const DevSidecar = require('../../../expose')
-          sticky = await DevSidecar.api.plugin.xray.getStickyStatus?.() || sticky
+          sticky = await resolveXrayPlugin().getStickyStatus?.() || sticky
         } catch { /* ignore */ }
         sendJson(res, 200, { balancer: result, xrayEnabled: true, sticky })
       } catch (err) {
@@ -598,8 +599,7 @@ function createRouter (context) {
       const duration = Number.isFinite(rawDuration) && rawDuration >= 0 ? rawDuration : 300
       const actualDuration = duration === 0 ? 86400 * 365 * 10 : duration
       try {
-        const DevSidecar = require('../../../expose')
-        await DevSidecar.api.plugin.xray.enableSticky({ duration: actualDuration })
+        await resolveXrayPlugin().enableSticky({ duration: actualDuration })
         sendJson(res, 200, { status: 'ok', duration: actualDuration })
       } catch (err) {
         sendJson(res, 500, { error: true, code: 'STICKY_FAILED', message: err.message })
@@ -609,8 +609,7 @@ function createRouter (context) {
 
     if (method === 'DELETE' && pathname === '/api/xray/sticky') {
       try {
-        const DevSidecar = require('../../../expose')
-        await DevSidecar.api.plugin.xray.disableSticky()
+        await resolveXrayPlugin().disableSticky()
         sendJson(res, 200, { status: 'ok' })
       } catch (err) {
         sendJson(res, 500, { error: true, code: 'STICKY_FAILED', message: err.message })
