@@ -2696,9 +2696,8 @@ const Plugin = function (context) {
       }
     }
 
-    // All probe paths (Stage1 bootstrap, Stage3 rounds, live observatory) pass
-    // observatoryProbeUrl first (strict, near real target) so cache aliveness
-    // matches live selection semantics; probeUrl (lenient) is only the fallback.
+    // Stage1 bootstrap passes observatoryProbeUrl (strict, near real target);
+    // Stage3 cache refresh passes probeUrl (lenient, gstatic 204) for broad screening.
     const effectiveProbeUrl = probeUrl || cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl
 
     // Single-pass probe: probe ALL nodes once with the configured probeUrl.
@@ -3762,7 +3761,9 @@ const Plugin = function (context) {
         binPath,
         cfg,
         xrayDir,
-        probeUrl: cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl,
+        // Stage3 用宽松 probeUrl 粗筛（gstatic 204），与 Stage1/observatory 的
+        // 严格探测分离——缓存是共享资产，严格探测会把非 chatgpt 可用节点判死
+        probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
         probeSamples: getCacheRefreshProbeSamples(cfg),
       })
       registerTransientProbeController(persistentController)
@@ -3882,7 +3883,8 @@ const Plugin = function (context) {
             batchNodes: candidateNodes,
             timeoutMs: 0,
             probeSamples: getCacheRefreshProbeSamples(cfg),
-            probeUrl: cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl,
+            // Stage3 宽松粗筛（gstatic 204）；严格探测留给 Stage1/observatory
+            probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
             persistentController,
           })
 
