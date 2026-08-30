@@ -2696,8 +2696,9 @@ const Plugin = function (context) {
       }
     }
 
-    // Stage1 bootstrap passes observatoryProbeUrl (strict, near real target);
-    // Stage3 cache refresh passes probeUrl (lenient, gstatic 204) for broad screening.
+    // All probe paths (Stage1 bootstrap, Stage3 rounds, live observatory) pass
+    // observatoryProbeUrl first (strict, near real target) so cache aliveness
+    // matches live selection semantics; probeUrl (lenient) is only the fallback.
     const effectiveProbeUrl = probeUrl || cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl
 
     // Single-pass probe: probe ALL nodes once with the configured probeUrl.
