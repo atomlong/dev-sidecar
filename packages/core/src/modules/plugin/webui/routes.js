@@ -459,9 +459,12 @@ function createRouter (context) {
         // Project to a compact row for the frontend.
         const rows = entries.map(e => {
           const n = e.node || {}
-          const servers = n.settings?.servers || []
-          const addr = servers[0]?.address || ''
-          const port = servers[0]?.port || ''
+          const settings = n.settings || {}
+          // Per-protocol shapes: trojan=settings.server (singular); old ss=settings.servers[];
+          // vless/vmess=settings.vnext[]; ss-2022=flat settings.address/port.
+          const host = settings.server || settings.servers?.[0] || settings.vnext?.[0]
+          const addr = host?.address || settings.address || ''
+          const port = host?.port || settings.port || ''
           return {
             tag: e.tag || n.tag || '',
             protocol: n.protocol || '',
@@ -768,16 +771,16 @@ function createRouter (context) {
     if (method === 'GET' && pathname === '/api/xray/cache/nodes/export') {
       // Parse params first (before any checks)
       const format = url.searchParams.get('format') || 'sharelink'
-      const protocol = url.searchParams.get('protocol')?.split(',').filter(Boolean) || null
       const country = url.searchParams.get('country')?.split(',').filter(Boolean) || null
       const owner = url.searchParams.get('owner')
       const maxDelay = parseInt(url.searchParams.get('maxDelay')) || 0
       const available = url.searchParams.get('available') === 'true'
+      const maxFailureStreakParam = parseInt(url.searchParams.get('maxFailureStreak'))
+      const maxFailureStreak = Number.isFinite(maxFailureStreakParam) && maxFailureStreakParam >= 0 ? maxFailureStreakParam : 3
       const sort = url.searchParams.get('sort') || 'smart'
       const shuffle = url.searchParams.get('shuffle') === 'true'
       let limit = parseInt(url.searchParams.get('limit')) || 100
       const offset = parseInt(url.searchParams.get('offset')) || 0
-      const since = parseInt(url.searchParams.get('since')) || 0
       const includeMeta = url.searchParams.get('includeMeta') !== 'false'
       const now = Date.now()
 
@@ -795,7 +798,7 @@ function createRouter (context) {
       lastExportAt = now
 
       // Cache key
-      const cacheKey = JSON.stringify({ format, protocol, country, owner, maxDelay, available, sort, shuffle, limit, offset, since, includeMeta })
+      const cacheKey = JSON.stringify({ format, country, owner, maxDelay, available, maxFailureStreak, sort, shuffle, limit, offset, includeMeta })
       const cached = exportCache.get(cacheKey)
       if (cached && (now - cached.timestamp) < EXPORT_CACHE_TTL) {
         sendJson(res, 200, cached.data)
@@ -806,17 +809,18 @@ function createRouter (context) {
         const xray = getXrayPaths()
         const xrayCache = require('../xray/cache')
 
-        // Build query options
+        // Build query options. Keys MUST match buildCompactV2FilterClauses /
+        // getCompactV2OrderByClause — a previous revision passed mismatched
+        // keys (sort/countries/owners/maxDelay), silently disabling every filter.
         const opts = {
           limit: shuffle ? limit * 2 : limit, // Get 2x for shuffle
           offset,
-          sort,
-          available,
-          maxDelay,
-          countries: country,
-          owners: owner ? [owner] : null,
-          protocols: protocol,
-          since,
+          orderBy: sort === 'delay' ? 'delay' : (sort === 'stable' ? 'stable' : 'default'),
+          availableOnly: available === true,
+          maxFailureStreak,
+          maxDelayMs: maxDelay > 0 ? maxDelay : 0,
+          countryInclude: country,
+          ownerInclude: owner ? [owner] : null,
         }
 
         const entries = xrayCache.readCacheEntries(xray.cachePath, opts)
@@ -853,6 +857,7 @@ function createRouter (context) {
             country: e.country || '',
             delay: e.delay || 0,
             failureStreak: e.failureStreak || 0,
+            stable: e.stable === true,
           })) : null
           data = { outbounds, meta }
         } else {

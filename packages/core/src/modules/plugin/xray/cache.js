@@ -1556,6 +1556,19 @@ function buildCompactV2FilterClauses (filters = {}) {
     clauses.push('delay > 0')
   }
 
+  // availableOnly: only nodes usable right now — a real probe delay and a
+  // failure streak below the threshold (default 3; maxFailureStreak widens it).
+  if (filters.availableOnly === true) {
+    clauses.push('delay IS NOT NULL')
+    clauses.push('delay > 0')
+    const maxFailureStreak = Number(filters.maxFailureStreak)
+    const threshold = Number.isFinite(maxFailureStreak) && maxFailureStreak >= 0
+      ? Math.floor(maxFailureStreak)
+      : 3
+    clauses.push('failure_streak < ?')
+    params.push(threshold)
+  }
+
   const countryInclude = normalizeFilterValues(filters.countryInclude, normalizeCountryCode)
   const countryExclude = normalizeFilterValues(filters.countryExclude, normalizeCountryCode)
   if (countryInclude.length > 0) {
@@ -1628,6 +1641,14 @@ function getCompactV2OrderByClause (orderBy = 'default') {
 
   if (orderBy === 'rowid_desc') {
     return 'node_id DESC'
+  }
+
+  if (orderBy === 'delay') {
+    return `${PROBED_DELAY_SORT_PREFIX}delay ASC, updated_at DESC, node_id ASC`
+  }
+
+  if (orderBy === 'stable') {
+    return `stable DESC, ${PROBED_DELAY_SORT_PREFIX}delay ASC, updated_at DESC, node_id ASC`
   }
 
   return `${PROBED_DELAY_SORT_PREFIX}stable DESC, delay ASC, updated_at DESC`

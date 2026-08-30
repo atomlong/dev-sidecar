@@ -1528,8 +1528,10 @@ function nodeToShareLink (node, customTag) {
     }
 
     if (proto === 'shadowsocks' || proto === 'ss') {
-      const server = settings.servers && settings.servers[0]
-      if (!server) return ''
+      // ss-2022 stores address/port/method/password flat on settings.
+      const server = (settings.servers && settings.servers[0])
+        || { address: settings.address, port: settings.port, method: settings.method, password: settings.password }
+      if (!server || !server.address) return ''
       const userInfo = Buffer.from(`${server.method || server.cipher}:${server.password}`).toString('base64')
       return `ss://${userInfo}@${server.address}:${server.port}#${tag}`
     }
@@ -3725,6 +3727,10 @@ const Plugin = function (context) {
           },
         })
         scheduleCacheRefresh({ binPath, cfg, xrayDir, cachePath }, nextDelay)
+        // This early return exits BEFORE the main try/finally that resets
+        // isStageRunning — reset here or every future round is skipped as
+        // "Stage 正在运行" forever (observed: stuck 4h+ on an empty round).
+        isStageRunning = false
         return
       }
 
@@ -4431,6 +4437,7 @@ module.exports = {
     port: 0,
   },
   plugin: Plugin,
+  nodeToShareLink,
   __test: {
     ...testHelpers,
     applyStage3ProbeResults,
