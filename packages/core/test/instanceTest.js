@@ -6,11 +6,25 @@ const os = require('node:os')
 const instance = require('../src/modules/instance')
 const event = require('../src/event')
 
+// getBasePath() 在 Windows 优先读 USERPROFILE（生产语义），仅覆盖 HOME 无法
+// 重定向锁路径——曾靠 configApiSave 先在真实家目录建 .dev-sidecar 的副作用
+// 掩盖（be0628bf 后遮罩消失，Windows CI 连续 ENOENT），两个变量都须覆盖
+const originalHome = process.env.HOME
+const originalUserprofile = process.env.USERPROFILE
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const isWindows = process.platform === 'win32'
 // proper-lockfile on Windows doesn't release file locks synchronously between
 // tests, causing 'Lock file is already being held' errors. Skip on Windows CI.
 const skipOnWindows = isWindows ? it.skip : it
+
+function restoreEnv (name, original) {
+  if (original === undefined) {
+    delete process.env[name]
+  } else {
+    process.env[name] = original
+  }
+}
 
 describe('instance', function () {
   let tmpDir
@@ -18,12 +32,14 @@ describe('instance', function () {
   beforeEach(function () {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ds-core-instance-'))
     process.env.HOME = tmpDir
+    process.env.USERPROFILE = tmpDir
     fs.mkdirSync(path.join(tmpDir, '.dev-sidecar'), { recursive: true })
     instance.resetStateForTest()
   })
 
   afterEach(function () {
-    delete process.env.HOME
+    restoreEnv('HOME', originalHome)
+    restoreEnv('USERPROFILE', originalUserprofile)
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
