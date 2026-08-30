@@ -10,6 +10,8 @@ const {
   applyStage3ProbeResults,
   classifyRefreshPriority,
   getFailureBackoffMs,
+  resolveStage3ProbeUrl,
+  resolveStrictProbeUrl,
   selectLiveInjectableEntries,
   selectStage3RefreshCandidates,
 } = xrayIndex.__test
@@ -1824,5 +1826,23 @@ describe('selectLiveInjectableEntries (Stage3 批次注入的国家/owner 筛选
 
   it('空输入返回空数组', async function () {
     assert.deepStrictEqual(await selectLiveInjectableEntries([], ['SG'], []), [])
+  })
+})
+
+describe('resolveStage3ProbeUrl / resolveStrictProbeUrl (探测 URL 宽严分离契约)', function () {
+  const STRICT = 'https://strict.example/cdn-cgi/trace'
+  const LENIENT = 'https://lenient.example/generate_204'
+
+  it('Stage3 只认 probeUrl——observatoryProbeUrl 配了也不得渗入（92601af3 漂移回归保护）', function () {
+    assert.strictEqual(resolveStage3ProbeUrl({ observatoryProbeUrl: STRICT, probeUrl: LENIENT }), LENIENT)
+    // probeUrl 未配置时落到默认宽松 URL，绝不能漏成严格 URL
+    assert.strictEqual(resolveStage3ProbeUrl({ observatoryProbeUrl: STRICT }), xrayIndex.config.probeUrl)
+    assert.notStrictEqual(resolveStage3ProbeUrl({ observatoryProbeUrl: STRICT }), STRICT)
+  })
+
+  it('Stage1/observatory 严格优先，未配置 observatoryProbeUrl 时回退 probeUrl', function () {
+    assert.strictEqual(resolveStrictProbeUrl({ observatoryProbeUrl: STRICT, probeUrl: LENIENT }), STRICT)
+    assert.strictEqual(resolveStrictProbeUrl({ probeUrl: LENIENT }), LENIENT)
+    assert.strictEqual(resolveStrictProbeUrl({}), xrayIndex.config.probeUrl)
   })
 })

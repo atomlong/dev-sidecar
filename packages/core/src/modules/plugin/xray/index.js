@@ -881,6 +881,18 @@ async function selectLiveInjectableEntries (availableEntries, allowedCountries, 
   return entries
 }
 
+// 探测 URL 宽严分离契约（用户架构设定，xrayStageGating.test.js 契约用例锁定）：
+// Stage1 bootstrap + live observatory 严格（observatoryProbeUrl 优先，回退 probeUrl）；
+// Stage3 周期探测宽松（仅 probeUrl）——严格探测会经 4 连败墓碑误删对下游
+// export 有价值的非 chatgpt 可用节点。禁止把两处统一成严格。
+function resolveStrictProbeUrl (cfg) {
+  return cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl
+}
+
+function resolveStage3ProbeUrl (cfg) {
+  return cfg.probeUrl || pluginConfig.probeUrl
+}
+
 function openDownloadReadable (url, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const client = url.startsWith('https') ? https : http
@@ -2551,7 +2563,7 @@ const Plugin = function (context) {
     if (!currentLiveMetricsPort) {
       currentLiveMetricsPort = await portFinder.findFreePort()
     }
-    const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
+    const liveConfig = genConfig(currentLivePort, selectedNodes, cfg.rules, resolveStrictProbeUrl(cfg), cfg.probeInterval, {
       apiPort: currentLiveApiPort,
       metricsPort: currentLiveMetricsPort,
       observatoryEnableConcurrency: true,
@@ -2698,7 +2710,7 @@ const Plugin = function (context) {
 
     // Stage1 bootstrap passes observatoryProbeUrl (strict, near real target);
     // Stage3 cache refresh passes probeUrl (lenient, gstatic 204) for broad screening.
-    const effectiveProbeUrl = probeUrl || cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl
+    const effectiveProbeUrl = probeUrl || resolveStrictProbeUrl(cfg)
 
     // Single-pass probe: probe ALL nodes once with the configured probeUrl.
     // The dual-protocol (HTTP + HTTPS) probing was reverted because:
@@ -3029,7 +3041,7 @@ const Plugin = function (context) {
                 batchNodes: bootstrapCandidates,
                 timeoutMs: 0,
                 probeSamples: getBootstrapProbeSamples(cfg),
-                probeUrl: cfg.observatoryProbeUrl || cfg.probeUrl || pluginConfig.probeUrl,
+                probeUrl: resolveStrictProbeUrl(cfg),
               })
               const annotatedBootstrapEntries = await annotateProbeEntries(bootstrapProbeResult.entries, {
                 binPath,
@@ -3075,7 +3087,7 @@ const Plugin = function (context) {
         liveApiPort = await portFinder.findFreePort()
         liveMetricsPort = await portFinder.findFreePort()
         // Fixed template: no proxy nodes in config.json; Stage1 injects via ado/rmo after start
-        const liveConfig = genConfig(port, [], cfg.rules, cfg.observatoryProbeUrl || cfg.probeUrl, cfg.probeInterval, {
+        const liveConfig = genConfig(port, [], cfg.rules, resolveStrictProbeUrl(cfg), cfg.probeInterval, {
           apiPort: liveApiPort,
           metricsPort: liveMetricsPort,
           observatoryEnableConcurrency: true,
@@ -3761,9 +3773,7 @@ const Plugin = function (context) {
         binPath,
         cfg,
         xrayDir,
-        // Stage3 用宽松 probeUrl 粗筛（gstatic 204），与 Stage1/observatory 的
-        // 严格探测分离——缓存是共享资产，严格探测会把非 chatgpt 可用节点判死
-        probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
+        probeUrl: resolveStage3ProbeUrl(cfg),
         probeSamples: getCacheRefreshProbeSamples(cfg),
       })
       registerTransientProbeController(persistentController)
@@ -3883,8 +3893,7 @@ const Plugin = function (context) {
             batchNodes: candidateNodes,
             timeoutMs: 0,
             probeSamples: getCacheRefreshProbeSamples(cfg),
-            // Stage3 宽松粗筛（gstatic 204）；严格探测留给 Stage1/observatory
-            probeUrl: cfg.probeUrl || pluginConfig.probeUrl,
+            probeUrl: resolveStage3ProbeUrl(cfg),
             persistentController,
           })
 
@@ -4463,6 +4472,8 @@ module.exports = {
     evaluateStage2PostRoundTrigger,
     getFailureBackoffMs,
     isParsedNodeValid: parser.isParsedNodeValid,
+    resolveStage3ProbeUrl,
+    resolveStrictProbeUrl,
     selectLiveInjectableEntries,
     selectStage3RefreshCandidates,
     toLocalTimestampAfterMs,
