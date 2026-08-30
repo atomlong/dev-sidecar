@@ -1377,6 +1377,46 @@ describe('xray stage gating', function () {
     }
   })
 
+  it('releases isStageRunning after an empty (no-due) Stage3 round', async () => {
+    if (!sqliteAvailable) {
+      return
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-empty-round-'))
+    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
+
+    try {
+      // Schema with zero nodes: the round takes the "no due nodes" early return.
+      xrayCache.writeCache(cachePath, [])
+
+      const api = xrayIndex.plugin({
+        config: {
+          get: () => ({
+            plugin: { xray: { enabled: true, cacheRefreshEnabled: true, cacheRefreshIntervalHours: 3 } },
+          }),
+        },
+        event: { register: () => 1, unregister: () => {}, fire: () => {} },
+        log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+        server: { reload: async () => {} },
+      })
+      assert.ok(api && typeof api.refreshCacheFromCacheOnly === 'function')
+
+      await api.refreshCacheFromCacheOnly({
+        binPath: '/nonexistent/xray', // the empty round never spawns probes
+        cfg: { cacheRefreshEnabled: true, cacheRefreshIntervalHours: 3 },
+        xrayDir: tmpDir,
+        cachePath,
+      })
+
+      // The empty-due early return exits BEFORE the main try/finally — if the
+      // flag is not released here, every future round is skipped as
+      // "Stage 正在运行" forever (Stage3 dead until service restart).
+      assert.strictEqual(api.getStageStatus().stage3.state, 'idle')
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it('keeps entries unchanged when stage3 results have only partial coverage', () => {
     if (!sqliteAvailable) {
       return
