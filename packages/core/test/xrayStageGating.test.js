@@ -1420,6 +1420,55 @@ describe('xray stage gating', function () {
     }
   })
 
+  it('stage3 roundNumber 从 1 开始逐轮递增（区别于内部 generation 代际）', async function () {
+    if (!sqliteAvailable) {
+      return
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-roundnum-'))
+    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
+
+    try {
+      xrayCache.writeCache(cachePath, [])
+
+      const api = xrayIndex.plugin({
+        config: {
+          get: () => ({
+            plugin: { xray: { enabled: true, cacheRefreshEnabled: true, cacheRefreshIntervalHours: 3 } },
+          }),
+        },
+        event: { register: () => 1, unregister: () => {}, fire: () => {} },
+        log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+        server: { reload: async () => {} },
+      })
+
+      // 未开跑时为 0；每个真实 Stage3 轮 +1（generation 是内部失效代际，
+      // 启动 Stage2/close 也占用，曾致首个 Stage3 轮显示 #2）
+      assert.strictEqual(api.getStageStatus().stage3.roundNumber, 0)
+
+      await api.refreshCacheFromCacheOnly({
+        binPath: '/nonexistent/xray',
+        cfg: { cacheRefreshEnabled: true, cacheRefreshIntervalHours: 3 },
+        xrayDir: tmpDir,
+        cachePath,
+      })
+      assert.strictEqual(api.getStageStatus().stage3.roundNumber, 1)
+      assert.strictEqual(api.getStageStatus().stage3.state, 'idle')
+
+      // 第二轮：依赖空轮路径正确复位 isStageRunning（上一用例的回归保护）
+      await api.refreshCacheFromCacheOnly({
+        binPath: '/nonexistent/xray',
+        cfg: { cacheRefreshEnabled: true, cacheRefreshIntervalHours: 3 },
+        xrayDir: tmpDir,
+        cachePath,
+      })
+      assert.strictEqual(api.getStageStatus().stage3.roundNumber, 2)
+      assert.strictEqual(api.getStageStatus().stage3.state, 'idle')
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it('keeps entries unchanged when stage3 results have only partial coverage', () => {
     if (!sqliteAvailable) {
       return
