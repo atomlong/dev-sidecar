@@ -17,6 +17,7 @@ let server = null
 let wss = null
 let wsBroadcast = null
 let eventIds = []
+let logRingUnsubscribe = null
 
 function Plugin (context) {
   const { config: globalConfig, event, log: ctxLog, server: ctxServer } = context
@@ -58,6 +59,12 @@ function Plugin (context) {
           eventIds.push(id)
         }
 
+        // 实时日志推流：log4js 环形缓冲的每条新日志经 WS 广播给 WebUI
+        const logRing = require('../../../utils/util.log-ring')
+        logRingUnsubscribe = logRing.subscribe((entry) => {
+          wsBroadcast({ channel: 'log', data: entry })
+        })
+
         server.listen(port, listen, () => {
           ctxLog.info(`WebUI 已启动: http://${listen}:${port}`)
           event.fire('status', { key: 'plugin.webui.enabled', value: true })
@@ -74,6 +81,10 @@ function Plugin (context) {
         try { event.unregister(id) } catch { /* ignore */ }
       }
       eventIds = []
+      if (logRingUnsubscribe) {
+        try { logRingUnsubscribe() } catch { /* ignore */ }
+        logRingUnsubscribe = null
+      }
       if (wss) {
         wss.close()
         wss = null

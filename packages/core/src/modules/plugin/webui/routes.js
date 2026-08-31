@@ -175,28 +175,6 @@ function createRouter (context) {
     return { binPath, xrayDir, cachePath, apiPort, metricsPort, port, enabled }
   }
 
-  // Helper: read log file tail (tail -n implementation)
-  function readLogTail (filePath, lines) {
-    const stat = fs.statSync(filePath)
-    const size = stat.size
-    if (size === 0) {
-      return []
-    }
-    // Read from end, ~200 bytes per line average, read 2x to be safe
-    const chunkSize = Math.min(size, lines * 200)
-    const fd = fs.openSync(filePath, 'r')
-    try {
-      const buf = Buffer.alloc(chunkSize)
-      fs.readSync(fd, buf, 0, chunkSize, size - chunkSize)
-      const allLines = buf.toString('utf8').split('\n')
-      // First line may be partial, skip it
-      const fullLines = chunkSize < size ? allLines.slice(1) : allLines
-      return fullLines.slice(-lines).filter((l) => l.length > 0)
-    } finally {
-      fs.closeSync(fd)
-    }
-  }
-
   async function router (req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`)
     const pathname = url.pathname
@@ -314,21 +292,23 @@ function createRouter (context) {
       return
     }
 
-    if (method === 'GET' && pathname.startsWith('/api/logs')) {
-      const file = url.searchParams.get('file') || 'core'
-      const allowedFiles = { core: 'core.log', server: 'server.log', gui: 'gui.log' }
-      if (!allowedFiles[file] || file.includes('/') || file.includes('..')) {
-        sendJson(res, 400, { error: true, message: 'Invalid file', code: 'INVALID_FILE' })
-        return
-      }
-      const lines = parseInt(url.searchParams.get('lines')) || 200
-      const logPath = path.join(require('node:os').homedir(), '.dev-sidecar', 'logs', allowedFiles[file])
-      try {
-        const tailLines = readLogTail(logPath, lines)
-        sendJson(res, 200, { file, lines: tailLines, count: tailLines.length })
-      } catch (err) {
-        sendJson(res, 200, { file, lines: [], count: 0, error: err.message })
-      }
+    if (method === 'GET' && pathname === '/api/logs') {
+      // 结构化实时日志：来自进程内 log4js 环形缓冲（util.log-ring.js），
+      // 不再读日志文件。level=最低等级，q=消息/模块子串（不分大小写），
+      // category=精确模块，limit=返回最新 N 条（时间升序）。
+      const logRing = require('../../../utils/util.log-ring')
+      const level = url.searchParams.get('level') || ''
+      const q = url.searchParams.get('q') || ''
+      const category = url.searchParams.get('category') || ''
+      const limitParam = parseInt(url.searchParams.get('limit'), 10)
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 1000
+      const entries = logRing.getEntries({ level, q, category, limit })
+      sendJson(res, 200, {
+        entries,
+        categories: logRing.getCategories(),
+        capacity: logRing.getCapacity(),
+        returned: entries.length,
+      })
       return
     }
 

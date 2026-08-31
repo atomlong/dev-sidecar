@@ -42,6 +42,20 @@ input,select,textarea{background:#0f0f23;color:#e0e0e0;border:1px solid #2a2a4a;
 select:disabled{opacity:0.5;cursor:not-allowed}
 textarea{width:100%;min-height:300px;font-size:12px}
 pre{background:#0d1117;padding:12px;border-radius:6px;overflow:auto;max-height:500px;font-size:12px;white-space:pre-wrap}
+.log-wrap{max-height:560px;overflow:auto;background:#0d1117;padding:0}
+.log-table{width:100%;border-collapse:collapse;font-size:12px}
+.log-table th{position:sticky;top:0;background:#16213e;color:#4fc3f7;text-align:left;white-space:nowrap;padding:6px 8px;z-index:1;cursor:default}
+.log-table td{padding:3px 8px;border-top:1px solid #1a1a3e;vertical-align:top}
+.log-table td.msg{max-width:620px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:Consolas,'Courier New',monospace}
+.log-table tr.expanded td.msg{white-space:pre-wrap;word-break:break-all;overflow:visible}
+.log-table tr:hover td{background:#1a1a3e}
+.lv-badge{display:inline-block;padding:0 6px;border-radius:3px;font-size:11px;line-height:18px}
+.lv-debug{background:#2a2a4a;color:#999}
+.lv-info{background:#0d2b45;color:#4fc3f7}
+.lv-warn{background:#4e342e;color:#ffb74d}
+.lv-error{background:#b71c1c;color:#ff8a80}
+.lv-fatal{background:#b71c1c;color:#fff}
+.log-line{font-size:11px;line-height:1.4}
 .log-view{font-size:11px;line-height:1.4;max-height:600px;overflow:auto;background:#0d1117;padding:8px;border-radius:6px}
 .log-line{white-space:pre-wrap;word-break:break-all}
 .loading{color:#666;font-style:italic}
@@ -79,10 +93,11 @@ const API = '';
 let ws = null;
 let wsConnected = false;
 let pollTimer = null;
-let logFile = 'core';
-let logAutoRefresh = false;
-let logRefreshTimer = null;
-let logRefreshInterval = 5;
+let logMaster = [];
+let logCatSet = new Set();
+let logSearchTimer = null;
+const LOG_VIEW_MAX = 1000;   // DOM 行数上限（防长会话膨胀）
+const LOG_MASTER_MAX = 3000; // 前端主数组上限（与后端环形容量一致）
 
 // ---- Utils ----
 async function api(path, opts={}) {
@@ -166,6 +181,7 @@ function connectWs() {
       const msg = JSON.parse(e.data);
       if (msg.channel === 'status') handleStatusEvent(msg.data);
       if (msg.channel === 'error') toast('错误: ' + JSON.stringify(msg.data), true);
+      if (msg.channel === 'log') appendLogEntry(msg.data);
     };
     ws.onclose = () => { wsConnected = false; setTimeout(connectWs, 2000); };
     ws.onerror = () => { ws.close(); };
@@ -628,63 +644,143 @@ async function loadCache(silent) {
   }
 }
 
-// ==================== Logs ====================
+// ==================== Logs（结构化实时日志：环形缓冲 + WS 推流） ====================
 let logsInited = false;
 function initLogs() {
   $('logs').innerHTML = `
 <div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-  <select id="logFile" onchange="logFile=this.value;loadLogLines()">
-    <option value="core">core.log</option>
-    <option value="server">server.log</option>
-    <option value="gui">gui.log</option>
+  <input id="log-q" placeholder="搜索消息/模块…" style="width:200px" oninput="logSearchDebounce()">
+  <select id="log-level" onchange="renderLogTable()">
+    <option value="">全部等级</option>
+    <option value="debug">DEBUG</option>
+    <option value="info">INFO</option>
+    <option value="warn">WARN</option>
+    <option value="error">ERROR</option>
   </select>
-  <button class="btn" onclick="loadLogLines()">手动刷新</button>
-  <button class="btn" id="logAutoBtn" onclick="toggleLogAuto()">自动刷新: 关</button>
-  <span class="muted">间隔:</span>
-  <select id="logInterval" onchange="logRefreshInterval=parseInt(this.value);if(logAutoRefresh){restartLogAuto();}">
-    <option value="2">2s</option>
-    <option value="5" selected>5s</option>
-    <option value="10">10s</option>
-    <option value="30">30s</option>
-  </select>
+  <select id="log-cat" onchange="renderLogTable()"><option value="">全部模块</option></select>
+  <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="log-live" checked onchange="logLiveToggled()"> 实时</label>
+  <button class="btn" onclick="clearLogView()">清屏</button>
+  <button class="btn" id="log-bottom-btn" style="display:none" onclick="logScrollBottom()">↓ 底部</button>
   <span style="flex:1"></span>
-  <span class="muted" id="logLastRefresh">-</span>
+  <span class="muted" id="log-stats">-</span>
 </div>
-<div class="card"><div class="log-view" id="logView">-</div></div>`;
+<div class="card log-wrap" id="log-wrap" style="padding:0">
+  <table class="log-table">
+    <thead><tr><th style="width:96px">时间</th><th style="width:56px">等级</th><th style="width:84px">模块</th><th>消息</th></tr></thead>
+    <tbody id="log-tbody"></tbody>
+  </table>
+</div>`;
+  const wrap = $('log-wrap');
+  wrap.onscroll = () => {
+    const nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 40;
+    const btn = $('log-bottom-btn');
+    if (btn) btn.style.display = nearBottom ? 'none' : '';
+  };
   logsInited = true;
+  loadLogEntries();
 }
-async function loadLogLines() {
+function logSearchDebounce() {
+  if (logSearchTimer) clearTimeout(logSearchTimer);
+  logSearchTimer = setTimeout(renderLogTable, 200);
+}
+async function loadLogEntries() {
   try {
-    const r = await api(`/api/logs?file=${logFile}&lines=200`);
-    const view = $('logView');
-    if (!view) return;
-    const wasNearBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 50;
-    view.innerHTML = (r.lines||[]).map(l => `<div class="log-line">${esc(l)}</div>`).join('');
-    if (wasNearBottom) view.scrollTop = view.scrollHeight;
-    $('logLastRefresh').textContent = '刷新于 ' + new Date().toLocaleTimeString();
-  } catch(e) { const v = $('logView'); if (v) v.innerHTML = '错误: '+esc(e.message); }
+    const r = await api('/api/logs?limit=1000');
+    logMaster = r.entries || [];
+    logCatSet = new Set(r.categories || []);
+    refreshLogCatSelect();
+    renderLogTable();
+  } catch (e) { toast('日志加载失败: ' + e.message, true); }
 }
-function toggleLogAuto() {
-  logAutoRefresh = !logAutoRefresh;
-  const btn = $('logAutoBtn');
-  if (logAutoRefresh) {
-    btn.textContent = '自动刷新: 开';
-    btn.classList.add('danger');
-    startLogAuto();
-  } else {
-    btn.textContent = '自动刷新: 关';
-    btn.classList.remove('danger');
-    stopLogAuto();
-  }
+const LV_ORD = { debug: 1, info: 2, warn: 3, error: 4, fatal: 5 };
+function logFilterOf() {
+  return {
+    q: ($('log-q').value || '').trim().toLowerCase(),
+    level: $('log-level').value,
+    category: $('log-cat').value,
+  };
 }
-function startLogAuto() {
-  if (logRefreshTimer) clearInterval(logRefreshTimer);
-  logRefreshTimer = setInterval(loadLogLines, logRefreshInterval * 1000);
+function logPass(e, f) {
+  if (f.level && (LV_ORD[e.level] || 0) < (LV_ORD[f.level] || 0)) return false;
+  if (f.category && e.category !== f.category) return false;
+  if (f.q && !(String(e.message).toLowerCase().includes(f.q) || String(e.category).toLowerCase().includes(f.q))) return false;
+  return true;
 }
-function stopLogAuto() {
-  if (logRefreshTimer) { clearInterval(logRefreshTimer); logRefreshTimer = null; }
+function fmtLogTs(ts) {
+  const d = new Date(ts);
+  const p = (n, w) => String(n).padStart(w, '0');
+  return p(d.getHours(), 2) + ':' + p(d.getMinutes(), 2) + ':' + p(d.getSeconds(), 2) + '.' + p(d.getMilliseconds(), 3);
 }
-function restartLogAuto() { stopLogAuto(); startLogAuto(); }
+function logRow(e) {
+  return `<tr class="lv-${esc(e.level)}" onclick="logRowToggle(this)">
+    <td class="lt-ts">${fmtLogTs(e.ts)}</td>
+    <td><span class="lv-badge lv-${esc(e.level)}">${esc(String(e.level).toUpperCase())}</span></td>
+    <td>${esc(e.category)}</td>
+    <td class="msg" title="${esc(e.message)}">${esc(e.message)}</td>
+  </tr>`;
+}
+function renderLogTable() {
+  const tbody = $('log-tbody');
+  const wrap = $('log-wrap');
+  if (!tbody || !wrap) return;
+  const f = logFilterOf();
+  const shown = logMaster.filter(e => logPass(e, f));
+  const slice = shown.length > LOG_VIEW_MAX ? shown.slice(shown.length - LOG_VIEW_MAX) : shown;
+  tbody.innerHTML = slice.map(logRow).join('');
+  wrap.scrollTop = wrap.scrollHeight;
+  updateLogStats(shown.length);
+}
+function appendLogEntry(e) {
+  if (!logsInited || !e) return;
+  logMaster.push(e);
+  if (logMaster.length > LOG_MASTER_MAX) logMaster.splice(0, logMaster.length - LOG_MASTER_MAX);
+  if (!logCatSet.has(e.category)) { logCatSet.add(e.category); refreshLogCatSelect(); }
+  const wrap = $('log-wrap');
+  const tbody = $('log-tbody');
+  const live = $('log-live');
+  if (!wrap || !tbody) { return; }
+  const f = logFilterOf();
+  const shownCount = f.q || f.level || f.category ? logMaster.reduce((n, x) => n + (logPass(x, f) ? 1 : 0), 0) : logMaster.length;
+  if (!logPass(e, f)) { updateLogStats(shownCount); return; }
+  if (live && !live.checked) { updateLogStats(shownCount); return; }
+  const nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 40;
+  tbody.insertAdjacentHTML('beforeend', logRow(e));
+  while (tbody.rows.length > LOG_VIEW_MAX) tbody.deleteRow(0);
+  if (nearBottom) { wrap.scrollTop = wrap.scrollHeight; }
+  else { const btn = $('log-bottom-btn'); if (btn) btn.style.display = ''; }
+  updateLogStats(shownCount);
+}
+function updateLogStats(shownCount) {
+  const el = $('log-stats');
+  if (!el) return;
+  const f = logFilterOf();
+  const shown = shownCount != null ? shownCount : logMaster.reduce((n, x) => n + (logPass(x, f) ? 1 : 0), 0);
+  el.textContent = `显示 ${Math.min(shown, LOG_VIEW_MAX)} / 匹配 ${shown} / 缓冲 ${logMaster.length}`;
+}
+function refreshLogCatSelect() {
+  const sel = $('log-cat');
+  if (!sel) return;
+  const cur = sel.value;
+  const cats = [...logCatSet].sort();
+  sel.innerHTML = '<option value="">全部模块</option>' + cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  if (cats.includes(cur)) sel.value = cur;
+}
+function logRowToggle(tr) {
+  tr.classList.toggle('expanded');
+}
+function clearLogView() {
+  logMaster = [];
+  renderLogTable();
+}
+function logLiveToggled() {
+  if ($('log-live').checked) renderLogTable();
+}
+function logScrollBottom() {
+  const wrap = $('log-wrap');
+  if (wrap) wrap.scrollTop = wrap.scrollHeight;
+  const btn = $('log-bottom-btn');
+  if (btn) btn.style.display = 'none';
+}
 
 // ==================== Config ====================
 let configInited = false;

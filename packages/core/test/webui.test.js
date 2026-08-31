@@ -133,19 +133,8 @@ describe('webui routes', () => {
     assert.strictEqual(data.xrayEnabled, false)
   })
 
-  it('GET /api/logs with invalid file returns 400', async () => {
-    const r = await fetch(`${baseUrl}/api/logs?file=../../../etc/passwd`)
-    const data = await r.json()
-    assert.strictEqual(r.status, 400)
-    assert.strictEqual(data.code, 'INVALID_FILE')
-  })
-
-  it('GET /api/logs with valid file returns lines array', async () => {
-    const r = await fetch(`${baseUrl}/api/logs?file=core&lines=10`)
-    const data = await r.json()
-    assert.strictEqual(r.status, 200)
-    assert.ok(Array.isArray(data.lines))
-  })
+  // 旧文件式 /api/logs（?file=core&lines=N 读日志文件）已被结构化环形缓冲
+  // 端点取代，旧契约用例移除——新契约见 "webui logs route" describe。
 
   it('GET /api/config returns config object', async () => {
     const r = await fetch(`${baseUrl}/api/config`)
@@ -195,7 +184,7 @@ describe('webui routes', () => {
   })
 
   it('error responses have stable code field', async () => {
-    const r = await fetch(`${baseUrl}/api/logs?file=../../etc/passwd`)
+    const r = await fetch(`${baseUrl}/api/definitely-not-a-route`)
     const data = await r.json()
     assert.ok(data.error === true)
     assert.ok(typeof data.code === 'string')
@@ -873,5 +862,88 @@ describe('reInjectXrayRules', () => {
     assert.strictEqual(calls.removeRules, 1)
     assert.strictEqual(calls.injectRules.length, 1)
     assert.deepStrictEqual(calls.injectRules[0].rules, [])
+  })
+})
+
+describe('webui logs route (/api/logs 结构化实时日志)', () => {
+  let server, baseUrl
+
+  const fakeContext = () => ({
+    config: {
+      get: () => ({
+        server: { intercepts: {}, setting: { userBasePath: '/tmp' } },
+        plugin: { xray: { enabled: false, port: 0, apiPort: 0, metricsPort: 0 }, webui: { token: '' } },
+        proxy: { enabled: false },
+      }),
+      update: () => {},
+      save: () => {},
+      downloadRemoteConfig: async () => {},
+      reload: () => {},
+    },
+    event: { register: () => 1, unregister: () => {}, fire: () => {} },
+    log: { info: () => {}, error: () => {} },
+    server: { reload: async () => {} },
+    xrayApi: null,
+  })
+
+  const seed = (appender, { ts = 1788160000000, level = 'INFO', category = 'core', data } = {}) =>
+    appender({ startTime: new Date(ts), level: { levelStr: level }, categoryName: category, data })
+
+  before(async () => {
+    const { createRouter } = require('../src/modules/plugin/webui/routes')
+    server = http.createServer(createRouter(fakeContext()))
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address()
+    baseUrl = `http://127.0.0.1:${port}`
+  })
+
+  after(async () => {
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  beforeEach(() => {
+    const logRing = require('../src/utils/util.log-ring')
+    logRing._resetForTest()
+    const appender = logRing.configure()
+    seed(appender, { ts: 1000, level: 'DEBUG', category: 'core', data: ['Xray 调试细节'] })
+    seed(appender, { ts: 2000, level: 'INFO', category: 'core', data: ['Xray 启动完成'] })
+    seed(appender, { ts: 3000, level: 'WARN', category: 'gui', data: ['窗口关闭警告'] })
+    seed(appender, { ts: 4000, level: 'ERROR', category: 'server', data: [new Error('端口占用')] })
+  })
+
+  it('GET /api/logs 返回结构化条目与模块清单（时间升序）', async () => {
+    const r = await fetch(`${baseUrl}/api/logs`)
+    assert.strictEqual(r.status, 200)
+    const d = await r.json()
+    assert.strictEqual(d.entries.length, 4)
+    assert.strictEqual(d.entries[0].message, 'Xray 调试细节')
+    assert.strictEqual(d.entries[3].category, 'server')
+    assert.ok(d.entries[3].message.includes('端口占用'))
+    assert.deepStrictEqual(d.categories, ['core', 'gui', 'server'])
+    assert.strictEqual(d.capacity > 0, true)
+  })
+
+  it('level 过滤按最低等级（warn 含 error）', async () => {
+    const d = await (await fetch(`${baseUrl}/api/logs?level=warn`)).json()
+    assert.strictEqual(d.entries.length, 2)
+    assert.strictEqual(d.entries[0].message, '窗口关闭警告')
+    assert.strictEqual(d.entries[1].level, 'error')
+    const d2 = await (await fetch(`${baseUrl}/api/logs?level=ERROR`)).json()
+    assert.strictEqual(d2.entries.length, 1)
+    assert.strictEqual(d2.entries[0].level, 'error')
+  })
+
+  it('q 过滤不分大小写（消息与模块）', async () => {
+    const d = await (await fetch(`${baseUrl}/api/logs?q=xray`)).json()
+    assert.strictEqual(d.entries.length, 2)
+    const d2 = await (await fetch(`${baseUrl}/api/logs?q=GUI`)).json()
+    assert.deepStrictEqual(d2.entries.map(e => e.category), ['gui'])
+  })
+
+  it('category 精确过滤 + limit 优先返回最新且保持升序', async () => {
+    const d = await (await fetch(`${baseUrl}/api/logs?category=core`)).json()
+    assert.strictEqual(d.entries.length, 2)
+    const d2 = await (await fetch(`${baseUrl}/api/logs?limit=2`)).json()
+    assert.deepStrictEqual(d2.entries.map(e => e.category), ['gui', 'server'])
   })
 })

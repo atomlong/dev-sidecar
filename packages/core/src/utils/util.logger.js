@@ -45,15 +45,17 @@ function log4jsConfigure (categories) {
   const config = {
     appenders: {
       std: { type: 'stdout' },
+      // WebUI 实时日志：结构化环形缓冲（内存受控，见 util.log-ring.js）
+      webuiRing: { type: require.resolve('./util.log-ring.js') },
     },
     categories: {
-      default: { appenders: ['std'], level },
+      default: { appenders: ['std', 'webuiRing'], level },
     },
   }
 
   for (const category of categories) {
     config.appenders[category] = { ...appenderConfig, filename: path.join(basePath, `/${category}.log`) }
-    config.categories[category] = { appenders: [category, 'std'], level }
+    config.categories[category] = { appenders: [category, 'std', 'webuiRing'], level }
   }
 
   log4js.configure(config)
