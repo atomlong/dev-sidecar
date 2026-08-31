@@ -832,7 +832,7 @@ function loadPanel(name, silent) {
     case 'dashboard': loadDashboard(silent); break;
     case 'probe': loadProbe(silent); break;
     case 'cache': loadCache(silent); break;
-    case 'logs': if (!logsInited) { initLogs(); loadLogLines(); } break;
+    case 'logs': if (!logsInited) { initLogs(); } break;
     case 'config': loadConfig(silent); break;
   }
 }
