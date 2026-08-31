@@ -26,7 +26,7 @@
 **响应** `200`
 ```json
 {
-  "version": "2.2.8",
+  "version": "2.2.9",
   "nodeVersion": "v24.18.0",
   "xrayCoreVersion": "26.3.27"
 }
@@ -47,7 +47,7 @@
 {
   "pid": 67890,
   "uptime": 12345,
-  "version": "2.2.8",
+  "version": "2.2.9",
   "nodeVersion": "v24.18.0",
   "logDir": "/home/user/.dev-sidecar/logs"
 }
@@ -320,8 +320,8 @@
 
 - `data.outbounds` 数据源为缓存里的标准 outbound JSON（非 live API 的 TypedMessage 格式），可直接用于启动独立 xray 进程。
 - `data.meta[].exitIp` 供消费方做出口 IP 冷却记录；`stable` 为布尔。
-- `total` = **过滤后的**可用总数（非全库数），消费方可据此判断节点池是否快耗尽。
-- 非 2xx：`400 LIMIT_TOO_LARGE`（limit>500）；`429 RATE_LIMITED`（10s 限流，`retryAfter` 秒）。
+- `total` = **当前过滤条件下的总条数**：带 `available`/`country` 等过滤时为过滤后总数（可据此判断节点池是否快耗尽）；完全无过滤时为全库节点数（几十万级）。消费方探测节点池规模请总是带 `available=true`。
+- 非 2xx 响应**不含** `total`/`data`/`returned` 字段，消费方必须先检查 HTTP 状态码或 `error` 字段：`400 LIMIT_TOO_LARGE`（limit>500）、`429 RATE_LIMITED`（10s 限流，`retryAfter` 秒）。把 429 响应体当正常响应解析会得到 `total=None`（Python）——这是下游常见的坑。
 
 ### GET /api/xray/cache/subscriptions
 
