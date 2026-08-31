@@ -996,20 +996,33 @@ function readSqliteCacheEntriesForStartup (cacheFilePath, options = {}) {
       return []
     }
 
-    // Bootstrap startup reads probed node_ids from cache_meta and uses
-    // WHERE node_id IN (...) — a primary-key lookup that avoids scanning
-    // the full ~1.6M row table. If cache_meta is empty (first run or
-    // before Stage3 has run), returns empty — bootstrap will start with
-    // no candidates and Stage2/Stage3 will populate cache_meta for the
-    // next startup.
-    const probedNodeIds = readProbedNodeIds(db)
-    if (probedNodeIds.length === 0) {
+    // Startup candidate window: the probed/alive set (delay > 0, backed by the
+    // same partial index updateProbedNodeIds uses) with the caller's
+    // country/owner/maxDelay filters applied IN SQL before ORDER BY + LIMIT.
+    // The old flow sliced the first `limit` probed ids by raw delay order and
+    // left country/owner to JS post-filtering — with a large alive pool the
+    // window filled with low-delay but filtered-out nodes (observed in prod:
+    // 71 of the top-100 were cloudflare-owned; the "!cloudflare" post-filter
+    // left 1 candidate, and the round-end live refresh rmo'd 19 healthy nodes
+    // down to 1).
+    const { clauses, params } = buildCompactV2FilterClauses({
+      ...options,
+      probedOnly: true,
+    })
+    const limit = normalizeSqliteQueryLimit(options.limit)
+    const limitSql = limit != null && limit > 0 ? ` LIMIT ${Math.floor(limit)}` : ''
+    const whereSql = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : ''
+    const rows = db.prepare(`
+      SELECT node_id
+      FROM node_runtime_v2${whereSql}
+      ORDER BY delay ASC, stable DESC, updated_at DESC${limitSql}
+    `).all(...params)
+    const candidateIds = rows
+      .map(row => Number(row && row.node_id))
+      .filter(id => Number.isInteger(id) && id > 0)
+    if (candidateIds.length === 0) {
       return []
     }
-    const limit = normalizeSqliteQueryLimit(options.limit)
-    const candidateIds = limit != null && limit > 0
-      ? probedNodeIds.slice(0, limit)
-      : probedNodeIds
     const entries = readCompactV2CacheEntriesByRowIds(db, candidateIds)
     return entries
   } catch {
