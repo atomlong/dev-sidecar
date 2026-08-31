@@ -7,6 +7,7 @@ const event = require('../../event')
 const status = require('../../status')
 const jsonApi = require('@docmirror/mitmproxy/src/json')
 const log = require('../../utils/util.log.core')
+const logRing = require('../../utils/util.log-ring')
 
 let server = null
 let currentPlugins = null
@@ -135,6 +136,7 @@ const serverApi = {
     const diagnosticDir = path.join(serverConfig.setting.userBasePath || '.', 'logs')
     const serverProcess = fork(mitmproxyPath, [runningConfigPath], {
       execArgv: ['--expose-gc', '--max-old-space-size=192', '--heapsnapshot-signal=SIGUSR2', `--diagnostic-dir=${diagnosticDir}`],
+      env: { ...process.env, DS_LOG_IPC_FORWARD: '1' },
     })
     server = {
       id: serverProcess.pid,
@@ -182,6 +184,12 @@ const serverApi = {
       log.error('server process uncaughtException:', err)
     })
     serverProcess.on('message', (msg) => {
+      // mitmproxy 子进程日志转发：每条日志一个消息，必须放在 debug 序列化
+      // 之前提前返回，避免高频 JSON.stringify 开销
+      if (msg && msg.__dsLog) {
+        logRing.appendExternal(msg.__dsLog)
+        return
+      }
       log.debug('收到子进程消息:', JSON.stringify(msg))
       if (msg.type === 'status') {
         fireStatus(msg.event)
