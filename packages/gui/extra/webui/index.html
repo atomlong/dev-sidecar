@@ -302,7 +302,7 @@ function initProbe() {
         <th onclick="xraySortToggle('country')">国家<span id="sort-country"></span></th>
         <th onclick="xraySortToggle('addr')">地址<span id="sort-addr"></span></th>
         <th onclick="xraySortToggle('port')">端口<span id="sort-port"></span></th>
-        <th onclick="xraySortToggle('sni')">SNI<span id="sort-sni"></span></th>
+        <th onclick="xraySortToggle('owner')">owner<span id="sort-owner"></span></th>
         <th onclick="xraySortToggle('transport')">传输<span id="sort-transport"></span></th>
         <th onclick="xraySortToggle('delay')">延时<span id="sort-delay"></span></th>
       </tr></thead>
@@ -375,7 +375,6 @@ function renderStage1Table(data) {
     || n.proxySettings?.port || n.proxySettings?.servers?.[0]?.port
     || n.settings?.servers?.[0]?.port || '';
   const transportOf = (n) => n.senderSettings?.streamSettings?.protocolName || '';
-  const sniOf = (n) => (n.senderSettings?.streamSettings?.securitySettings || [])[0]?.serverName || '';
 
   const proxyNodes = nodes.filter(n => {
     const t = n.tag || '';
@@ -389,7 +388,7 @@ function renderStage1Table(data) {
     const delayVal = o ? (o.alive && o.delay != null ? o.delay : 999999) : null;
     return {
       tag, proto: protoOf(n), transport: transportOf(n),
-      addr: addrOf(n), port: portOf(n), sni: sniOf(n),
+      addr: addrOf(n), port: portOf(n), owner: m.owner || '',
       country: m.country || '',
       delay: delayVal,
     };
@@ -408,7 +407,7 @@ function renderStage1Table(data) {
   }
 
   // Update sort arrows
-  ['tag','proto','country','addr','port','sni','transport','delay'].forEach(c => {
+  ['tag','proto','country','addr','port','owner','transport','delay'].forEach(c => {
     const el = $('sort-'+c);
     if (el) el.textContent = xraySort.col === c ? (xraySort.dir === 'asc' ? ' ↑' : ' ↓') : '';
   });
@@ -422,7 +421,7 @@ function renderStage1Table(data) {
 
   tbody.innerHTML = rowData.map(r => {
     const delayDisp = r.delay == null ? '<span class="muted">待探测</span>' : (r.delay >= 999999 ? '<span class="tag red">✗</span>' : r.delay + 'ms');
-    return `<tr><td>${esc(r.tag)}</td><td>${esc(r.proto)}</td><td>${countryCell(r.country)}</td><td>${esc(r.addr)}</td><td>${esc(r.port)}</td><td>${esc(r.sni)}</td><td>${esc(r.transport)}</td><td>${delayDisp}</td></tr>`;
+    return `<tr><td>${esc(r.tag)}</td><td>${esc(r.proto)}</td><td>${countryCell(r.country)}</td><td>${esc(r.addr)}</td><td>${esc(r.port)}</td><td>${esc(r.owner)}</td><td>${esc(r.transport)}</td><td>${delayDisp}</td></tr>`;
   }).join('');
 }
 
