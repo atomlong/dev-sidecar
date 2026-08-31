@@ -1,6 +1,6 @@
 {
   "name": "@docmirror/dev-sidecar-gui",
-  "version": "2.2.8",
+  "version": "2.2.9",
   "private": false,
   "description": "开发者边车辅助工具 — 加速 GitHub/NPM/Docker Hub 等站点的本地 MITM 代理",
   "author": {
