@@ -1,6 +1,7 @@
 // log4js 自定义 appender：结构化日志环形缓冲（WebUI 实时日志的数据源）。
-// 由 util.logger.js 以绝对路径 type 挂到所有 category；本模块保持无副作用、
-// 可独立单测。容量与消息长度受限，内存上界约 3000 × ~2KB ≈ 6MB。
+// 由 util.logger.js 以模块对象 type 挂到所有 category。容量与消息长度受限，
+// 内存上界约 3000 × ~2KB ≈ 6MB。fork 出的子进程不本地存储，经 IPC 转发
+// 给主进程（见 configure），主进程用 appendExternal 接收。
 
 const DEFAULT_CAPACITY = 3000
 const MAX_MESSAGE_LENGTH = 2000
@@ -58,15 +59,44 @@ function pushEntry (entry) {
 // ---- log4js appender 工厂（log4js 按 type 路径加载后调用 configure）----
 function configure () {
   return function appender (loggingEvent) {
-    pushEntry({
+    const entry = {
       ts: loggingEvent.startTime ? new Date(loggingEvent.startTime).getTime() : Date.now(),
       level: loggingEvent.level && loggingEvent.level.levelStr
         ? String(loggingEvent.level.levelStr).toLowerCase()
         : 'info',
       category: loggingEvent.categoryName || 'default',
       message: formatData(loggingEvent.data),
-    })
+    }
+    // fork 出的子进程（mitmproxy）没有 webui，本地缓冲无人读——直接把
+    // 条目经 IPC 送回主进程写入主进程环形缓冲，让 WebUI 也能看到 server 日志。
+    // 仅认 core fork 时注入的 DS_LOG_IPC_FORWARD 标记（pnpm/mocha 下的进程
+    // 也可能有 process.send，不能只看它的存在与否）。IPC 断开时静默降级
+    // （日志仍走文件/stdout appender），不影响日志主流程。
+    if (process.env.DS_LOG_IPC_FORWARD === '1' && typeof process.send === 'function') {
+      try { process.send({ __dsLog: entry }) } catch { /* channel closed */ }
+      return
+    }
+    pushEntry(entry)
   }
+}
+
+// 主进程侧：接收子进程 IPC 转发的日志条目并写入本地环形缓冲。
+// 防御性清洗——非法 level/category/非对象消息直接丢弃。
+function appendExternal (raw) {
+  if (!raw || typeof raw !== 'object') {
+    return
+  }
+  const level = String(raw.level || '').toLowerCase()
+  const category = String(raw.category || '')
+  if (LEVEL_ORDER[level] == null || !category) {
+    return
+  }
+  pushEntry({
+    ts: Number(raw.ts) || Date.now(),
+    level,
+    category,
+    message: truncate(raw.message == null ? '' : String(raw.message), MAX_MESSAGE_LENGTH),
+  })
 }
 
 function getEntries ({ level = '', q = '', category = '', limit = 1000 } = {}) {
@@ -123,6 +153,7 @@ function _resetForTest (testCapacity) {
 
 module.exports = {
   configure,
+  appendExternal,
   getEntries,
   getCategories,
   getCapacity,

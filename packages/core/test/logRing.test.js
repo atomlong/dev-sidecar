@@ -106,4 +106,68 @@ describe('util.log-ring (WebUI 日志环形缓冲 appender)', function () {
     appender(fakeEvent({ category: 'gui', data: ['c'] }))
     assert.deepStrictEqual(logRing.getCategories(), ['core', 'gui'])
   })
+
+  it('appendExternal: 主进程接收子进程 IPC 转发的条目入 ring 并触发订阅推送', function () {
+    const seen = []
+    const off = logRing.subscribe((e) => seen.push(e))
+    logRing.appendExternal({ ts: 1788160001000, level: 'warn', category: 'server', message: '子进程日志' })
+    off()
+    const entries = logRing.getEntries({ category: 'server' })
+    assert.strictEqual(entries.length, 1)
+    assert.strictEqual(entries[0].message, '子进程日志')
+    assert.strictEqual(entries[0].category, 'server')
+    assert.deepStrictEqual(seen.map(e => e.message), ['子进程日志'])
+  })
+
+  it('appendExternal: 非法 level/非对象消息被防御性丢弃，超长消息截断', function () {
+    logRing.appendExternal(null)
+    logRing.appendExternal('junk')
+    logRing.appendExternal({ level: 'nope', category: 'server', message: 'x' })
+    logRing.appendExternal({ level: 'info', category: '', message: 'x' })
+    logRing.appendExternal({ level: 'info', category: 'server', message: 'y'.repeat(5000) })
+    const entries = logRing.getEntries({})
+    assert.strictEqual(entries.length, 1)
+    assert.ok(entries[0].message.length <= 2000 + 20)
+  })
+
+  it('fork 子进程模式：appender 经 IPC 转发且不本地存储', function () {
+    const sent = []
+    const fakeSend = (msg) => sent.push(msg)
+    process.send = fakeSend
+    process.env.DS_LOG_IPC_FORWARD = '1'
+    try {
+      appender(fakeEvent({ level: 'ERROR', category: 'server', data: ['代理启动'] }))
+      assert.strictEqual(logRing.getEntries({}).length, 0) // 不落本地 ring
+      assert.strictEqual(sent.length, 1)
+      assert.strictEqual(sent[0].__dsLog.level, 'error')
+      assert.strictEqual(sent[0].__dsLog.category, 'server')
+      assert.strictEqual(sent[0].__dsLog.message, '代理启动')
+      assert.ok(sent[0].__dsLog.ts >= 1788160000000)
+    } finally {
+      delete process.send
+      delete process.env.DS_LOG_IPC_FORWARD
+    }
+  })
+
+  it('fork 子进程模式：IPC channel 已关闭时静默降级、不抛错', function () {
+    process.send = () => { throw new Error('channel closed') }
+    process.env.DS_LOG_IPC_FORWARD = '1'
+    try {
+      appender(fakeEvent({ data: ['IPC 断了'] }))
+    } finally {
+      delete process.send
+      delete process.env.DS_LOG_IPC_FORWARD
+    }
+    assert.strictEqual(logRing.getEntries({}).length, 0)
+  })
+
+  it('pnpm/mocha fork 的进程也有 process.send：无 DS_LOG_IPC_FORWARD 标记时不转发', function () {
+    process.send = () => { throw new Error('must not be called') }
+    try {
+      appender(fakeEvent({ category: 'core', data: ['本地存'] }))
+    } finally {
+      delete process.send
+    }
+    assert.deepStrictEqual(logRing.getEntries({}).map(e => e.message), ['本地存'])
+  })
 })
