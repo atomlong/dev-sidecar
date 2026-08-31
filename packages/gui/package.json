@@ -2,12 +2,11 @@
   "name": "@docmirror/dev-sidecar-gui",
   "version": "2.2.8",
   "private": false,
-  "description": "给开发者的加速代理工具图形界面",
+  "description": "开发者边车辅助工具 — 加速 GitHub/NPM/Docker Hub 等站点的本地 MITM 代理",
   "author": {
     "email": "xiaojunnuo@qq.com",
     "name": "Greper"
   },
-  "description": "开发者边车辅助工具 — 加速 GitHub/NPM/Docker Hub 等站点的本地 MITM 代理",
   "license": "MPL-2.0",
   "homepage": "https://github.com/docmirror/dev-sidecar",
   "scripts": {
@@ -24,8 +23,8 @@
     "electron:icons-black": "electron-icon-builder --input=./public/logo/win-black.png --output=build/black --flatten"
   },
   "dependencies": {
-    "@docmirror/fadvise-linux": "workspace:*",
     "@docmirror/dev-sidecar": "workspace:*",
+    "@docmirror/fadvise-linux": "workspace:*",
     "@docmirror/mitmproxy": "workspace:*",
     "@starknt/shutdown-handler-napi": "^0.0.3",
     "@starknt/sysproxy": "^0.0.3",
@@ -33,7 +32,7 @@
     "adm-zip": "^0.5.17",
     "ant-design-vue": "^4.2.6",
     "archiver": "^7.0.1",
-    "better-sqlite3": "^13.0.1",
+    "better-sqlite3": "^13.0.3",
     "bindings": "^1.5.0",
     "core-js": "^3.49.0",
     "electron-baidu-tongji": "^1.0.5",

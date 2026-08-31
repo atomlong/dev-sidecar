@@ -21,7 +21,7 @@
     "@docmirror/mitmproxy": "workspace:*",
     "@starknt/sysproxy": "^0.0.3",
     "@vscode/sudo-prompt": "^9.3.2",
-    "better-sqlite3": "^13.0.1",
+    "better-sqlite3": "^13.0.3",
     "fix-path": "^3.0.0",
     "iconv-lite": "^0.6.3",
     "ipaddr.js": "^2.4.0",
