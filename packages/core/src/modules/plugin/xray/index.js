@@ -2227,6 +2227,9 @@ const Plugin = function (context) {
   let currentXrayDir = ''
   let cacheRefreshTimer = null
   let refreshGeneration = 0
+  // WebUI 显示用的 Stage3 轮次：只计真实 Stage3 轮（refreshCacheFromCacheOnly），
+  // 从 1 起。generation 是内部失效代际（Stage2/close 也会占用），不用于展示。
+  let stage3RoundCount = 0
   const injectedRules = []
   let api = null
   const transientProbeControllers = new Set()
@@ -3661,6 +3664,7 @@ const Plugin = function (context) {
       // before any guardrail could fire.
 
       const generation = ++refreshGeneration
+      stage3RoundCount += 1
       const roundStartedAt = Date.now()
       stage3RoundStartedAt = roundStartedAt
       const cacheRefreshInterval = getCacheRefreshIntervalSeconds(cfg) * 1000
@@ -4430,6 +4434,7 @@ const Plugin = function (context) {
           enabled: isCacheRefreshEnabled(cfg),
           state: !isCacheRefreshEnabled(cfg) ? 'off' : (isStageRunning ? 'running' : 'idle'),
           generation: refreshGeneration,
+          roundNumber: stage3RoundCount,
           roundStartedAt: stage3RoundStartedAt,
           nextRefreshAt: stage3NextRefreshAt,
           totalDue: stage3Progress.totalDue,

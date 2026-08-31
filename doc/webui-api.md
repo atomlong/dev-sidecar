@@ -399,6 +399,7 @@
     "enabled": true,
     "state": "running",
     "generation": 5,
+    "roundNumber": 3,
     "roundStartedAt": 1787464504968,
     "nextRefreshAt": 1787468000000,
     "totalDue": 19482,
