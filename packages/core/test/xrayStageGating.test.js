@@ -1089,17 +1089,16 @@ describe('xray stage gating', function () {
         },
       ])
 
-      // The v2 startup reader bootstraps from probed_node_ids stored in cache_meta
-      // (populated by Stage3 via updateProbedNodeIdsAtPath). Without this, the
-      // startup reader returns [] on a fresh cache. updateProbedNodeIdsAtPath
-      // selects nodes with delay > 0 ordered by delay ASC, stable DESC,
-      // updated_at DESC — which gives [83 (delay 80, stable), 82 (delay 120,
-      // stable), 81 (delay 300, unstable)].
+      // updateProbedNodeIdsAtPath still maintains the cache_meta probed list
+      // (3 alive nodes here); the startup reader no longer reads it (window is
+      // a direct filtered query), but the meta stays fresh for other consumers.
       assert.strictEqual(xrayCache.updateProbedNodeIdsAtPath(cachePath), 3)
 
-      // v2 startup reader ignores stableOnly / maxDelayMs / orderBy filters and
-      // only honors `limit` (slicing the probed_node_ids list). It returns the
-      // probed nodes in their probed order. With limit: 5 all three are returned.
+      // v2 startup reader applies stableOnly / maxDelayMs in the SQL window
+      // (CF-starvation fix — filters must narrow the window BEFORE the limit
+      // slice, otherwise fast-but-excluded nodes starve the filtered result).
+      // stableOnly:true + maxDelayMs:100 → only 83 (80ms, stable); 82 (120ms)
+      // exceeds maxDelayMs and 81 is unstable.
       const stableEntries = xrayCache.readCacheEntriesForStartup(cachePath, {
         stableOnly: true,
         maxDelayMs: 100,
@@ -1107,7 +1106,7 @@ describe('xray stage gating', function () {
       })
       assert.deepStrictEqual(
         stableEntries.map(entry => entry.node.settings.servers[0].address),
-        ['83.83.83.83', '82.82.82.82', '81.81.81.81']
+        ['83.83.83.83']
       )
 
       const bootstrapEntries = xrayCache.readCacheEntriesForStartup(cachePath, {

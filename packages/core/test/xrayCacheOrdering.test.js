@@ -261,6 +261,55 @@ describe('xray cache ordering', () => {
   })
 
   // eslint-disable-next-line no-undef
+  it('readCacheEntriesForStartup applies country/owner/maxDelay filters in the SQL window (CF-starvation regression)', () => {
+    if (!sqliteAvailable) {
+      return
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sidecar-xray-cache-startup-window-'))
+    const cachePath = path.join(tmpDir, 'nodes_cache.sqlite')
+    const mk = (addr, delay, country, owner) => ({ node: createNode(addr, 80), stable: false, delay, source: 'background-probe', updatedAt: '2026-05-11T00:00:00.000+08:00', nextCheckAt: '2026-05-10T00:00:00.000+08:00', failureStreak: 0, country, owner })
+
+    try {
+      // 复刻生产饥饿现场：被 owner/国家排除的低延迟节点（CF-SG、HK）霸占
+      // top-by-delay 窗口，合规非 CF 的 SG 节点延迟高、排在窗口之外。
+      xrayCache.writeCache(cachePath, [
+        mk('10.0.0.1', 100, 'SG', 'CLOUDFLARE, INC.'),
+        mk('10.0.0.2', 110, 'SG', 'CLOUDFLARE, INC.'),
+        mk('10.0.0.3', 120, 'SG', 'CLOUDFLARE, INC.'),
+        mk('10.0.0.4', 130, 'SG', 'CLOUDFLARE, INC.'),
+        mk('10.0.0.5', 140, 'SG', 'CLOUDFLARE, INC.'),
+        mk('10.0.0.6', 150, 'SG', 'CLOUDFLARE, INC.'),
+        mk('11.0.0.1', 500, 'SG', 'AMAZON.COM, INC.'),
+        mk('11.0.0.2', 600, 'SG', 'AMAZON.COM, INC.'),
+        mk('11.0.0.3', 700, 'SG', 'OVH SAS'),
+        mk('12.0.0.1', 50, 'HK', 'TENCENT BUILDING, KEJIZHONGYI AVENUE'),
+      ])
+
+      // 窗口必须在 SQL 层先按 country/owner/maxDelay 筛选再取 top-N：
+      // 返回的是合规非 CF 的 SG 节点（按延迟升序），而不是被 owner 排除的 CF 低延迟节点。
+      // 修复前：窗口取全局 top-5（50/100..140ms），JS 后过滤后剩 0 个。
+      const window = xrayCache.readCacheEntriesForStartup(cachePath, {
+        countryInclude: ['SG'],
+        ownerExclude: ['cloudflare'],
+        maxDelayMs: 5000,
+        limit: 5,
+      })
+      assert.deepStrictEqual(window.map(entry => entry.node.settings.servers[0].address), ['11.0.0.1', '11.0.0.2', '11.0.0.3'])
+
+      // 无筛选时保持旧行为：窗口=全局最低延迟。
+      const unfiltered = xrayCache.readCacheEntriesForStartup(cachePath, { limit: 2 })
+      assert.deepStrictEqual(unfiltered.map(entry => entry.node.settings.servers[0].address), ['12.0.0.1', '10.0.0.1'])
+
+      // 全部被筛掉 → 空数组（bootstrap/轮末回填回退空，不会误删）。
+      const none = xrayCache.readCacheEntriesForStartup(cachePath, { countryInclude: ['JP'], limit: 3 })
+      assert.deepStrictEqual(none, [])
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  // eslint-disable-next-line no-undef
   it('mirrors subscription refs into compact v2 without dropping nodes', () => {
     if (!sqliteAvailable) {
       return
