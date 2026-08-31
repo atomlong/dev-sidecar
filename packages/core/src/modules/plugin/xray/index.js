@@ -2967,7 +2967,19 @@ const Plugin = function (context) {
       // 1. Determine Port
       let port = cfg.localPort
       if (port > 0) {
-        const available = await portFinder.isPortAvailable(port)
+        let available = await portFinder.isPortAvailable(port)
+        if (!available) {
+          // The main Xray lives in an isolated cgroup that systemd KillMode
+          // cannot reach; if the previous service generation died hard, its
+          // xray stays as an orphan holding this port. Clean our own stale
+          // process (pidfile + cmdline verified) and re-check once before
+          // failing.
+          const cleaned = await processApi.cleanupStaleProcess(binPath, liveConfigPath)
+          if (cleaned) {
+            await sleep(300)
+            available = await portFinder.isPortAvailable(port)
+          }
+        }
         if (!available) {
           const msg = `Xray 启动失败: 端口 ${port} 被占用 (Strict Mode)`
           log.error(msg)

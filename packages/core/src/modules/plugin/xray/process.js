@@ -1,4 +1,6 @@
 const { spawn } = require('child_process')
+const fs = require('node:fs')
+const path = require('node:path')
 const log = require('../../../utils/util.log.core')
 const { moveProcessToIsolatedCgroup, cleanupIsolatedCgroup } = require('./util.cgroup')
 
@@ -7,6 +9,83 @@ let isExpectedExit = false
 let currentBinPath = ''
 let currentConfigPath = ''
 let onUnexpectedExitCallback = null
+
+// Pidfile lives next to the live config so a stale Xray from a previous
+// service generation can be identified and cleaned on next startup.
+function pidFilePathOf (configPath) {
+  return configPath ? path.join(path.dirname(configPath), 'xray.pid') : null
+}
+
+function isPidAlive (pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Verify the pid really is our own xray (cmdline contains the binary path
+// and the config path) so a recycled pid is never killed.
+function isOwnXrayProcess (pid, binPath, configPath) {
+  if (process.platform !== 'linux') {
+    // no /proc to verify identity — a recycled pid could be anything
+    return false
+  }
+  let cmdline = ''
+  try {
+    cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+  } catch {
+    return false
+  }
+  if (!cmdline.includes(binPath)) {
+    return false
+  }
+  return !configPath || cmdline.includes(configPath)
+}
+
+// The main Xray is moved into an isolated cgroup (memory optimization), so
+// systemd KillMode=control-group never reaches it on stop. If the service
+// is killed hard (shutdown timeout), xray stays as an orphan holding the
+// local port and the next start fails with a Strict Mode port conflict.
+// Kill it here, identified via pidfile + cmdline verification.
+async function cleanupStaleProcess (binPath, configPath) {
+  const pidFile = pidFilePathOf(configPath)
+  if (!pidFile || process.platform !== 'linux') {
+    return false
+  }
+  let pid = 0
+  try {
+    pid = Number(fs.readFileSync(pidFile, 'utf8').trim())
+  } catch {
+    return false
+  }
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false
+  }
+  if (!isPidAlive(pid)) {
+    try { fs.rmSync(pidFile, { force: true }) } catch { /* stale file */ }
+    return false
+  }
+  if (!isOwnXrayProcess(pid, binPath, configPath)) {
+    return false
+  }
+  log.info(`检测到残留 Xray 进程 pid=${pid}（上次服务未正常关闭），正在清理...`)
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch {
+    return false
+  }
+  const deadline = Date.now() + 3000
+  while (Date.now() < deadline && isPidAlive(pid)) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (isPidAlive(pid)) {
+    try { process.kill(pid, 'SIGKILL') } catch { /* already exited */ }
+  }
+  try { fs.rmSync(pidFile, { force: true }) } catch { /* ignore */ }
+  return true
+}
 
 const api = {
   start (binPath, configPath, { onUnexpectedExit } = {}) {
@@ -49,6 +128,11 @@ const api = {
       const isolatedCgroup = moveProcessToIsolatedCgroup(child.pid)
       if (isolatedCgroup) {
         log.info(`Xray 已移至隔离 cgroup: ${isolatedCgroup}`)
+      }
+
+      const pidFile = pidFilePathOf(configPath)
+      if (pidFile) {
+        try { fs.writeFileSync(pidFile, String(child.pid)) } catch { /* best-effort */ }
       }
 
       log.info(`Xray 已启动, PID: ${child.pid}`)
@@ -114,6 +198,10 @@ const api = {
       childRef.kill()
     })
     child = null
+    const stalePidFile = pidFilePathOf(currentConfigPath)
+    if (stalePidFile) {
+      try { fs.rmSync(stalePidFile, { force: true }) } catch { /* ignore */ }
+    }
     cleanupIsolatedCgroup()
   },
 
@@ -128,4 +216,9 @@ const api = {
   },
 }
 
-module.exports = api
+module.exports = {
+  start: api.start,
+  stop: api.stop,
+  restart: api.restart,
+  cleanupStaleProcess,
+}
