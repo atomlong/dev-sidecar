@@ -363,12 +363,15 @@ function renderStage1Table(data) {
     const m = tm.match(/^xray\.proxy\.([^.]+)\./);
     return m ? m[1] : (n.protocol || '');
   };
-  // 地址/端口按协议结构取值：trojan=proxySettings.server；vless/vmess=proxySettings.vnext；
+  // 地址/端口按协议结构取值：trojan/ss=proxySettings.server；vless=proxySettings.vnext；
+  // vmess=xray API 序列化形态 proxySettings.Receiver（注意大写 R）；
   // shadowsocks=proxySettings.servers[]；shadowsocks-2022=proxySettings 顶层扁平 address/port
   const addrOf = (n) => n.proxySettings?.server?.address || n.proxySettings?.vnext?.address
+    || n.proxySettings?.Receiver?.address
     || n.proxySettings?.address || n.proxySettings?.servers?.[0]?.address
     || n.settings?.servers?.[0]?.address || '';
   const portOf = (n) => n.proxySettings?.server?.port || n.proxySettings?.vnext?.port
+    || n.proxySettings?.Receiver?.port
     || n.proxySettings?.port || n.proxySettings?.servers?.[0]?.port
     || n.settings?.servers?.[0]?.port || '';
   const transportOf = (n) => n.senderSettings?.streamSettings?.protocolName || '';
