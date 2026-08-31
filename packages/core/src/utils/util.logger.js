@@ -3,6 +3,11 @@ const log4js = require('log4js')
 const logOrConsole = require('./util.log-or-console')
 const defaultConfig = require('../config/index.js')
 const configFromFiles = defaultConfig.configFromFiles
+// WebUI 实时日志 appender 模块对象（直接传给 log4js 的 type 字段，
+// 避免 webpack 把 require.resolve('./util.log-ring.js') 编译成数字模块 ID
+// 导致 log4js 内部 path.join(number) 崩溃——ESM bundle 上下文里
+// require.resolve 的返回值不可靠）
+const logRingAppenderModule = require('./util.log-ring.js')
 
 // 日志级别
 const level = process.env.NODE_ENV === 'development' ? 'debug' : 'info'
@@ -45,8 +50,9 @@ function log4jsConfigure (categories) {
   const config = {
     appenders: {
       std: { type: 'stdout' },
-      // WebUI 实时日志：结构化环形缓冲（内存受控，见 util.log-ring.js）
-      webuiRing: { type: require.resolve('./util.log-ring.js') },
+      // WebUI 实时日志：结构化环形缓冲（模块对象直接传入，绕过 webpack
+      // require.resolve 返回数字模块 ID 的坑，见文件头注释）
+      webuiRing: { type: logRingAppenderModule },
     },
     categories: {
       default: { appenders: ['std', 'webuiRing'], level },
