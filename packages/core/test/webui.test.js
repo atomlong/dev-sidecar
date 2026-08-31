@@ -377,6 +377,161 @@ describe('webui xray cache/export routes (seeded cache)', () => {
     const data = await r.json()
     assert.strictEqual(data.code, 'LIMIT_TOO_LARGE')
   })
+
+  it('export shuffle=true reshuffles even when the pool is smaller than limit', async () => {
+    // Regression: the old `result.length > limit` guard skipped shuffling
+    // entirely for small pools (4 nodes < default limit 100), so every call
+    // returned the identical fixed order. 4 nodes have 24 permutations, so
+    // 12 identical orders in a row is ~1e-15 — a reshuffle failure.
+    const orders = new Set()
+    for (let i = 0; i < 12; i++) {
+      nextExportClock()
+      const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=sharelink&shuffle=true`)
+      fakeNow = 0
+      assert.strictEqual(r.status, 200)
+      const data = await r.json()
+      assert.strictEqual(data.returned, 4)
+      orders.add(data.data.join('|'))
+    }
+    assert.ok(orders.size > 1, 'shuffle=true returned identical order every call for a pool smaller than limit')
+  })
+
+  describe('export alive=true (live observatory filter)', () => {
+    let metricsServer, metricsPort
+    let expose
+    let origGetStageStatus, origGetLiveNodeFingerprints
+
+    before(async () => {
+      const xrayCache = require('../src/modules/plugin/xray/cache')
+      expose = require('../src/expose')
+
+      // Fake /debug/vars: proxy_0/1/2 map to the seeded vless/ss2022/trojan
+      // nodes; proxy_9 is alive but absent from the fingerprint map (must be
+      // dropped); live delays intentionally differ from cache delays.
+      metricsServer = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          observatory: {
+            proxy_0: { alive: true, delay: 250, last_try_time: 1735689600 },
+            proxy_1: { alive: true, delay: 500, last_try_time: 1735689605 },
+            proxy_2: { alive: true, delay: 150, last_try_time: 1735689601 },
+            proxy_9: { alive: true, delay: 900, last_try_time: 1735689602 },
+          },
+        }))
+      })
+      await new Promise((resolve) => metricsServer.listen(0, '127.0.0.1', resolve))
+      metricsPort = metricsServer.address().port
+
+      const fp = (node) => xrayCache.fingerprintNode(node)
+      origGetStageStatus = expose.api.plugin.xray.getStageStatus
+      expose.api.plugin.xray.getStageStatus = () => ({ apiPort: 0, metricsPort, liveNodes: 3 })
+      origGetLiveNodeFingerprints = expose.api.plugin.xray.getLiveNodeFingerprints
+      expose.api.plugin.xray.getLiveNodeFingerprints = () => ({
+        proxy_0: fp({ protocol: 'vless', settings: { vnext: [{ address: '10.0.0.1', port: 443, users: [{ id: 'test-id' }] }] } }),
+        proxy_1: fp({ protocol: 'shadowsocks', settings: { address: '10.0.0.2', port: 8388, method: 'aes-128-gcm', password: 'pw' } }),
+        proxy_2: fp({ protocol: 'trojan', settings: { servers: [{ address: '10.0.0.3', port: 443, password: 'pw' }] } }),
+      })
+    })
+
+    after(async () => {
+      expose.api.plugin.xray.getStageStatus = origGetStageStatus
+      expose.api.plugin.xray.getLiveNodeFingerprints = origGetLiveNodeFingerprints
+      await new Promise((resolve) => metricsServer.close(resolve))
+    })
+
+    it('alive=true returns observatory-alive nodes with live delay/lastTry, sorted by live delay', async () => {
+      nextExportClock()
+      const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&alive=true&sort=delay`)
+      fakeNow = 0
+      assert.strictEqual(r.status, 200)
+      const data = await r.json()
+      // proxy_9 has no fingerprint -> dropped; live delay ASC: trojan(150), vless(250), ss2022(500)
+      assert.strictEqual(data.total, 3)
+      assert.strictEqual(data.returned, 3)
+      assert.strictEqual(data.data.meta[0].delay, 150)
+      assert.strictEqual(data.data.meta[0].lastTry, 1735689601)
+      assert.strictEqual(data.data.meta[1].delay, 250)
+      assert.strictEqual(data.data.meta[1].lastTry, 1735689600)
+      assert.strictEqual(data.data.meta[2].delay, 500)
+      // Live delay overrides the stale cache delay (vless cache delay was 100)
+      assert.strictEqual(data.data.outbounds[1].settings.vnext[0].address, '10.0.0.1')
+    })
+
+    it('alive=true with available=true applies failureStreak threshold', async () => {
+      nextExportClock()
+      const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&alive=true&available=true`)
+      fakeNow = 0
+      assert.strictEqual(r.status, 200)
+      const data = await r.json()
+      // trojan failureStreak=3 excluded by the default threshold 3
+      assert.strictEqual(data.total, 2)
+      assert.strictEqual(data.data.meta[0].delay, 250)
+      assert.strictEqual(data.data.meta[1].delay, 500)
+    })
+
+    it('alive=true with available=true&maxFailureStreak=5 admits streak-3 nodes', async () => {
+      nextExportClock()
+      const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&alive=true&available=true&maxFailureStreak=5`)
+      fakeNow = 0
+      const data = await r.json()
+      assert.strictEqual(data.total, 3)
+    })
+
+    it('alive=true filters by live delay via maxDelay', async () => {
+      nextExportClock()
+      const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&alive=true&maxDelay=300`)
+      fakeNow = 0
+      const data = await r.json()
+      assert.strictEqual(data.total, 2)
+      assert.deepStrictEqual(data.data.meta.map(m => m.delay).sort((a, b) => a - b), [150, 250])
+    })
+
+    it('alive=true filters by country', async () => {
+      nextExportClock()
+      const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&alive=true&country=DE`)
+      fakeNow = 0
+      const data = await r.json()
+      assert.strictEqual(data.total, 1)
+      assert.strictEqual(data.data.meta[0].country, 'DE')
+      assert.strictEqual(data.data.meta[0].delay, 500)
+    })
+
+    it('alive=true paginates with offset/limit against the filtered set', async () => {
+      nextExportClock()
+      const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&alive=true&limit=2&offset=2`)
+      fakeNow = 0
+      const data = await r.json()
+      assert.strictEqual(data.total, 3)
+      assert.strictEqual(data.returned, 1)
+      assert.strictEqual(data.data.meta[0].delay, 500)
+    })
+
+    it('alive=true with shuffle=true keeps total stable and returns a subset', async () => {
+      nextExportClock()
+      const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=outbound&alive=true&shuffle=true&limit=2`)
+      fakeNow = 0
+      const data = await r.json()
+      assert.strictEqual(data.total, 3)
+      assert.strictEqual(data.returned, 2)
+      for (const m of data.data.meta) {
+        assert.ok([150, 250, 500].includes(m.delay), `unexpected live delay ${m.delay}`)
+      }
+    })
+
+    it('alive=true without a running xray returns an empty set with reason', async () => {
+      const saved = expose.api.plugin.xray.getStageStatus
+      expose.api.plugin.xray.getStageStatus = () => ({})
+      nextExportClock()
+      const r = await fetch(`${baseUrl}/api/xray/cache/nodes/export?format=sharelink&alive=true`)
+      fakeNow = 0
+      expose.api.plugin.xray.getStageStatus = saved
+      assert.strictEqual(r.status, 200)
+      const data = await r.json()
+      assert.strictEqual(data.total, 0)
+      assert.deepStrictEqual(data.data, [])
+      assert.strictEqual(data.reason, 'xray_not_running')
+    })
+  })
 })
 
 describe('webui write operations', () => {

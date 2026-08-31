@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.2.10] - Unreleased
+
+### Added
+- **export 节点导出新增 `alive=true`：live observatory 实时存活过滤（下游反馈）** (fork). 下游（CharmHyper_Register）实测：`available=true` 过滤出的 351 个"可用"节点随机抽 60 个全部 SYN 挂起——缓存 delay 来自 Stage3 探测快照、最长落后一天，`available` 只保证"某次探测时活过"，不等于"现在活着"；同一时间点 observatory 实时探测 20/20 alive 且手动起独立 xray 出口验证通过，但这些实时活节点因缓存 delay 过时沉在 smart 排序（delay 升序）尾部，顺序遍历的消费方根本取不到。新增 `alive=true` 查询参数：从 live xray metricsPort 的 `/debug/vars` 读 observatory 实时状态，经插件 `getLiveNodeFingerprints()` 的 tag→fingerprint 映射（无需解析 outbound）关联缓存行（`readCacheEntriesByFingerprints`）——`meta.delay` 用 observatory 实时值排序与展示（覆盖过时的缓存 delay），`meta` 新增 `lastTry`（最近探测 unix 秒时间戳，判断存活数据新鲜度）；可与 `available`（连败阈值）/`maxDelay`（按实时 delay 判断）/`country`/`owner`/`sort`/`shuffle`/`limit`/`offset` 组合，`total` = 过滤后存活总数；xray 未运行时 HTTP 200 + `total=0` + `reason=xray_not_running`（`data` 为对应 format 的空结构）。消费方可从"拉全池本地 shuffle 逐个实测（平均 25 个命中）"改为 `alive=true&shuffle=true&limit=30` 轻量拉取。**测试**：`webui.test.js` 新增 8 用例（mock `/debug/vars` + fingerprint 映射：实时 delay 覆盖与排序、available 连败阈值、maxFailureStreak 放宽、maxDelay 实时过滤、country 过滤、offset/limit 分页、shuffle 组合、xray 未跑空集+reason）。
+
+### Fixed
+- **修复 export `shuffle=true` 在候选池小于 limit 时完全失效（下游反馈）** (fork). 下游实测同参数两次调用（间隔 31s，已过 30s 响应缓存窗口）返回顺序完全相同，与 `shuffle=false` 行为一致；配合 `available=true` 的过时 delay 数据，固定顺序导致顺序遍历的消费方反复在同一批 smart 排序头部的死节点上空转（3 轮 × 30 节点全部失败）。根因：打乱逻辑带 `result.length > limit` 守卫——仅当候选数**大于** limit 才执行 Fisher-Yates，而消费方场景是 available 池 351 条 < `limit=500`，打乱被整体跳过，smart 排序固定原序返回（下游猜测的"候选池 ≥ 2N 时抽样被跳过"方向相反：是池子 ≤ limit 时不打乱）。修复：`shuffle=true` 无条件打乱，候选池不足 limit 时同样全量随机排序。真机以消费方原始参数（`available=true&maxFailureStreak=5&sort=smart&shuffle=true&limit=500`）复现：三次调用首节点各不相同（其中一次恰好随机到反馈文档中的原固定首节点 `vless://58c1b245-...`，证明同一池子仅随机化生效）。**测试**：`webui.test.js` 回归用例——4 节点池（< limit=100）连续 12 次 `shuffle=true` 调用断言出现 >1 种排列（4 节点 24 种排列，12 次全同序概率 ~1e-15）。
+
+### Changed
+- **工作区包版本号 bump（core/gui/mitmproxy/cli 2.2.9 → 2.2.10），`/api/version` 随之生效** (fork). 下游靠版本号探测 export 能力（v2.2.9 已把 `/api/version` 对齐 core `package.json` 实际版本，此前运行中服务报旧版本号导致下游误判能力缺失），本次 export 契约新增 `alive=true` 与 shuffle 行为修复将随 2.2.10 发布生效；deb 文件名随之变为 `DevSidecar-2.2.10-amd64.deb`。webui 测试套件 74 passing（+9）、主套件 172 passing 无回归。
+- **WebUI 探测页出站节点详情表"地址/端口"列改为"服务器/出口"列** (fork). 20 个 live 节点实测仅 3 个出口 IP（16 个共享同一 OVH 落地）——入口地址各异的 CF 中转变体让旧表"地址"列看起来每个节点出口都不一样，产生误导。"地址"（入口连接点）与"端口"合并为"服务器"列（`IP:端口` 形式），腾出的"出口"列直接显示缓存元数据的 egress IP（为空显示 `-`），多节点共享出口一眼可见；表排序键 `addr`/`port` 同步改为 `server`/`exitip`。出口 IP 数据后端 `/api/xray/nodes` 的 `nodeMetadata` 本就返回（无需后端改动），仅前端 `renderStage1Table` 消费。已部署本机实测：出口列 51.159.163.185/51.15.243.182 交替出现，集中性直观可见。Stage1 卡片"当前选择"右侧同主题新增"出口地址"格，显示当前 balancer 选中节点的 egress IP（随轮询刷新）。
+
 ## [v2.2.9] - 2026-08-31
 
 ### Changed

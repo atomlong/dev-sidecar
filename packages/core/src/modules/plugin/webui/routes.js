@@ -759,6 +759,7 @@ function createRouter (context) {
       const maxFailureStreak = Number.isFinite(maxFailureStreakParam) && maxFailureStreakParam >= 0 ? maxFailureStreakParam : 3
       const sort = url.searchParams.get('sort') || 'smart'
       const shuffle = url.searchParams.get('shuffle') === 'true'
+      const alive = url.searchParams.get('alive') === 'true'
       let limit = parseInt(url.searchParams.get('limit')) || 100
       const offset = parseInt(url.searchParams.get('offset')) || 0
       const includeMeta = url.searchParams.get('includeMeta') !== 'false'
@@ -778,7 +779,7 @@ function createRouter (context) {
       lastExportAt = now
 
       // Cache key
-      const cacheKey = JSON.stringify({ format, country, owner, maxDelay, available, maxFailureStreak, sort, shuffle, limit, offset, includeMeta })
+      const cacheKey = JSON.stringify({ format, country, owner, maxDelay, available, maxFailureStreak, sort, shuffle, limit, offset, includeMeta, alive })
       const cached = exportCache.get(cacheKey)
       if (cached && (now - cached.timestamp) < EXPORT_CACHE_TTL) {
         sendJson(res, 200, cached.data)
@@ -789,31 +790,127 @@ function createRouter (context) {
         const xray = getXrayPaths()
         const xrayCache = require('../xray/cache')
 
-        // Build query options. Keys MUST match buildCompactV2FilterClauses /
-        // getCompactV2OrderByClause — a previous revision passed mismatched
-        // keys (sort/countries/owners/maxDelay), silently disabling every filter.
-        const opts = {
-          limit: shuffle ? limit * 2 : limit, // Get 2x for shuffle
-          offset,
-          orderBy: sort === 'delay' ? 'delay' : (sort === 'stable' ? 'stable' : 'default'),
-          availableOnly: available === true,
-          maxFailureStreak,
-          maxDelayMs: maxDelay > 0 ? maxDelay : 0,
-          countryInclude: country,
-          ownerInclude: owner ? [owner] : null,
+        let result
+        let totalCount
+
+        if (alive) {
+          // alive=true: intersect the cache with the live xray observatory's
+          // real-time alive set (probe cycle ~1min vs cache snapshot that can be
+          // a day old). Tag -> fingerprint comes from the plugin's live node
+          // map, so no xray API call is needed — only metricsPort /debug/vars.
+          let metricsPort = xray.metricsPort
+          if (!metricsPort) {
+            try {
+              const DevSidecar = require('../../../expose')
+              const stageStatus = DevSidecar.api.plugin.xray.getStageStatus?.()
+              if (stageStatus?.metricsPort) {
+                metricsPort = stageStatus.metricsPort
+                xray.metricsPort = metricsPort
+              }
+            } catch { /* ignore */ }
+          }
+          if (!metricsPort) {
+            sendJson(res, 200, { data: format === 'outbound' ? { outbounds: [], meta: includeMeta ? [] : null } : [], total: 0, returned: 0, reason: 'xray_not_running' })
+            return
+          }
+          const vars = await (await fetch(`http://127.0.0.1:${metricsPort}/debug/vars`)).json()
+          const observatory = vars && (vars.observatory || vars.burstObservatory || vars.Observatory || vars.BurstObservatory)
+          let liveFingerprints = {}
+          try {
+            const DevSidecar = require('../../../expose')
+            liveFingerprints = DevSidecar.api.plugin.xray.getLiveNodeFingerprints?.() || {}
+          } catch { /* ignore */ }
+
+          const aliveInfoByTag = {}
+          for (const [tag, status] of Object.entries(observatory || {})) {
+            const isAlive = !!(status && (status.alive ?? status.Alive ?? false))
+            if (!isAlive) continue
+            // Burst observatory healthPing stats carry min/average samples;
+            // regular observatory only has a plain delay (ms).
+            const hp = status.healthPing || status.HealthPing
+            const rawDelay = hp
+              ? ((Number(hp.min) > 0 ? Number(hp.min) : Number(hp.average)) || Number(status.delay) || 0)
+              : (Number(status.delay ?? status.Delay) || 0)
+            aliveInfoByTag[tag] = {
+              liveDelayMs: rawDelay,
+              lastTry: Math.floor(Number(status.last_try_time ?? status.LastTryTime) || 0),
+            }
+          }
+
+          const requestedFps = []
+          const tagByFp = new Map()
+          for (const tag of Object.keys(aliveInfoByTag)) {
+            const fp = liveFingerprints[tag]
+            if (fp && !tagByFp.has(fp)) {
+              tagByFp.set(fp, tag)
+              requestedFps.push(fp)
+            }
+          }
+
+          const countryUpper = country ? country.map(c => c.toUpperCase()) : null
+          const ownerLower = owner ? String(owner).toLowerCase() : null
+          result = []
+          for (const entry of xrayCache.readCacheEntriesByFingerprints(xray.cachePath, requestedFps)) {
+            const fp = xrayCache.fingerprintNode(entry.node)
+            const info = fp ? aliveInfoByTag[tagByFp.get(fp)] : null
+            if (!info) continue
+            // Live observatory delay replaces the stale cache delay so sorting
+            // and meta reflect current reality (cache delay can be a day old).
+            entry.delay = info.liveDelayMs > 0 ? info.liveDelayMs : (entry.delay || 0)
+            entry.lastTry = info.lastTry
+            if (available && !((entry.failureStreak || 0) < maxFailureStreak)) continue
+            if (maxDelay > 0 && !(entry.delay > 0 && entry.delay <= maxDelay)) continue
+            if (countryUpper && !countryUpper.includes(String(entry.country || '').toUpperCase())) continue
+            if (ownerLower && !String(entry.owner || '').toLowerCase().includes(ownerLower)) continue
+            result.push(entry)
+          }
+
+          // JS sort mirroring getCompactV2OrderByClause — every row here has a
+          // live delay>0, so the SQL probed-first prefix is a no-op.
+          const timeOf = (e) => (e.updatedAt ? new Date(e.updatedAt).getTime() : 0)
+          result.sort((a, b) => {
+            if (sort !== 'delay') {
+              const sa = a.stable === true ? 1 : 0
+              const sb = b.stable === true ? 1 : 0
+              if (sa !== sb) return sb - sa
+            }
+            if (a.delay !== b.delay) return a.delay - b.delay
+            return timeOf(b) - timeOf(a)
+          })
+          totalCount = result.length
+        } else {
+          // Build query options. Keys MUST match buildCompactV2FilterClauses /
+          // getCompactV2OrderByClause — a previous revision passed mismatched
+          // keys (sort/countries/owners/maxDelay), silently disabling every filter.
+          const opts = {
+            limit: shuffle ? limit * 2 : limit, // Get 2x for shuffle
+            offset,
+            orderBy: sort === 'delay' ? 'delay' : (sort === 'stable' ? 'stable' : 'default'),
+            availableOnly: available === true,
+            maxFailureStreak,
+            maxDelayMs: maxDelay > 0 ? maxDelay : 0,
+            countryInclude: country,
+            ownerInclude: owner ? [owner] : null,
+          }
+
+          result = xrayCache.readCacheEntries(xray.cachePath, opts)
+          totalCount = xrayCache.countCacheEntries(xray.cachePath, opts)
         }
 
-        const entries = xrayCache.readCacheEntries(xray.cachePath, opts)
-        const totalCount = xrayCache.countCacheEntries(xray.cachePath, opts)
-
-        // Shuffle if requested
-        let result = entries
-        if (shuffle && result.length > limit) {
-          // Fisher-Yates shuffle, take first N
+        // Shuffle if requested — always reshuffles, even when the candidate
+        // set is smaller than limit. The previous `result.length > limit` guard
+        // skipped shuffling entirely for small pools (e.g. 351 available nodes
+        // with limit=500), returning an identical fixed order every call.
+        if (shuffle) {
           for (let i = result.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1))
             ;[result[i], result[j]] = [result[j], result[i]]
           }
+        }
+
+        if (alive) {
+          result = result.slice(offset, offset + limit)
+        } else if (shuffle) {
           result = result.slice(0, limit)
         } else if (result.length > limit) {
           result = result.slice(0, limit)
@@ -838,6 +935,7 @@ function createRouter (context) {
             delay: e.delay || 0,
             failureStreak: e.failureStreak || 0,
             stable: e.stable === true,
+            ...(e.lastTry ? { lastTry: e.lastTry } : {}),
           })) : null
           data = { outbounds, meta }
         } else {

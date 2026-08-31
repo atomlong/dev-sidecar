@@ -293,12 +293,13 @@
 | `format` | string | `sharelink` | `sharelink` = 分享链接数组；`outbound` = 完整 xray outbound JSON（含凭据，tag 重编为 `proxy_0..N`，可直接起独立 xray）；`full` = 含 address/port/分享链接/元数据的对象数组 |
 | `includeMeta` | bool | `true` | `format=outbound` 时返回 `meta` 数组（与 `outbounds` 按 tag 一一对应），`false` 时为 `null` |
 | `country` | string | 无 | 国家过滤，逗号分隔多选（如 `US,DE,SG`），空 = 不限 |
-| `available` | bool | `false` | `true` = 只返回 `delay>0` 且 `failureStreak < maxFailureStreak` 的可用节点 |
+| `available` | bool | `false` | `true` = 只返回 `delay>0` 且 `failureStreak < maxFailureStreak` 的可用节点（基于缓存探测快照，快照可能落后数小时/一天） |
+| `alive` | bool | `false` | `true` = 只返回 **live xray observatory 实时探测存活**的节点（探测周期约 1 分钟）。`meta.delay` 为 observatory 实时值并据此排序；可与 `available`/`maxDelay`/`country`/`owner` 组合，`limit`/`offset` 在过滤后的存活集合上分页。xray 未运行时返回 `total=0` + `reason=xray_not_running`（`data` 为对应 format 的空结构，HTTP 仍为 200） |
 | `maxFailureStreak` | int | `3` | `available` 的连败阈值，消费方可按场景调大 |
-| `maxDelay` | int | `0` | 延时上限（毫秒），`0` = 不限 |
+| `maxDelay` | int | `0` | 延时上限（毫秒），`0` = 不限（`alive=true` 时对实时 delay 判断） |
 | `owner` | string | 无 | 节点提供方关键词过滤（不区分大小写子串匹配） |
-| `sort` | string | `smart` | `smart` = stable 优先 + 延时升序；`delay` = 延时升序；`stable` = stable 优先 |
-| `shuffle` | bool | `false` | `true` = 取 top `2×limit` 候选池，不放回随机抽样 `limit` 个 |
+| `sort` | string | `smart` | `smart` = stable 优先 + 延时升序；`delay` = 延时升序；`stable` = stable 优先（`alive=true` 时延时为实时值） |
+| `shuffle` | bool | `false` | `true` = 对候选池不放回随机抽样 `limit` 个；候选池不足 `limit` 时同样打乱（全量随机排序），不再跳过抽样 |
 | `limit` | int | `100` | 上限 500，超限返回 `400 LIMIT_TOO_LARGE` |
 | `offset` | int | `0` | 分页偏移（`shuffle=true` 时忽略） |
 
@@ -319,7 +320,8 @@
 ```
 
 - `data.outbounds` 数据源为缓存里的标准 outbound JSON（非 live API 的 TypedMessage 格式），可直接用于启动独立 xray 进程。
-- `data.meta[].exitIp` 供消费方做出口 IP 冷却记录；`stable` 为布尔。
+- `data.meta[].exitIp` 供消费方做出口 IP 冷却记录；`stable` 为布尔；`alive=true` 时 `data.meta[].lastTry` 为 observatory 最近探测的 unix 秒时间戳（其余情况无此字段），可据此判断存活数据新鲜度。
+- `available=true` 只保证"缓存快照中的某次探测成功"，不等于"此刻连通"——缓存探测可能落后一天，实发节点大面积 SYN 挂起时请改用 `alive=true`（实时 observatory 过滤）。
 - `total` = **当前过滤条件下的总条数**：带 `available`/`country` 等过滤时为过滤后总数（可据此判断节点池是否快耗尽）；完全无过滤时为全库节点数（几十万级）。消费方探测节点池规模请总是带 `available=true`。
 - 非 2xx 响应**不含** `total`/`data`/`returned` 字段，消费方必须先检查 HTTP 状态码或 `error` 字段：`400 LIMIT_TOO_LARGE`（limit>500）、`429 RATE_LIMITED`（10s 限流，`retryAfter` 秒）。把 429 响应体当正常响应解析会得到 `total=None`（Python）——这是下游常见的坑。
 

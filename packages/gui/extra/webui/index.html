@@ -291,6 +291,7 @@ function initProbe() {
   <div class="stat"><div class="val" id="p-s1-status">-</div><div class="label">状态</div></div>
   <div class="stat"><div class="val" id="p-s1-livenodes">-</div><div class="label">出站节点</div></div>
   <div class="stat"><div class="val" id="p-s1-select">-</div><div class="label">当前选择</div></div>
+  <div class="stat"><div class="val" id="p-s1-exitip">-</div><div class="label">出口地址</div></div>
   <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
     <span class="muted" id="p-s1-ports">端口: -</span>
     <span style="flex:1"></span>
@@ -316,8 +317,8 @@ function initProbe() {
         <th onclick="xraySortToggle('tag')">标签<span id="sort-tag"></span></th>
         <th onclick="xraySortToggle('proto')">协议<span id="sort-proto"></span></th>
         <th onclick="xraySortToggle('country')">国家<span id="sort-country"></span></th>
-        <th onclick="xraySortToggle('addr')">地址<span id="sort-addr"></span></th>
-        <th onclick="xraySortToggle('port')">端口<span id="sort-port"></span></th>
+        <th onclick="xraySortToggle('server')">服务器<span id="sort-server"></span></th>
+        <th onclick="xraySortToggle('exitip')">出口<span id="sort-exitip"></span></th>
         <th onclick="xraySortToggle('owner')">ASN<span id="sort-owner"></span></th>
         <th onclick="xraySortToggle('transport')">传输<span id="sort-transport"></span></th>
         <th onclick="xraySortToggle('delay')">延时<span id="sort-delay"></span></th>
@@ -402,9 +403,14 @@ function renderStage1Table(data) {
     const m = meta[tag] || {};
     const o = obs[tag] || null;
     const delayVal = o ? (o.alive && o.delay != null ? o.delay : 999999) : null;
+    // 服务器 = 入口连接点（addr:port）；出口 = egress IP（cache 元数据），
+    // 两者刻意分列——入口各异的 CF 中转变体常共享同一出口。
+    const a = addrOf(n);
+    const p = portOf(n);
     return {
       tag, proto: protoOf(n), transport: transportOf(n),
-      addr: addrOf(n), port: portOf(n), owner: m.owner || '',
+      server: a ? (p ? a + ':' + p : a) : '-',
+      exitip: m.exitIp || '', owner: m.owner || '',
       country: m.country || '',
       delay: delayVal,
     };
@@ -423,7 +429,7 @@ function renderStage1Table(data) {
   }
 
   // Update sort arrows
-  ['tag','proto','country','addr','port','owner','transport','delay'].forEach(c => {
+  ['tag','proto','country','server','exitip','owner','transport','delay'].forEach(c => {
     const el = $('sort-'+c);
     if (el) el.textContent = xraySort.col === c ? (xraySort.dir === 'asc' ? ' ↑' : ' ↓') : '';
   });
@@ -437,7 +443,8 @@ function renderStage1Table(data) {
 
   tbody.innerHTML = rowData.map(r => {
     const delayDisp = r.delay == null ? '<span class="muted">待探测</span>' : (r.delay >= 999999 ? '<span class="tag red">✗</span>' : r.delay + 'ms');
-    return `<tr><td>${esc(r.tag)}</td><td>${esc(r.proto)}</td><td>${countryCell(r.country)}</td><td>${esc(r.addr)}</td><td>${esc(r.port)}</td><td>${esc(r.owner)}</td><td>${esc(r.transport)}</td><td>${delayDisp}</td></tr>`;
+    const exitDisp = r.exitip ? esc(r.exitip) : '<span class="muted">-</span>';
+    return `<tr><td>${esc(r.tag)}</td><td>${esc(r.proto)}</td><td>${countryCell(r.country)}</td><td>${esc(r.server)}</td><td>${exitDisp}</td><td>${esc(r.owner)}</td><td>${esc(r.transport)}</td><td>${delayDisp}</td></tr>`;
   }).join('');
 }
 
@@ -478,6 +485,8 @@ async function loadProbe(silent) {
         selectEl.textContent = '-';
       }
     }
+    const exitEl = $('p-s1-exitip');
+    if (exitEl) exitEl.textContent = (currentTag && currentMeta?.exitIp) ? currentMeta.exitIp : '-';
     const btn = $('p-sticky-btn');
     const sel = $('p-sticky-dur');
     const info = $('p-sticky-info');
