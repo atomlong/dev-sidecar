@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [v2.2.9] - Unreleased
 
 ### Changed
-- **WebUI 探测页出站节点表 SNI 列改为 owner 列** (fork). SNI 对节点选择没有实际参考价值（多为空或节点自身伪装域名），换成缓存元数据的 owner（`nodeMetadata.owner`，如 "AMAZON.COM, INC."），与 `allowedOwners` 筛选语义直接对应、便于核对 `!cloudflare` 排除是否生效；列排序同步切换。
+- **WebUI 探测页出站节点表 SNI 列改为 ASN 列** (fork). SNI 对节点选择没有实际参考价值（多为空或节点自身伪装域名），换成缓存元数据的 ASN 组织归属（`nodeMetadata.owner`，即 ASN mmdb 查得的归属组织，如 "AMAZON.COM, INC."），与 `allowedOwners` 筛选语义直接对应、便于核对 `!cloudflare` 排除是否生效；列排序同步切换，缓存页"已探测节点"表同语义列头一并由 owner 改为 ASN（仅显示标签，内部字段/DB/API/export 契约的 `owner` 命名不动）。
 - **Stage3 轮次显示改为独立计数 `roundNumber`（从 1 起），不再复用内部 `generation` 代际** (fork). WebUI"轮次"原显示 `generation`——它是进程内失效代际（启动 Stage2 抓取占 #1、`close()` 也会 +1），导致服务重启后**首个 Stage3 探测轮显示 #2**。新增 `stage3RoundCount` 只在 `refreshCacheFromCacheOnly` 真实入轮时 +1，经 `getStageStatus().stage3.roundNumber` 暴露；`generation` 保留为内部失效保护（Stage2/批次守卫的 `generation === refreshGeneration` 检查不变）。WebUI 轮次显示切换到 `roundNumber`，`webui-api.md` 示例同步。**回归测试**：`xrayStageGating.test.js` 新增用例——空缓存连续两轮断言 roundNumber 0→1→2 且每轮后 state='idle'（第二轮顺带复验空轮 isStageRunning 复位）。
 - **Stage3 节点判死阈值从 3 连败放宽到 4 连败，退避阶梯 [7,30,90] 天完整生效** (fork). 原实现 `nextFailureStreak >= 3` 在第 3 次连续探测失败时即删除节点+写墓碑——`continue` 跳过了退避赋值，导致 `CACHE_FAILURE_BACKOFF_DAYS` 的 90 天档位成为**不可达死代码**（第 3 败永远走不到 `getFailureBackoffMs(3)`），节点从入库到判死最短仅 ~37 天（7+30），"退避最长 3 个月"名不副实。改为 `>= 4`：第 3 败保留并退避 90 天，第 4 败才删除+写墓碑，最短判死周期 **~127 天**（7+30+90），死节点翻身窗口完整覆盖整个阶梯。**live 池过滤保持 3 不变**（`maybeRegenerateLiveConfigFromCache` 的 `failureStreak < 3` 保留过滤与批次 rmo 超限裁剪的 `streak >= 3`）——3 连败节点仍会被及时移出 xray 运行时池不扛真实流量，只有缓存保留/墓碑判定放宽。`xrayStageGating.test.js` 三个用例同步更新：third-strike 用例改名 fourth-strike 且 streak 种子 2→3，多轮模拟补第 4 轮（90 天退避后的 2026-09-26）并断言前 3 轮节点均保留。
 
