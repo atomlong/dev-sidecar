@@ -1854,7 +1854,7 @@ function bkRenderForm () {
     bkFormRow('Bucket', `<input type="text" id="bk-bucket" value="${esc(s3.bucket || '')}">`) +
     bkFormRow('AccessKeyId', `<input type="text" id="bk-ak" value="${esc(s3.accessKeyId || '')}" autocomplete="off">`) +
     bkFormRow('SecretAccessKey', `<input type="password" id="bk-sk" placeholder="${hasSecret ? '已保存（输入以更换）' : ''}" autocomplete="new-password">`) +
-    bkFormRow('对象前缀', `<input type="text" id="bk-prefix" value="${esc(s3.prefix || 'dev-sidecar/')}">`, '对象按 <前缀>/<主机名>/时间戳 命名，多台机器共用一个 bucket 也不会互相覆盖') +
+    bkFormRow('对象前缀', `<input type="text" id="bk-prefix" value="${esc(s3.prefix || 'backups/')}">`, '对象按 <前缀>/<主机名>/时间戳 命名，多台机器共用一个 bucket 也不会互相覆盖') +
     bkFormRow('加密口令', `<input type="password" id="bk-pass" placeholder="${hasPass ? '已设置（输入以更换）' : ''}" autocomplete="new-password">`, '备份包含 CA 私钥，强烈建议设置；口令用 AES-256-GCM 加密归档，仅保存在本机') +
     bkFormRow('保留份数', `<input type="number" id="bk-keep" value="${Number.isFinite(c.keepLast) ? c.keepLast : 7}" min="0" style="max-width:120px">`, '每台主机最多保留的备份份数，超出自动删除最旧的；0 = 不清理') +
     bkFormRow('定时备份', `<div style="display:flex;gap:10px;align-items:center"><label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="bk-sched-enabled" ${sched.enabled ? 'checked' : ''}>启用</label><span>每</span><input type="number" id="bk-interval" value="${Number.isFinite(sched.intervalHours) ? sched.intervalHours : 24}" min="1" style="max-width:90px"><span>小时自动备份一次</span></div>`)
@@ -1866,7 +1866,7 @@ function bkReadFormS3 () {
     region: $('bk-region').value.trim() || 'auto',
     bucket: $('bk-bucket').value.trim(),
     accessKeyId: $('bk-ak').value.trim(),
-    prefix: $('bk-prefix').value.trim() || 'dev-sidecar/',
+    prefix: $('bk-prefix').value.trim() || 'backups/',
   }
   const sk = $('bk-sk').value
   if (sk) s3.secretAccessKey = sk

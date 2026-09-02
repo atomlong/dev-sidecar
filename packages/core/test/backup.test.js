@@ -64,7 +64,7 @@ function saveFullConfig (api, over = {}) {
       bucket: 'bk-bucket',
       accessKeyId: 'AKIAEXAMPLE',
       secretAccessKey: 'sk-plain-value',
-      prefix: 'dev-sidecar/',
+      prefix: 'backups/',
       ...over.s3,
     },
     passphrase: over.passphrase,
@@ -192,7 +192,7 @@ describe('backup service', () => {
       const c = api.getMaskedConfig()
       assert.strictEqual(c.configured, false)
       assert.strictEqual(c.s3.region, 'auto')
-      assert.strictEqual(c.s3.prefix, 'dev-sidecar/')
+      assert.strictEqual(c.s3.prefix, 'backups/')
       assert.strictEqual(c.keepLast, 7)
     })
     it('save masks secrets; masked resend keeps old, empty passphrase clears', () => {
@@ -230,7 +230,7 @@ describe('backup service', () => {
       const api = createApi(base, store)
       saveFullConfig(api)
       const r = await api.runBackup()
-      assert.match(r.key, /^dev-sidecar\/host1\/\d{8}-\d{6}\.tar\.gz$/)
+      assert.match(r.key, /^backups\/host1\/\d{8}-\d{6}\.tar\.gz$/)
       assert.strictEqual(r.encrypted, false)
       const payload = store.objects.get(r.key)
       // gzip 魔数
@@ -271,16 +271,16 @@ describe('backup service', () => {
       const api = createApi(base, store)
       saveFullConfig(api, { keepLast: 2 })
       // 预置 3 份旧备份
-      for (const k of ['dev-sidecar/host1/20260101-000000.tar.gz', 'dev-sidecar/host1/20260102-000000.tar.gz', 'dev-sidecar/host1/20260103-000000.tar.gz']) {
+      for (const k of ['backups/host1/20260101-000000.tar.gz', 'backups/host1/20260102-000000.tar.gz', 'backups/host1/20260103-000000.tar.gz']) {
         store.objects.set(k, Buffer.from('old'))
       }
       // 其他主机前缀不受影响
-      store.objects.set('dev-sidecar/other-host/20260101-000000.tar.gz', Buffer.from('other'))
+      store.objects.set('backups/other-host/20260101-000000.tar.gz', Buffer.from('other'))
       const r = await api.runBackup()
-      const myKeys = [...store.objects.keys()].filter(k => k.startsWith('dev-sidecar/host1/')).sort()
+      const myKeys = [...store.objects.keys()].filter(k => k.startsWith('backups/host1/')).sort()
       assert.strictEqual(myKeys.length, 2)
-      assert.deepStrictEqual(store.deleted, ['dev-sidecar/host1/20260101-000000.tar.gz', 'dev-sidecar/host1/20260102-000000.tar.gz'])
-      assert.ok(store.objects.has('dev-sidecar/other-host/20260101-000000.tar.gz'))
+      assert.deepStrictEqual(store.deleted, ['backups/host1/20260101-000000.tar.gz', 'backups/host1/20260102-000000.tar.gz'])
+      assert.ok(store.objects.has('backups/other-host/20260101-000000.tar.gz'))
       assert.ok(store.objects.has(r.key))
     })
     it('records lastError on failure', async () => {
@@ -347,7 +347,7 @@ describe('backup service', () => {
       const api = createApi(base, store)
       saveFullConfig(api)
       await assert.rejects(() => api.restoreBackup('other-prefix/host1/x.tar.gz'), /非法/)
-      await assert.rejects(() => api.restoreBackup('dev-sidecar/../../etc/passwd'), /非法/)
+      await assert.rejects(() => api.restoreBackup('backups/../../etc/passwd'), /非法/)
     })
   })
 

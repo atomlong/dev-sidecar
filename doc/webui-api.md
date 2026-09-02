@@ -211,7 +211,7 @@ WebUI 配置页应以本接口的响应作为编辑基底，编辑后整树回�
 **响应** `200`
 ```json
 {
-  "s3": { "endpoint": "", "region": "auto", "bucket": "", "accessKeyId": "", "secretAccessKey": "", "prefix": "dev-sidecar/" },
+  "s3": { "endpoint": "", "region": "auto", "bucket": "", "accessKeyId": "", "secretAccessKey": "", "prefix": "backups/" },
   "passphrase": "",
   "keepLast": 7,
   "schedule": { "enabled": false, "intervalHours": 24 },
@@ -230,7 +230,7 @@ WebUI 配置页应以本接口的响应作为编辑基底，编辑后整树回�
 **请求体**
 ```json
 {
-  "s3": { "endpoint": "https://<account_id>.r2.cloudflarestorage.com", "region": "auto", "bucket": "my-bucket", "accessKeyId": "xxx", "secretAccessKey": "xxx", "prefix": "dev-sidecar/" },
+  "s3": { "endpoint": "https://<account_id>.r2.cloudflarestorage.com", "region": "auto", "bucket": "my-bucket", "accessKeyId": "xxx", "secretAccessKey": "xxx", "prefix": "backups/" },
   "passphrase": "可选，备份含 CA 私钥建议设置",
   "keepLast": 7,
   "schedule": { "enabled": true, "intervalHours": 24 }
@@ -253,7 +253,7 @@ WebUI 配置页应以本接口的响应作为编辑基底，编辑后整树回�
 
 **响应** `200`
 ```json
-{ "status": "ok", "key": "dev-sidecar/host1/20260902-140129.tar.gz.enc", "size": 20480, "encrypted": true, "deleted": ["dev-sidecar/host1/20260826-140129.tar.gz"] }
+{ "status": "ok", "key": "backups/host1/20260902-140129.tar.gz.enc", "size": 20480, "encrypted": true, "deleted": ["backups/host1/20260826-140129.tar.gz"] }
 ```
 
 **错误** `400` — `BACKUP_NOT_CONFIGURED`；`502` — `BACKUP_UPSTREAM_FAILED`（失败信息同时记入 `lastError`）
@@ -264,7 +264,7 @@ WebUI 配置页应以本接口的响应作为编辑基底，编辑后整树回�
 
 **响应** `200`
 ```json
-{ "prefix": "dev-sidecar/host1/", "backups": [ { "key": "dev-sidecar/host1/20260902-140129.tar.gz", "size": 20480, "lastModified": "2026-09-02T06:01:29.000Z", "encrypted": false } ] }
+{ "prefix": "backups/host1/", "backups": [ { "key": "backups/host1/20260902-140129.tar.gz", "size": 20480, "lastModified": "2026-09-02T06:01:29.000Z", "encrypted": false } ] }
 ```
 
 ### GET /api/backup/download?key=...
@@ -279,7 +279,7 @@ WebUI 配置页应以本接口的响应作为编辑基底，编辑后整树回�
 
 恢复备份：下载 → 解密（若加密）→ 校验 gzip/tar 归档 → 当前 `config.json` 先留 `.bak-restore-<ts>` 安全副本 → 解包覆盖配置目录。恢复的 `config.json`/CA 证书需**重启服务**生效（前端确认后可直接调 `POST /api/service/restart`）。
 
-**请求体** `{ "key": "dev-sidecar/host1/20260902-140129.tar.gz" }`
+**请求体** `{ "key": "backups/host1/20260902-140129.tar.gz" }`
 
 **响应** `200`
 ```json

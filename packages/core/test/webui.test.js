@@ -59,23 +59,23 @@ describe('webui plugin', () => {
 const mockBackupApi = {
   behavior: { testError: null, runError: null },
   getMaskedConfig () {
-    return { configured: false, s3: { endpoint: '', region: 'auto', bucket: '', accessKeyId: '', secretAccessKey: '', prefix: 'dev-sidecar/' }, passphrase: '', keepLast: 7, schedule: { enabled: false, intervalHours: 24 }, lastBackupAt: 0, lastBackupKey: '', lastBackupSize: 0, lastError: '' }
+    return { configured: false, s3: { endpoint: '', region: 'auto', bucket: '', accessKeyId: '', secretAccessKey: '', prefix: 'backups/' }, passphrase: '', keepLast: 7, schedule: { enabled: false, intervalHours: 24 }, lastBackupAt: 0, lastBackupKey: '', lastBackupSize: 0, lastError: '' }
   },
   saveConfig () { return { configured: true } },
   async testConnection () { if (mockBackupApi.behavior.testError) throw mockBackupApi.behavior.testError; return true },
   async runBackup () {
     if (mockBackupApi.behavior.runError) throw mockBackupApi.behavior.runError
-    return { key: 'dev-sidecar/host1/20260902-000000.tar.gz', size: 1024, encrypted: false, deleted: [] }
+    return { key: 'backups/host1/20260902-000000.tar.gz', size: 1024, encrypted: false, deleted: [] }
   },
   async listBackups () {
-    return { prefix: 'dev-sidecar/host1/', backups: [{ key: 'dev-sidecar/host1/20260902-000000.tar.gz', size: 1024, lastModified: '2026-09-02T00:00:00.000Z', encrypted: false }] }
+    return { prefix: 'backups/host1/', backups: [{ key: 'backups/host1/20260902-000000.tar.gz', size: 1024, lastModified: '2026-09-02T00:00:00.000Z', encrypted: false }] }
   },
   async restoreBackup (key) {
     if (key === 'bad-key') throw new Error('非法的备份对象 key: bad-key')
     return { key, restoredCount: 3, files: ['./config.json'], needsRestart: true }
   },
   async downloadBackup (key) {
-    if (!key.startsWith('dev-sidecar/')) throw new Error(`非法的备份对象 key: ${key}`)
+    if (!key.startsWith('backups/')) throw new Error(`非法的备份对象 key: ${key}`)
     return { body: Buffer.from('gzip-bytes'), name: '20260902-000000.tar.gz' }
   },
   async deleteBackup () { return true },
@@ -979,15 +979,15 @@ describe('webui backup routes (injected mock api)', () => {
     async testConnection () { if (mockApi.behavior.testError) throw mockApi.behavior.testError; return true },
     async runBackup () {
       if (mockApi.behavior.runError) throw mockApi.behavior.runError
-      return { key: 'dev-sidecar/host1/20260902-000000.tar.gz', size: 1024, encrypted: false, deleted: [] }
+      return { key: 'backups/host1/20260902-000000.tar.gz', size: 1024, encrypted: false, deleted: [] }
     },
-    async listBackups () { return { prefix: 'dev-sidecar/host1/', backups: [{ key: 'dev-sidecar/host1/20260902-000000.tar.gz', size: 1024, lastModified: '2026-09-02T00:00:00.000Z', encrypted: false }] } },
+    async listBackups () { return { prefix: 'backups/host1/', backups: [{ key: 'backups/host1/20260902-000000.tar.gz', size: 1024, lastModified: '2026-09-02T00:00:00.000Z', encrypted: false }] } },
     async restoreBackup (key) {
       if (key === 'bad-key') throw new Error('非法的备份对象 key: bad-key')
       return { key, restoredCount: 3, files: ['./config.json'], needsRestart: true }
     },
     async downloadBackup (key) {
-      if (!key.startsWith('dev-sidecar/')) throw new Error(`非法的备份对象 key: ${key}`)
+      if (!key.startsWith('backups/')) throw new Error(`非法的备份对象 key: ${key}`)
       return { body: Buffer.from('gzip-bytes'), name: '20260902-000000.tar.gz' }
     },
     async deleteBackup () { return true },
@@ -1058,7 +1058,7 @@ describe('webui backup routes (injected mock api)', () => {
     const r = await fetch(`${baseUrl}/api/backup/run`, { method: 'POST' })
     const data = await r.json()
     assert.strictEqual(r.status, 200)
-    assert.strictEqual(data.key, 'dev-sidecar/host1/20260902-000000.tar.gz')
+    assert.strictEqual(data.key, 'backups/host1/20260902-000000.tar.gz')
     assert.strictEqual(data.size, 1024)
 
     mockApi.behavior.runError = new Error('S3 PutObject 失败: HTTP 403')
@@ -1072,11 +1072,11 @@ describe('webui backup routes (injected mock api)', () => {
     const data = await r.json()
     assert.strictEqual(r.status, 200)
     assert.strictEqual(data.backups.length, 1)
-    assert.strictEqual(data.backups[0].key, 'dev-sidecar/host1/20260902-000000.tar.gz')
+    assert.strictEqual(data.backups[0].key, 'backups/host1/20260902-000000.tar.gz')
   })
 
   it('GET /api/backup/download streams attachment; invalid key 400', async () => {
-    const r = await fetch(`${baseUrl}/api/backup/download?key=${encodeURIComponent('dev-sidecar/host1/20260902-000000.tar.gz')}`)
+    const r = await fetch(`${baseUrl}/api/backup/download?key=${encodeURIComponent('backups/host1/20260902-000000.tar.gz')}`)
     assert.strictEqual(r.status, 200)
     assert.strictEqual(r.headers.get('content-type'), 'application/gzip')
     assert.match(r.headers.get('content-disposition'), /attachment; filename="20260902-000000\.tar\.gz"/)
@@ -1096,7 +1096,7 @@ describe('webui backup routes (injected mock api)', () => {
     assert.strictEqual(bad.status, 400)
     assert.strictEqual((await bad.json()).code, 'BACKUP_RESTORE_INVALID')
 
-    const ok = await fetch(`${baseUrl}/api/backup/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'dev-sidecar/host1/x.tar.gz' }) })
+    const ok = await fetch(`${baseUrl}/api/backup/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'backups/host1/x.tar.gz' }) })
     const data = await ok.json()
     assert.strictEqual(ok.status, 200)
     assert.strictEqual(data.needsRestart, true)
@@ -1107,7 +1107,7 @@ describe('webui backup routes (injected mock api)', () => {
     const noKey = await fetch(`${baseUrl}/api/backup/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     assert.strictEqual(noKey.status, 400)
 
-    const ok = await fetch(`${baseUrl}/api/backup/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'dev-sidecar/host1/x.tar.gz' }) })
+    const ok = await fetch(`${baseUrl}/api/backup/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'backups/host1/x.tar.gz' }) })
     assert.strictEqual(ok.status, 200)
     assert.strictEqual((await ok.json()).status, 'ok')
   })

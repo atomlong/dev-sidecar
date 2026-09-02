@@ -18,7 +18,7 @@ const DEFAULT_CONFIG = {
     bucket: '',
     accessKeyId: '',
     secretAccessKey: '',
-    prefix: 'dev-sidecar/', // 对象 key 前缀，多机共享同一 bucket 时按 <prefix><hostname>/ 区分
+    prefix: 'backups/', // 对象 key 前缀，多机共享同一 bucket 时按 <prefix><hostname>/ 区分
   },
   passphrase: '', // 非空则备份用 AES-256-GCM 加密（建议设置：备份含 CA 私钥）
   keepLast: 7, // 保留最近份数，0 = 不清理
@@ -127,7 +127,7 @@ function createBackupApi (context, overrides = {}) {
       if (typeof body.schedule.enabled === 'boolean') cur.schedule.enabled = body.schedule.enabled
       if (Number.isFinite(body.schedule.intervalHours)) cur.schedule.intervalHours = Math.max(1, parseInt(body.schedule.intervalHours, 10))
     }
-    if (typeof cur.s3.prefix !== 'string' || !cur.s3.prefix) cur.s3.prefix = 'dev-sidecar/'
+    if (typeof cur.s3.prefix !== 'string' || !cur.s3.prefix) cur.s3.prefix = 'backups/'
     if (!cur.s3.prefix.endsWith('/')) cur.s3.prefix += '/'
     saveConfigFile(cur)
     return getMaskedConfig()
