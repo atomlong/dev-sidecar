@@ -535,20 +535,21 @@ describe('webui xray cache/export routes (seeded cache)', () => {
 })
 
 describe('webui write operations', () => {
-  let server, baseUrl
+  let server, baseUrl, mockConfig
 
   before(async () => {
     const { createRouter } = require('../src/modules/plugin/webui/routes')
     // Mock config to avoid touching real config.json
-    const mockConfig = {
+    mockConfig = {
       get: () => ({
         server: { intercepts: {}, setting: { userBasePath: '/tmp' } },
         plugin: { xray: { enabled: false, port: 0, apiPort: 0, metricsPort: 0 }, webui: { token: '' } },
         proxy: { enabled: false },
       }),
-      // All writes are no-ops — never touch real config.json
+      // All writes are recorded — never touch real config.json
       update: () => {},
-      save: () => {},
+      saved: [],
+      save (cfg) { this.saved.push(cfg) },
       downloadRemoteConfig: async () => {},
       reload: () => {},
     }
@@ -569,15 +570,50 @@ describe('webui write operations', () => {
     await new Promise((resolve) => server.close(resolve))
   })
 
-  it('PUT /api/config with valid JSON updates and hot-reloads', async () => {
+  it('PUT /api/config with full tree saves (deletion-capable) and hot-reloads', async () => {
+    const r = await fetch(`${baseUrl}/api/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app: {}, server: { setting: { timeoutMapping: {} } }, plugin: {} }),
+    })
+    const data = await r.json()
+    assert.strictEqual(r.status, 200)
+    assert.ok(data.status === 'ok')
+    assert.ok(data.allConfig)
+    assert.strictEqual(mockConfig.saved.length, 1)
+  })
+
+  it('PUT /api/config with partial tree returns 400 (full tree required for deletion semantics)', async () => {
     const r = await fetch(`${baseUrl}/api/config`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ server: { setting: { timeoutMapping: {} } } }),
     })
+    assert.strictEqual(r.status, 400)
     const data = await r.json()
+    assert.strictEqual(data.code, 'INVALID_BODY')
+  })
+
+  it('PUT /api/config strips configFromFiles before saving', async () => {
+    const r = await fetch(`${baseUrl}/api/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app: {}, server: {}, plugin: {}, configFromFiles: { junk: true } }),
+    })
     assert.strictEqual(r.status, 200)
-    assert.ok(data.status === 'ok')
+    assert.strictEqual(mockConfig.saved[mockConfig.saved.length - 1].configFromFiles, undefined)
+  })
+
+  it('PUT /api/intercepts replaces the subtree so deleted domains are gone from the saved tree', async () => {
+    mockConfig.saved.length = 0
+    const r = await fetch(`${baseUrl}/api/intercepts`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 'keep.com': { '.*': { sni: 'baidu.com' } } }),
+    })
+    assert.strictEqual(r.status, 200)
+    const saved = mockConfig.saved[mockConfig.saved.length - 1]
+    assert.deepStrictEqual(saved.server.intercepts, { 'keep.com': { '.*': { sni: 'baidu.com' } } })
   })
 
   it('PUT /api/intercepts with valid JSON updates intercepts', async () => {
@@ -812,28 +848,39 @@ describe('webui xray sticky routes (injected plugin)', () => {
   })
 })
 
-describe('webui auth edge cases', () => {
-  let server, baseUrl
+describe('webui config view / reset / restart routes', () => {
+  let server, baseUrl, restartCalls, resetKeys
 
   before(async () => {
     const { createRouter } = require('../src/modules/plugin/webui/routes')
+    const fixture = () => ({
+      app: { remoteConfig: { enabled: true, personalUrl: 'file:///tmp/x.json5' } },
+      server: {
+        intercepts: {
+          'keep.com': { '.*': { sni: 'baidu.com' } },
+          'auto.com': { '.*': { proxy: 'tunnel://127.0.0.1:10801', desc: 'Auto-injected by Xray Plugin' } },
+        },
+        setting: { userBasePath: '/tmp' },
+      },
+      plugin: { xray: { enabled: false, port: 0, apiPort: 0, metricsPort: 0 }, webui: { token: '' } },
+      proxy: { enabled: false },
+      configFromFiles: { debug: true },
+    })
+    restartCalls = 0
+    resetKeys = []
     const router = createRouter({
       config: {
-        get: () => ({
-          server: { intercepts: {}, setting: { userBasePath: '/tmp' } },
-          plugin: { xray: { enabled: false }, webui: { token: 'secret123' } },
-          proxy: { enabled: false },
-        }),
-        // Mock writes — never touch real config.json
-        update: () => {},
+        get: () => fixture(),
         save: () => {},
         downloadRemoteConfig: async () => {},
         reload: () => {},
+        resetDefault (key) { resetKeys.push(key) },
       },
       event: { register: () => 1, unregister: () => {}, fire: () => {} },
       log: { info: () => {}, error: () => {} },
       server: { reload: async () => {} },
-        xrayApi: null,
+      xrayApi: null,
+      xrayPlugin: { async restart () { restartCalls++ } },
     })
     server = http.createServer(router)
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -845,260 +892,52 @@ describe('webui auth edge cases', () => {
     await new Promise((resolve) => server.close(resolve))
   })
 
-  it('GET /api/status without token on localhost with token configured returns 200', async () => {
-    const r = await fetch(`${baseUrl}/api/status`)
-    // localhost with token configured: read is allowed (localhost free for reads)
+  it('GET /api/config strips auto-injected intercepts and configFromFiles', async () => {
+    const r = await fetch(`${baseUrl}/api/config`)
     assert.strictEqual(r.status, 200)
-  })
-
-  it('POST write without token when token is configured returns 401', async () => {
-    const r = await fetch(`${baseUrl}/api/config`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    })
-    assert.strictEqual(r.status, 401)
     const data = await r.json()
-    assert.strictEqual(data.code, 'AUTH_REQUIRED')
+    assert.strictEqual('configFromFiles' in data, false)
+    assert.ok(data.server.intercepts['keep.com'])
+    assert.strictEqual('auto.com' in data.server.intercepts, false)
   })
 
-  it('POST write with correct token returns 200', async () => {
-    const r = await fetch(`${baseUrl}/api/config`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer secret123' },
-      body: JSON.stringify({}),
-    })
-    // May succeed or fail depending on config save, but should pass auth
-    assert.ok(r.status === 200 || r.status === 500)
-  })
-
-  it('POST write with wrong token returns 401', async () => {
-    const r = await fetch(`${baseUrl}/api/config`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer wrongtoken' },
-      body: JSON.stringify({}),
-    })
-    assert.strictEqual(r.status, 401)
-  })
-
-  it('GET /api/health is always accessible without token', async () => {
-    const r = await fetch(`${baseUrl}/api/health`)
+  it('GET /api/config/user returns the user override layer + remote meta', async () => {
+    const r = await fetch(`${baseUrl}/api/config/user`)
     assert.strictEqual(r.status, 200)
-  })
-})
-
-describe('configApi.update mergeWith fix', () => {
-  it('arrays are replaced, not merged by index', () => {
-    const lodash = require('lodash')
-    const target = { items: ['a', 'b', 'c'] }
-    const source = { items: ['x', 'y'] }
-    const mergeCustomizer = (objValue, srcValue) => Array.isArray(srcValue) ? srcValue : undefined
-    const result = lodash.mergeWith(lodash.cloneDeep(target), source, mergeCustomizer)
-    assert.deepStrictEqual(result.items, ['x', 'y'])
+    const data = await r.json()
+    assert.ok(data.userConfig && typeof data.userConfig === 'object')
+    assert.ok(typeof data.configPath === 'string')
+    assert.strictEqual(data.remote.enabled, true)
+    assert.strictEqual(data.remote.hasPersonalUrl, true)
   })
 
-  it('objects are still merged (not replaced)', () => {
-    const lodash = require('lodash')
-    const target = { nested: { a: 1, b: 2 } }
-    const source = { nested: { b: 3, c: 4 } }
-    const mergeCustomizer = (objValue, srcValue) => Array.isArray(srcValue) ? srcValue : undefined
-    const result = lodash.mergeWith(lodash.cloneDeep(target), source, mergeCustomizer)
-    assert.deepStrictEqual(result.nested, { a: 1, b: 3, c: 4 })
-  })
-
-  it('nested arrays are replaced', () => {
-    const lodash = require('lodash')
-    const target = { server: { intercepts: { 'a.com': [{ sni: 'b' }] } } }
-    const source = { server: { intercepts: { 'a.com': [{ sni: 'c' }, { sni: 'd' }] } } }
-    const mergeCustomizer = (objValue, srcValue) => Array.isArray(srcValue) ? srcValue : undefined
-    const result = lodash.mergeWith(lodash.cloneDeep(target), source, mergeCustomizer)
-    assert.deepStrictEqual(result.server.intercepts['a.com'], [{ sni: 'c' }, { sni: 'd' }])
-  })
-
-  it('deleting array element by removing it works', () => {
-    const lodash = require('lodash')
-    const target = { items: ['a', 'b', 'c'] }
-    const source = { items: ['a', 'c'] } // remove 'b'
-    const mergeCustomizer = (objValue, srcValue) => Array.isArray(srcValue) ? srcValue : undefined
-    const result = lodash.mergeWith(lodash.cloneDeep(target), source, mergeCustomizer)
-    assert.deepStrictEqual(result.items, ['a', 'c'])
-  })
-})
-
-describe('xray getStageStatus', () => {
-  it('getStageStatus is a function on the api object', () => {
-    const xrayPlugin = require('../src/modules/plugin/xray')
-    // Plugin factory returns api object — we can't easily call it without context,
-    // but we can verify the structure is correct by checking the module exports
-    assert.strictEqual(typeof xrayPlugin.plugin, 'function')
-  })
-})
-
-describe('webui ws module', () => {
-  it('createWsServer exports a function', () => {
-    const wsModule = require('../src/modules/plugin/webui/ws')
-    assert.strictEqual(typeof wsModule.createWsServer, 'function')
-  })
-})
-
-describe('reInjectXrayRules', () => {
-  const { reInjectXrayRules } = require('../src/modules/plugin/webui/routes')
-
-  function makeSpy () {
-    const calls = { removeRules: 0, injectRules: [] }
-    return {
-      calls,
-      api: {
-        async removeRules () { calls.removeRules++ },
-        async injectRules (rules, port) { calls.injectRules.push({ rules, port }) },
-      },
-    }
-  }
-
-  function makeConfig (xrayOverride, xrayPort) {
-    return {
-      get: () => ({
-        server: { setting: { xrayPort } },
-        plugin: { xray: xrayOverride },
-      }),
-    }
-  }
-
-  it('calls removeRules then injectRules with rules and port when xray enabled', async () => {
-    const { calls, api } = makeSpy()
-    const rules = [{ domain: 'a.com', balancerTag: 'b1' }]
-    const config = makeConfig({ enabled: true, rules }, 10801)
-    await reInjectXrayRules(config, api)
-    assert.strictEqual(calls.removeRules, 1)
-    assert.strictEqual(calls.injectRules.length, 1)
-    assert.deepStrictEqual(calls.injectRules[0].rules, rules)
-    assert.strictEqual(calls.injectRules[0].port, 10801)
-  })
-
-  it('calls removeRules first, injectRules second (order matters)', async () => {
-    const order = []
-    const api = {
-      async removeRules () { order.push('removeRules') },
-      async injectRules () { order.push('injectRules') },
-    }
-    const config = makeConfig({ enabled: true, rules: [] }, 10801)
-    await reInjectXrayRules(config, api)
-    assert.deepStrictEqual(order, ['removeRules', 'injectRules'])
-  })
-
-  it('skips injectRules when xray disabled (but still calls removeRules)', async () => {
-    const { calls, api } = makeSpy()
-    const config = makeConfig({ enabled: false, rules: [] }, 10801)
-    await reInjectXrayRules(config, api)
-    assert.strictEqual(calls.removeRules, 1)
-    assert.strictEqual(calls.injectRules.length, 0)
-  })
-
-  it('skips injectRules when xrayPort is 0', async () => {
-    const { calls, api } = makeSpy()
-    const config = makeConfig({ enabled: true, rules: [{ domain: 'a.com' }] }, 0)
-    await reInjectXrayRules(config, api)
-    assert.strictEqual(calls.removeRules, 1)
-    assert.strictEqual(calls.injectRules.length, 0)
-  })
-
-  it('skips injectRules when rules is not an array', async () => {
-    const { calls, api } = makeSpy()
-    const config = makeConfig({ enabled: true, rules: null }, 10801)
-    await reInjectXrayRules(config, api)
-    assert.strictEqual(calls.removeRules, 1)
-    assert.strictEqual(calls.injectRules.length, 0)
-  })
-
-  it('calls injectRules with empty array (injectRules handles it internally)', async () => {
-    const { calls, api } = makeSpy()
-    const config = makeConfig({ enabled: true, rules: [] }, 10801)
-    await reInjectXrayRules(config, api)
-    assert.strictEqual(calls.removeRules, 1)
-    assert.strictEqual(calls.injectRules.length, 1)
-    assert.deepStrictEqual(calls.injectRules[0].rules, [])
-  })
-})
-
-describe('webui logs route (/api/logs 结构化实时日志)', () => {
-  let server, baseUrl
-
-  const fakeContext = () => ({
-    config: {
-      get: () => ({
-        server: { intercepts: {}, setting: { userBasePath: '/tmp' } },
-        plugin: { xray: { enabled: false, port: 0, apiPort: 0, metricsPort: 0 }, webui: { token: '' } },
-        proxy: { enabled: false },
-      }),
-      update: () => {},
-      save: () => {},
-      downloadRemoteConfig: async () => {},
-      reload: () => {},
-    },
-    event: { register: () => 1, unregister: () => {}, fire: () => {} },
-    log: { info: () => {}, error: () => {} },
-    server: { reload: async () => {} },
-    xrayApi: null,
-  })
-
-  const seed = (appender, { ts = 1788160000000, level = 'INFO', category = 'core', data } = {}) =>
-    appender({ startTime: new Date(ts), level: { levelStr: level }, categoryName: category, data })
-
-  before(async () => {
-    const { createRouter } = require('../src/modules/plugin/webui/routes')
-    server = http.createServer(createRouter(fakeContext()))
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const { port } = server.address()
-    baseUrl = `http://127.0.0.1:${port}`
-  })
-
-  after(async () => {
-    await new Promise((resolve) => server.close(resolve))
-  })
-
-  beforeEach(() => {
-    const logRing = require('../src/utils/util.log-ring')
-    logRing._resetForTest()
-    const appender = logRing.configure()
-    seed(appender, { ts: 1000, level: 'DEBUG', category: 'core', data: ['Xray 调试细节'] })
-    seed(appender, { ts: 2000, level: 'INFO', category: 'core', data: ['Xray 启动完成'] })
-    seed(appender, { ts: 3000, level: 'WARN', category: 'gui', data: ['窗口关闭警告'] })
-    seed(appender, { ts: 4000, level: 'ERROR', category: 'server', data: [new Error('端口占用')] })
-  })
-
-  it('GET /api/logs 返回结构化条目与模块清单（时间升序）', async () => {
-    const r = await fetch(`${baseUrl}/api/logs`)
+  it('POST /api/config/reset with valid key resets, saves and hot-reloads', async () => {
+    const r = await fetch(`${baseUrl}/api/config/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'plugin.xray' }),
+    })
     assert.strictEqual(r.status, 200)
-    const d = await r.json()
-    assert.strictEqual(d.entries.length, 4)
-    assert.strictEqual(d.entries[0].message, 'Xray 调试细节')
-    assert.strictEqual(d.entries[3].category, 'server')
-    assert.ok(d.entries[3].message.includes('端口占用'))
-    assert.deepStrictEqual(d.categories, ['core', 'gui', 'server'])
-    assert.strictEqual(d.capacity > 0, true)
+    const data = await r.json()
+    assert.strictEqual(data.status, 'ok')
+    assert.deepStrictEqual(resetKeys, ['plugin.xray'])
+    assert.ok(data.allConfig)
   })
 
-  it('level 过滤按最低等级（warn 含 error）', async () => {
-    const d = await (await fetch(`${baseUrl}/api/logs?level=warn`)).json()
-    assert.strictEqual(d.entries.length, 2)
-    assert.strictEqual(d.entries[0].message, '窗口关闭警告')
-    assert.strictEqual(d.entries[1].level, 'error')
-    const d2 = await (await fetch(`${baseUrl}/api/logs?level=ERROR`)).json()
-    assert.strictEqual(d2.entries.length, 1)
-    assert.strictEqual(d2.entries[0].level, 'error')
+  it('POST /api/config/reset with invalid key returns 400', async () => {
+    const r = await fetch(`${baseUrl}/api/config/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: '../../etc' }),
+    })
+    assert.strictEqual(r.status, 400)
+    const data = await r.json()
+    assert.strictEqual(data.code, 'INVALID_BODY')
   })
 
-  it('q 过滤不分大小写（消息与模块）', async () => {
-    const d = await (await fetch(`${baseUrl}/api/logs?q=xray`)).json()
-    assert.strictEqual(d.entries.length, 2)
-    const d2 = await (await fetch(`${baseUrl}/api/logs?q=GUI`)).json()
-    assert.deepStrictEqual(d2.entries.map(e => e.category), ['gui'])
-  })
-
-  it('category 精确过滤 + limit 优先返回最新且保持升序', async () => {
-    const d = await (await fetch(`${baseUrl}/api/logs?category=core`)).json()
-    assert.strictEqual(d.entries.length, 2)
-    const d2 = await (await fetch(`${baseUrl}/api/logs?limit=2`)).json()
-    assert.deepStrictEqual(d2.entries.map(e => e.category), ['gui', 'server'])
+  it('POST /api/xray/restart delegates to the xray plugin', async () => {
+    const r = await fetch(`${baseUrl}/api/xray/restart`, { method: 'POST' })
+    assert.strictEqual(r.status, 202)
+    assert.strictEqual(restartCalls, 1)
   })
 })

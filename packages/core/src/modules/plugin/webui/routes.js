@@ -7,6 +7,37 @@ const { execFileSync } = require('node:child_process')
 const log = require('../../../utils/util.log.core')
 const { getCurrentProcessCgroupPath } = require('../xray/util.cgroup')
 
+const lodash = require('lodash')
+
+// 静态文件路径：部署态在 /opt；开发态（无安装）回退到仓库内 gui/extra/webui
+function resolveStaticHtmlPath () {
+  const candidates = [
+    '/opt/dev-sidecar/resources/extra/webui/index.html',
+    path.join(__dirname, '../../../../../gui/extra/webui/index.html'),
+  ]
+  for (const p of candidates) {
+    if (fs.existsSync(p)) { return p }
+  }
+  return candidates[0]
+}
+
+// 剥离配置视图中的运行态数据：Xray 插件自动注入的拦截条目（save 落盘时同样会剥）
+// 与 defaultConfig.configFromFiles 调试快照（模块加载时烘焙进默认配置的合并副本）。
+// 不剥离的话，前端把运行态当用户配置回写会产生幽灵 diff。
+function stripRuntimeConfigView (cfg) {
+  const view = lodash.cloneDeep(cfg)
+  delete view.configFromFiles
+  const intercepts = view?.server?.intercepts
+  if (intercepts && typeof intercepts === 'object') {
+    for (const domain of Object.keys(intercepts)) {
+      if (intercepts[domain]?.['.*']?.desc === 'Auto-injected by Xray Plugin') {
+        delete intercepts[domain]
+      }
+    }
+  }
+  return view
+}
+
 // Cache for export results (30s TTL)
 const exportCache = new Map()
 const EXPORT_CACHE_TTL = 30 * 1000
@@ -182,7 +213,7 @@ function createRouter (context) {
 
     // Static file: serve index.html
     if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
-      const htmlPath = '/opt/dev-sidecar/resources/extra/webui/index.html'
+      const htmlPath = resolveStaticHtmlPath()
       try {
         const html = fs.readFileSync(htmlPath, 'utf8')
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
@@ -551,7 +582,24 @@ function createRouter (context) {
     }
 
     if (method === 'GET' && pathname === '/api/config') {
-      sendJson(res, 200, globalConfig.get())
+      sendJson(res, 200, stripRuntimeConfigView(globalConfig.get()))
+      return
+    }
+
+    // config.json 用户覆盖层（值来源徽章数据）——只读，不合并
+    if (method === 'GET' && pathname === '/api/config/user') {
+      const configLoader = require('../../../config/local-config-loader')
+      const appCfg = globalConfig.get().app || {}
+      const configPath = configLoader.getUserConfigPath()
+      sendJson(res, 200, {
+        userConfig: configLoader.getUserConfig(),
+        configPath,
+        exists: fs.existsSync(configPath),
+        remote: {
+          enabled: appCfg.remoteConfig?.enabled === true,
+          hasPersonalUrl: !!appCfg.remoteConfig?.personalUrl,
+        },
+      })
       return
     }
 
@@ -567,6 +615,39 @@ function createRouter (context) {
         } catch { /* ignore */ }
         process.exit(1)
       }, 500)
+      return
+    }
+
+    // 恢复某分区为内置默认值（GUI「恢复默认」同语义：resetDefault 后整树落盘，
+    // 显式覆盖远程配置中的对应值）
+    if (method === 'POST' && pathname === '/api/config/reset') {
+      const body = await readBody(req)
+      const key = isPlainObject(body) && typeof body.key === 'string' ? body.key : ''
+      if (!/^(app|server|plugin|proxy)(\.[A-Za-z0-9_]+)*$/.test(key)) {
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'body.key must be a config path like "plugin.xray" or "server.intercepts"' })
+        return
+      }
+      try {
+        globalConfig.resetDefault(key)
+        globalConfig.save(globalConfig.get())
+        try { await ctxServer.reload() } catch { /* ignore */ }
+        await reInjectXrayRules(globalConfig, ctxXrayApi)
+        sendJson(res, 200, { status: 'ok', key, allConfig: stripRuntimeConfigView(globalConfig.get()) })
+      } catch (err) {
+        sendJson(res, 500, { error: true, code: 'CONFIG_RESET_FAILED', message: err.message })
+      }
+      return
+    }
+
+    // 重启 Xray 插件（保存 xray 配置后由前端按需调用，与 GUI applyBefore 一致）
+    if (method === 'POST' && pathname === '/api/xray/restart') {
+      try {
+        const xrayPlugin = resolveXrayPlugin()
+        await xrayPlugin.restart()
+        sendJson(res, 202, { status: 'ok' })
+      } catch (err) {
+        sendJson(res, 500, { error: true, code: 'RESTART_FAILED', message: err.message })
+      }
       return
     }
 
@@ -645,12 +726,21 @@ function createRouter (context) {
         sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'Config body must be a JSON object' })
         return
       }
+      // 整树替换语义（GUI configApi.save 一致）：body 必须是「GET /api/config → 编辑 → 回传」
+      // 的完整配置树。不能走 globalConfig.update —— mergeWith 无法表达"删除键"，
+      // 前端删掉的远程/默认配置条目会在 merge 阶段复活，删除静默失效。
+      if (!body.app || !body.server || !body.plugin) {
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'PUT /api/config expects the full config tree (GET /api/config, edit, PUT back); missing top-level app/server/plugin key' })
+        return
+      }
       try {
-        globalConfig.update(body)
-        // Hot reload
+        // 恢复 GET 剥离的 configFromFiles 快照：真实 doDiff 以含此键的默认配置为基线，
+        // 缺失会被墓碑化为 configFromFiles: null 写进 config.json
+        body.configFromFiles = globalConfig.get().configFromFiles
+        globalConfig.save(body)
         try { await ctxServer.reload() } catch { /* ignore */ }
         await reInjectXrayRules(globalConfig, ctxXrayApi)
-        sendJson(res, 200, { status: 'ok', message: 'Config updated and hot-reloaded' })
+        sendJson(res, 200, { status: 'ok', message: 'Config updated and hot-reloaded', allConfig: stripRuntimeConfigView(globalConfig.get()) })
       } catch (err) {
         sendJson(res, 500, { error: true, code: 'CONFIG_UPDATE_FAILED', message: err.message })
       }
@@ -664,7 +754,11 @@ function createRouter (context) {
         return
       }
       try {
-        globalConfig.update({ server: { intercepts: body } })
+        // 整体替换子树后整树 save：绕过 mergeWith 使「删除域名」语义生效
+        const newConfig = lodash.cloneDeep(globalConfig.get())
+        delete newConfig.configFromFiles
+        lodash.set(newConfig, 'server.intercepts', body)
+        globalConfig.save(newConfig)
         try { await ctxServer.reload() } catch { /* ignore */ }
         await reInjectXrayRules(globalConfig, ctxXrayApi)
         sendJson(res, 200, { status: 'ok', message: 'Intercepts updated' })
@@ -682,7 +776,10 @@ function createRouter (context) {
         return
       }
       try {
-        globalConfig.update({ server: { preSetIpList: body } })
+        const newConfig = lodash.cloneDeep(globalConfig.get())
+        delete newConfig.configFromFiles
+        lodash.set(newConfig, 'server.preSetIpList', body)
+        globalConfig.save(newConfig)
         try { await ctxServer.reload() } catch { /* ignore */ }
         await reInjectXrayRules(globalConfig, ctxXrayApi)
         sendJson(res, 200, { status: 'ok', message: 'preSetIpList updated' })
@@ -700,7 +797,10 @@ function createRouter (context) {
         return
       }
       try {
-        globalConfig.update({ plugin: { xray: { rules: body } } })
+        const newConfig = lodash.cloneDeep(globalConfig.get())
+        delete newConfig.configFromFiles
+        lodash.set(newConfig, 'plugin.xray.rules', body)
+        globalConfig.save(newConfig)
         await reInjectXrayRules(globalConfig, ctxXrayApi)
         sendJson(res, 200, { status: 'ok', message: 'xray rules updated' })
       } catch (err) {

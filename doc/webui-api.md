@@ -98,21 +98,63 @@
 
 ## 配置
 
+> 配置编辑的持久化目标始终是 `~/.dev-sidecar/config.json`（用户覆盖层），不会改写 `remote_config_personal.json5`。删除远程/默认配置来源的条目时，`doDiff` 会写入 `null` 墓碑，合并时剥除。
+
 ### GET /api/config
 
-返回完整运行配置（同 `/api/status`）。
+返回完整运行配置（同 `/api/status`，但额外剥离运行态）：
+- Xray 插件自动注入的拦截条目（`desc === 'Auto-injected by Xray Plugin'`）
+- `configFromFiles` 调试快照（模块加载时烘焙进默认配置的合并副本）
+
+WebUI 配置页应以本接口的响应作为编辑基底，编辑后整树回传 `PUT /api/config`。
 
 ### PUT /api/config
 
-整体替换用户配置（`~/.dev-sidecar/config.json`）。合并策略用 `lodash.mergeWith` + 数组整体替换 customizer。
+**整树替换语义**（与 GUI `configApi.save` 一致）：body 必须是「GET /api/config → 编辑 → 回传」的完整配置树，缺少顶层 `app`/`server`/`plugin` 键时返回 400（防止局部树把未携带的子树墓碑化）。
 
-**请求体** — 配置对象
+不能走 merge 方式：`mergeWith` 无法表达"删除键"，前端删掉的远程/默认配置条目会在 merge 阶段复活，删除会静默失效。
 
-**响应** `200` `{ "status": "ok" }`
+**请求体** — 完整配置树（响应中已剥离的 `configFromFiles` 会被再次剥除）
+
+**响应** `200`
+```json
+{ "status": "ok", "message": "Config updated and hot-reloaded", "allConfig": { } }
+```
+
+`allConfig` 为保存后的最新合并配置（同样剥离运行态），前端应用它重建编辑基底。
+
+### GET /api/config/user
+
+返回 `~/.dev-sidecar/config.json` 用户覆盖层（原始 diff，未与任何配置合并）——前端据此显示「用户覆盖」来源徽章。
+
+**响应** `200`
+```json
+{
+  "userConfig": { "server": { "host": "0.0.0.0" } },
+  "configPath": "/home/user/.dev-sidecar/config.json",
+  "exists": true,
+  "remote": { "enabled": true, "hasPersonalUrl": true }
+}
+```
+
+### POST /api/config/reset
+
+将指定分区恢复为内置默认值（GUI「恢复默认」同语义）：`resetDefault(key)` 后整树落盘，显式覆盖远程配置中的对应值。
+
+**请求体**
+```json
+{ "key": "plugin.xray" }
+```
+
+`key` 必须匹配 `^(app|server|plugin|proxy)(\.[A-Za-z0-9_]+)*$`，如 `server.intercepts`、`plugin.xray`。
+
+**响应** `200` `{ "status": "ok", "key": "plugin.xray", "allConfig": { } }` — 保存并热重载
+
+**错误** `400` — `INVALID_BODY`（key 非法）
 
 ### PUT /api/intercepts
 
-更新拦截规则（`server.intercepts`）。
+更新拦截规则（`server.intercepts`）。**整体替换子树**：clone 当前树 → `lodash.set` 替换 → 整树 save，删除域名会正确墓碑化（旧 merge 实现已删除失效）。
 
 **请求体**
 ```json
@@ -123,15 +165,17 @@
 
 ### PUT /api/presetiplist
 
-更新预设 IP 列表（`server.presetIpList`）。
+更新预设 IP 列表（`server.presetIpList`）。同样为整体替换子树 + 整树 save 语义。
 
-**请求体** — 预设 IP 数组
+**请求体** — 预设 IP 对象（`domain → ip → bool`）
 
 **响应** `200` `{ "status": "ok" }`
 
 ### PUT /api/xray/rules
 
-更新 Xray 路由规则（`plugin.xray.rules`）。数组整体替换（非索引合并）。
+更新 Xray 路由规则（`plugin.xray.rules`）。数组整体替换（非索引合并），同样走整树 save 使删除生效。
+
+规则字段兼容两种形态：`{ domain, balancerTag }`（推荐）或 `{ domain, outboundTag }`（GUI 兼容；`outboundTag: 'balancer-proxy'` 归一化为 balancer 引用）。
 
 **请求体**
 ```json
@@ -145,6 +189,14 @@
 重新下载远程共享 + 个人配置并合并。
 
 **响应** `200` `{ "status": "ok" }`
+
+### POST /api/xray/restart
+
+重启 Xray 插件（`close()` + `start()`）。WebUI 在保存了 `plugin.xray.*` 或 `server.setting.xrayPort` 且 Xray 运行中（stage status `liveNodes > 0`）时自动调用。
+
+**响应** `202` `{ "status": "ok" }`
+
+**错误** `500` — `RESTART_FAILED`
 
 ## Xray 节点
 
@@ -520,7 +572,11 @@
 | `INTERNAL_ERROR` | 500 | 路由异常 |
 | `XRAY_NOT_READY` | 503 | xray 未启动或 API 端口未就绪 |
 | `STICKY_FAILED` | 500 | sticky 锁定/解锁失败（消息含原因） |
+| `RESTART_FAILED` | 500 | Xray 插件重启失败 |
+| `CONFIG_UPDATE_FAILED` | 500 | 配置保存/热重载失败 |
+| `CONFIG_RESET_FAILED` | 500 | 恢复默认失败 |
 | `INVALID_FILE` | 400 | 日志文件名非法 |
+| `INVALID_BODY` | 400 | 请求体非法（含 PUT /api/config 局部树） |
 | `METHOD_NOT_AVAILABLE` | 200 | xray 插件未加载（`getStageStatus` 返回） |
 
 ## 部署与端口
@@ -544,4 +600,4 @@
 | `packages/gui/extra/webui/index.html` | 前端单文件 HTML |
 | `packages/core/src/modules/plugin/xray/index.js` | `getStageStatus` / `getLiveNodeFingerprints` / sticky API |
 | `packages/core/src/modules/plugin/xray/cache.js` | 缓存查询 + Stage2 sync stats 持久化 |
-| `packages/core/src/modules/plugin/xray/xray_api.js` | xray CLI（lso/bi/bo/ado/rmo）封装 |
+| `packages/core/src/modules/plugin/xray/xray_api.js` | xray CLI（lso/bi/bo/ado/rmo）封装
