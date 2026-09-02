@@ -5,6 +5,7 @@ const fs = require('node:fs')
 const log = require('../../../utils/util.log.core')
 const { createRouter } = require('./routes')
 const { createWsServer } = require('./ws')
+const { createBackupApi } = require('./backup')
 
 const pluginConfig = {
   enabled: true,
@@ -18,6 +19,7 @@ let wss = null
 let wsBroadcast = null
 let eventIds = []
 let logRingUnsubscribe = null
+let backupScheduleApi = null
 
 function Plugin (context) {
   const { config: globalConfig, event, log: ctxLog, server: ctxServer } = context
@@ -70,6 +72,14 @@ function Plugin (context) {
           event.fire('status', { key: 'plugin.webui.enabled', value: true })
           event.fire('status', { key: 'plugin.webui.port', value: port })
         })
+
+        // 定时备份调度器（每 10 分钟检查是否到达备份间隔，设置在 backup.json 中）
+        try {
+          backupScheduleApi = createBackupApi(context)
+          backupScheduleApi.startSchedule()
+        } catch (err) {
+          ctxLog.error('备份调度器启动失败:', err)
+        }
       } catch (err) {
         ctxLog.error('WebUI 启动失败:', err)
         event.fire('error', { key: 'webui', value: err.message })
@@ -77,6 +87,10 @@ function Plugin (context) {
     },
 
     async close () {
+      if (backupScheduleApi) {
+        try { backupScheduleApi.stopSchedule() } catch { /* ignore */ }
+        backupScheduleApi = null
+      }
       for (const id of eventIds) {
         try { event.unregister(id) } catch { /* ignore */ }
       }

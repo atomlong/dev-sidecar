@@ -6,6 +6,7 @@ const { execFileSync } = require('node:child_process')
 
 const log = require('../../../utils/util.log.core')
 const { getCurrentProcessCgroupPath } = require('../xray/util.cgroup')
+const { createBackupApi } = require('./backup')
 
 const lodash = require('lodash')
 
@@ -83,6 +84,17 @@ function createRouter (context) {
   const ctxXrayApi = context.xrayApi
   // sticky 插件操作:优先用注入的实现（单测）;生产回退到 expose
   const resolveXrayPlugin = () => context.xrayPlugin || require('../../../expose').api.plugin.xray
+
+  // 备份 API（S3 兼容 / Cloudflare R2）：惰性创建；测试可通过 context.backupApi 注入 mock
+  let backupApi = context.backupApi || null
+  function getBackupApi () {
+    if (!backupApi) backupApi = createBackupApi(context)
+    return backupApi
+  }
+
+  function isBackupNotConfigured (err) {
+    return /尚未配置完整/.test(err.message || '')
+  }
 
   // Helper: check if request is from localhost
   function isLocalhost (req) {
@@ -1060,6 +1072,116 @@ function createRouter (context) {
         sendJson(res, 200, response)
       } catch (err) {
         sendJson(res, 503, { error: true, code: 'CACHE_NOT_READY', message: err.message })
+      }
+      return
+    }
+
+    // ---- 备份（S3 兼容对象存储 / Cloudflare R2）----
+    if (method === 'GET' && pathname === '/api/backup/config') {
+      try {
+        sendJson(res, 200, getBackupApi().getMaskedConfig())
+      } catch (err) {
+        sendJson(res, 500, { error: true, code: 'BACKUP_FAILED', message: err.message })
+      }
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/backup/config') {
+      const body = await readBody(req)
+      if (!isPlainObject(body)) {
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'backup config body must be a JSON object' })
+        return
+      }
+      try {
+        sendJson(res, 200, { status: 'ok', config: getBackupApi().saveConfig(body) })
+      } catch (err) {
+        sendJson(res, 500, { error: true, code: 'BACKUP_FAILED', message: err.message })
+      }
+      return
+    }
+
+    // 用 body（未保存的设置）或已保存设置测试连通性；secretAccessKey 为掩码时回退已保存值
+    if (method === 'POST' && pathname === '/api/backup/test') {
+      const body = await readBody(req)
+      if (body !== null && !isPlainObject(body)) {
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'backup test body must be a JSON object' })
+        return
+      }
+      try {
+        await getBackupApi().testConnection(isPlainObject(body) ? body : {})
+        sendJson(res, 200, { status: 'ok', message: '连接成功：bucket 可访问' })
+      } catch (err) {
+        sendJson(res, isBackupNotConfigured(err) ? 400 : 502, { error: true, code: isBackupNotConfigured(err) ? 'BACKUP_NOT_CONFIGURED' : 'BACKUP_UPSTREAM_FAILED', message: err.message })
+      }
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/backup/run') {
+      try {
+        const result = await getBackupApi().runBackup()
+        sendJson(res, 200, { status: 'ok', ...result })
+      } catch (err) {
+        sendJson(res, isBackupNotConfigured(err) ? 400 : 502, { error: true, code: isBackupNotConfigured(err) ? 'BACKUP_NOT_CONFIGURED' : 'BACKUP_UPSTREAM_FAILED', message: err.message })
+      }
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/backup/list') {
+      try {
+        sendJson(res, 200, await getBackupApi().listBackups())
+      } catch (err) {
+        sendJson(res, isBackupNotConfigured(err) ? 400 : 502, { error: true, code: isBackupNotConfigured(err) ? 'BACKUP_NOT_CONFIGURED' : 'BACKUP_UPSTREAM_FAILED', message: err.message })
+      }
+      return
+    }
+
+    // 后端代理下载备份归档（不暴露预签名 URL）
+    if (method === 'GET' && pathname === '/api/backup/download') {
+      const key = url.searchParams.get('key') || ''
+      try {
+        const { body, name } = await getBackupApi().downloadBackup(key)
+        const safeName = name.replace(/[^A-Za-z0-9._-]/g, '_')
+        res.writeHead(200, {
+          'Content-Type': 'application/gzip',
+          'Content-Disposition': `attachment; filename="${safeName}"`,
+          'Content-Length': String(body.length),
+        })
+        res.end(body)
+      } catch (err) {
+        sendJson(res, /非法的备份对象 key/.test(err.message) ? 400 : 502, { error: true, code: /非法的备份对象 key/.test(err.message) ? 'INVALID_KEY' : 'BACKUP_UPSTREAM_FAILED', message: err.message })
+      }
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/backup/restore') {
+      const body = await readBody(req)
+      const key = isPlainObject(body) && typeof body.key === 'string' ? body.key : ''
+      if (!key) {
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'body.key must be a backup object key' })
+        return
+      }
+      try {
+        const result = await getBackupApi().restoreBackup(key)
+        sendJson(res, 200, { status: 'ok', ...result })
+      } catch (err) {
+        const isValidation = /非法的备份对象 key|口令|解密|gzip 归档/.test(err.message)
+        sendJson(res, isValidation ? 400 : 502, { error: true, code: isValidation ? 'BACKUP_RESTORE_INVALID' : 'BACKUP_RESTORE_FAILED', message: err.message })
+      }
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/backup/delete') {
+      const body = await readBody(req)
+      const key = isPlainObject(body) && typeof body.key === 'string' ? body.key : ''
+      if (!key) {
+        sendJson(res, 400, { error: true, code: 'INVALID_BODY', message: 'body.key must be a backup object key' })
+        return
+      }
+      try {
+        await getBackupApi().deleteBackup(key)
+        sendJson(res, 200, { status: 'ok' })
+      } catch (err) {
+        sendJson(res, /非法的备份对象 key/.test(err.message) ? 400 : 502, { error: true, code: /非法的备份对象 key/.test(err.message) ? 'INVALID_KEY' : 'BACKUP_UPSTREAM_FAILED', message: err.message })
       }
       return
     }

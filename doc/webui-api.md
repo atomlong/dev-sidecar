@@ -198,6 +198,106 @@ WebUI 配置页应以本接口的响应作为编辑基底，编辑后整树回�
 
 **错误** `500` — `RESTART_FAILED`
 
+## 备份
+
+> 备份目标为 S3 兼容对象存储（Cloudflare R2 / AWS S3 / MinIO / 阿里云 OSS），path-style 寻址，R2 的 region 固定填 `auto`。
+> 备份设置保存在 `~/.dev-sidecar/backup.json`（**独立于主配置树**：`secretAccessKey` 与加密口令不出现在 `GET /api/config` 中，也不会被 `PUT /api/config` 整树回写流程篡改）。
+> 备份内容：整个 `~/.dev-sidecar` 配置目录打包为 tar.gz（排除 `logs/`、`xray/`、`running.json`、`*.pid`、`*.log`、`*.bak-*` 与 `backup.json` 本体），对象命名为 `<prefix>/<hostname>/<时间戳>.tar.gz`（设置了加密口令则为 `.tar.gz.enc`）。多台机器共用同一 bucket 时按主机名隔离，保留份数（`keepLast`）按主机前缀自动清理最旧。
+
+### GET /api/backup/config
+
+返回备份设置（脱敏：已保存的 `secretAccessKey`/加密口令返回 `******`）与上次备份状态。
+
+**响应** `200`
+```json
+{
+  "s3": { "endpoint": "", "region": "auto", "bucket": "", "accessKeyId": "", "secretAccessKey": "", "prefix": "dev-sidecar/" },
+  "passphrase": "",
+  "keepLast": 7,
+  "schedule": { "enabled": false, "intervalHours": 24 },
+  "lastBackupAt": 0,
+  "lastBackupKey": "",
+  "lastBackupSize": 0,
+  "lastError": "",
+  "configured": false
+}
+```
+
+### POST /api/backup/config
+
+保存备份设置。`secretAccessKey` 回传 `******` 或不传即保留旧值；`passphrase` 不传保留、传空串 `""` 显式清除、传新值覆盖；`prefix` 自动补全尾部 `/`。
+
+**请求体**
+```json
+{
+  "s3": { "endpoint": "https://<account_id>.r2.cloudflarestorage.com", "region": "auto", "bucket": "my-bucket", "accessKeyId": "xxx", "secretAccessKey": "xxx", "prefix": "dev-sidecar/" },
+  "passphrase": "可选，备份含 CA 私钥建议设置",
+  "keepLast": 7,
+  "schedule": { "enabled": true, "intervalHours": 24 }
+}
+```
+
+**响应** `200` `{ "status": "ok", "config": { ...同 GET 的脱敏结构 } }`
+
+### POST /api/backup/test
+
+测试连通性（最小 List 请求，验证 endpoint/凭据/bucket）。body 可选——携带未保存的设置「先测试再保存」；`secretAccessKey` 为掩码 `******` 时自动回退已保存值。
+
+**响应** `200` `{ "status": "ok", "message": "连接成功：bucket 可访问" }`
+
+**错误** `400` — `BACKUP_NOT_CONFIGURED`；`502` — `BACKUP_UPSTREAM_FAILED`
+
+### POST /api/backup/run
+
+立即备份一次：打包 → （可选）加密 → 上传 → 按保留份数清理。
+
+**响应** `200`
+```json
+{ "status": "ok", "key": "dev-sidecar/host1/20260902-140129.tar.gz.enc", "size": 20480, "encrypted": true, "deleted": ["dev-sidecar/host1/20260826-140129.tar.gz"] }
+```
+
+**错误** `400` — `BACKUP_NOT_CONFIGURED`；`502` — `BACKUP_UPSTREAM_FAILED`（失败信息同时记入 `lastError`）
+
+### GET /api/backup/list
+
+列出本机前缀下的云端备份。
+
+**响应** `200`
+```json
+{ "prefix": "dev-sidecar/host1/", "backups": [ { "key": "dev-sidecar/host1/20260902-140129.tar.gz", "size": 20480, "lastModified": "2026-09-02T06:01:29.000Z", "encrypted": false } ] }
+```
+
+### GET /api/backup/download?key=...
+
+后端代理下载备份归档（二进制 attachment 流，不暴露预签名 URL）。`key` 必须在已配置前缀下。
+
+**响应** `200` `Content-Type: application/gzip` + `Content-Disposition: attachment; filename="..."`
+
+**错误** `400` — `INVALID_KEY`；`502` — `BACKUP_UPSTREAM_FAILED`
+
+### POST /api/backup/restore
+
+恢复备份：下载 → 解密（若加密）→ 校验 gzip/tar 归档 → 当前 `config.json` 先留 `.bak-restore-<ts>` 安全副本 → 解包覆盖配置目录。恢复的 `config.json`/CA 证书需**重启服务**生效（前端确认后可直接调 `POST /api/service/restart`）。
+
+**请求体** `{ "key": "dev-sidecar/host1/20260902-140129.tar.gz" }`
+
+**响应** `200`
+```json
+{ "status": "ok", "key": "...", "restoredCount": 12, "files": ["./config.json"], "needsRestart": true }
+```
+
+**错误** `400` — `INVALID_BODY` / `BACKUP_RESTORE_INVALID`（key 不在前缀下、归档已加密但未配置口令、口令错误、归档损坏）；`502` — `BACKUP_RESTORE_FAILED`
+
+### POST /api/backup/delete
+
+删除一份云端备份（`key` 必须在已配置前缀下；删除的是 `lastBackupKey` 时同步清空状态）。
+
+**请求体** `{ "key": "..." }`
+
+**响应** `200` `{ "status": "ok" }`
+
+**错误** `400` — `INVALID_BODY` / `INVALID_KEY`；`502` — `BACKUP_UPSTREAM_FAILED`
+
 ## Xray 节点
 
 ### GET /api/xray/nodes

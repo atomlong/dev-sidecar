@@ -49,7 +49,7 @@ body{flex-direction:column}
 .switch input:checked+.slider:before{transform:translateX(18px);background:#4fc3f7}
 .rowlist-row{display:flex;gap:6px;align-items:center;margin-bottom:6px}
 .rowlist-row input{min-width:0}
-.form-body>input[type=text]{width:100%;max-width:640px}
+.form-body>input[type=text],.form-body>input[type=password],.form-body>input[type=number]{width:100%;max-width:640px}
 input[type=number]{width:120px}
 .cfg-sub{color:#4fc3f7;font-size:13px;margin:16px 0 8px;padding-bottom:4px;border-bottom:1px solid #2a2a4a}
 .it-layout{display:flex;gap:14px;align-items:flex-start}
@@ -149,6 +149,7 @@ pre{background:#0d1117;padding:12px;border-radius:6px;overflow:auto;max-height:5
 <button class="nav-btn" data-panel="cache"><span class="ico">💾</span>缓存</button>
 <button class="nav-btn" data-panel="logs"><span class="ico">📜</span>日志</button>
 <button class="nav-btn" data-panel="config"><span class="ico">⚙️</span>配置</button>
+<button class="nav-btn" data-panel="backup"><span class="ico">☁️</span>备份</button>
 <div class="nav-footer"><span id="sb-ver">-</span><span class="dot gray" id="sb-ws" title="WebSocket 连接状态"></span></div>
 </div>
 
@@ -158,6 +159,7 @@ pre{background:#0d1117;padding:12px;border-radius:6px;overflow:auto;max-height:5
 <div id="cache" class="panel"></div>
 <div id="logs" class="panel"></div>
 <div id="config" class="panel"></div>
+<div id="backup" class="panel"></div>
 <div id="toast"></div>
 </main>
 
@@ -189,6 +191,20 @@ function promptModal (title, ph, type = 'text', def = '') {
     mask.querySelector('#pm-ok').onclick = () => { const v = input.value.trim(); if (v) done(v) }
     mask.querySelector('#pm-cancel').onclick = () => done(null)
     input.onkeydown = (e) => { if (e.key === 'Enter') { const v = input.value.trim(); if (v) done(v) } }
+  })
+}
+// 二次确认弹框：danger 模式红色按钮，用于不可逆操作（恢复/删除备份）
+function confirmModal (title, text, danger = true) {
+  return new Promise((resolve) => {
+    const mask = document.createElement('div')
+    mask.className = 'modal-mask'
+    mask.innerHTML = `<div class="modal"><h3>${esc(title)}</h3>
+      <div style="color:#aaa;font-size:13px;margin-bottom:14px;white-space:pre-wrap">${esc(text)}</div>
+      <div class="btns"><button class="btn" id="cm-cancel">取消</button><button class="btn ${danger ? 'danger' : ''}" id="cm-ok">确定</button></div></div>`
+    document.body.appendChild(mask)
+    const done = v => { mask.remove(); resolve(v) }
+    mask.querySelector('#cm-ok').onclick = () => done(true)
+    mask.querySelector('#cm-cancel').onclick = () => done(false)
   })
 }
 async function api(path, opts = {}) {
@@ -1793,6 +1809,220 @@ CFG_RENDER.raw = function renderSecRaw() {
     `<pre>${esc(JSON.stringify(cfgState.user, null, 2))}</pre>`;
 }
 
+// ==================== Backup (Cloudflare R2 / S3 兼容) ====================
+let bkInited = false
+let bkCfg = null
+let bkList = []
+
+function bkFormRow (label, bodyHtml, help) {
+  return `<div class="form-row"><div class="form-label">${label}</div><div class="form-body">${bodyHtml}${help ? `<div class="form-help">${help}</div>` : ''}</div></div>`
+}
+
+function initBackup () {
+  $('backup').innerHTML = `
+<div class="card"><h3>备份设置 <span style="font-size:11px;color:#777;text-transform:none">S3 兼容对象存储（Cloudflare R2 / AWS S3 / MinIO）</span></h3>
+  <div id="bk-form"></div>
+  <div style="margin-top:10px;display:flex;gap:8px">
+    <button class="btn" onclick="bkSave()">保存设置</button>
+    <button class="btn" onclick="bkTest()">测试连接</button>
+  </div>
+</div>
+<div class="card"><h3>备份操作</h3>
+  <div id="bk-status" class="muted" style="font-size:13px;margin-bottom:10px">-</div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <button class="btn" id="bk-run-btn" onclick="bkRun()">立即备份</button>
+    <button class="btn" onclick="bkRefreshList()">刷新列表</button>
+    <span class="muted" style="font-size:12px">备份范围：配置目录（config.json / 远程配置缓存 / CA 证书与私钥），自动排除 logs、xray、running.json</span>
+  </div>
+</div>
+<div class="card"><h3>云端备份列表 <span id="bk-list-meta" style="font-size:11px;color:#777;text-transform:none"></span></h3>
+  <div id="bk-list" class="muted" style="font-size:13px">-</div>
+</div>`
+  bkRenderForm()
+  bkInited = true
+}
+
+function bkRenderForm () {
+  const c = bkCfg || {}
+  const s3 = c.s3 || {}
+  const hasSecret = !!s3.secretAccessKey
+  const hasPass = !!c.passphrase
+  const sched = c.schedule || {}
+  $('bk-form').innerHTML =
+    bkFormRow('Endpoint', `<input type="text" id="bk-endpoint" value="${esc(s3.endpoint || '')}" placeholder="https://<account_id>.r2.cloudflarestorage.com">`, 'R2 在控制台「S3 API」页可查到；AWS S3 可留空使用默认域名') +
+    bkFormRow('Region', `<input type="text" id="bk-region" value="${esc(s3.region || 'auto')}">`, 'Cloudflare R2 固定填 auto') +
+    bkFormRow('Bucket', `<input type="text" id="bk-bucket" value="${esc(s3.bucket || '')}">`) +
+    bkFormRow('AccessKeyId', `<input type="text" id="bk-ak" value="${esc(s3.accessKeyId || '')}" autocomplete="off">`) +
+    bkFormRow('SecretAccessKey', `<input type="password" id="bk-sk" placeholder="${hasSecret ? '已保存（输入以更换）' : ''}" autocomplete="new-password">`) +
+    bkFormRow('对象前缀', `<input type="text" id="bk-prefix" value="${esc(s3.prefix || 'dev-sidecar/')}">`, '对象按 <前缀>/<主机名>/时间戳 命名，多台机器共用一个 bucket 也不会互相覆盖') +
+    bkFormRow('加密口令', `<input type="password" id="bk-pass" placeholder="${hasPass ? '已设置（输入以更换）' : ''}" autocomplete="new-password">`, '备份包含 CA 私钥，强烈建议设置；口令用 AES-256-GCM 加密归档，仅保存在本机') +
+    bkFormRow('保留份数', `<input type="number" id="bk-keep" value="${Number.isFinite(c.keepLast) ? c.keepLast : 7}" min="0" style="max-width:120px">`, '每台主机最多保留的备份份数，超出自动删除最旧的；0 = 不清理') +
+    bkFormRow('定时备份', `<div style="display:flex;gap:10px;align-items:center"><label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="bk-sched-enabled" ${sched.enabled ? 'checked' : ''}>启用</label><span>每</span><input type="number" id="bk-interval" value="${Number.isFinite(sched.intervalHours) ? sched.intervalHours : 24}" min="1" style="max-width:90px"><span>小时自动备份一次</span></div>`)
+}
+
+function bkReadFormS3 () {
+  const s3 = {
+    endpoint: $('bk-endpoint').value.trim(),
+    region: $('bk-region').value.trim() || 'auto',
+    bucket: $('bk-bucket').value.trim(),
+    accessKeyId: $('bk-ak').value.trim(),
+    prefix: $('bk-prefix').value.trim() || 'dev-sidecar/',
+  }
+  const sk = $('bk-sk').value
+  if (sk) s3.secretAccessKey = sk
+  else if (bkCfg && bkCfg.s3 && bkCfg.s3.secretAccessKey) s3.secretAccessKey = '******'
+  return s3
+}
+
+async function bkSave () {
+  try {
+    const body = {
+      s3: bkReadFormS3(),
+      keepLast: parseInt($('bk-keep').value, 10) || 0,
+      schedule: { enabled: $('bk-sched-enabled').checked, intervalHours: parseInt($('bk-interval').value, 10) || 24 },
+    }
+    if ($('bk-pass').value) body.passphrase = $('bk-pass').value
+    const r = await api('/api/backup/config', { method: 'POST', body: JSON.stringify(body) })
+    bkCfg = r.config
+    bkRenderForm()
+    toast('备份设置已保存')
+    bkRenderStatus()
+  } catch (e) { toast(e.message, true) }
+}
+
+async function bkTest () {
+  try {
+    const r = await api('/api/backup/test', { method: 'POST', body: JSON.stringify({ s3: bkReadFormS3() }) })
+    toast(r.message || '连接成功')
+  } catch (e) { toast('连接失败: ' + e.message, true) }
+}
+
+function bkRenderStatus () {
+  const el = $('bk-status')
+  if (!el) return
+  const c = bkCfg || {}
+  if (!c.configured) { el.innerHTML = '<span class="muted">尚未配置：填写左侧对象存储设置并保存后即可备份</span>'; return }
+  const parts = []
+  parts.push(`上次备份: ${c.lastBackupAt ? fmtTime(c.lastBackupAt) : '从未'}`)
+  if (c.lastBackupKey) parts.push(`${c.lastBackupKey.split('/').pop()} (${fmt(c.lastBackupSize || 0)}${/\.enc$/.test(c.lastBackupKey) ? '，已加密' : ''})`)
+  if (c.schedule && c.schedule.enabled) parts.push(`定时: 每 ${c.schedule.intervalHours}h`)
+  if (c.lastError) parts.push(`<span style="color:#f44336">上次失败: ${esc(c.lastError)}</span>`)
+  el.innerHTML = parts.map(p => `<div>${p}</div>`).join('')
+}
+
+function bkRenderList () {
+  const el = $('bk-list')
+  const meta = $('bk-list-meta')
+  if (!el) return
+  if (!(bkCfg && bkCfg.configured)) {
+    el.innerHTML = '<span class="muted">保存对象存储设置后显示备份列表</span>'
+    if (meta) meta.textContent = ''
+    return
+  }
+  if (!bkList.length) {
+    el.innerHTML = '<span class="muted">云端暂无备份</span>'
+    if (meta) meta.textContent = ''
+    return
+  }
+  if (meta) meta.textContent = `${bkList.length} 份`
+  el.innerHTML = `<table><thead><tr><th>名称</th><th>大小</th><th>时间</th><th style="text-align:right">操作</th></tr></thead><tbody>` +
+    bkList.map(i => {
+      const name = i.key.split('/').pop()
+      return `<tr>
+        <td title="${esc(i.key)}">${esc(name)}${i.encrypted ? ' <span title="已加密" style="color:#4fc3f7">🔒</span>' : ''}</td>
+        <td>${fmt(i.size || 0)}</td>
+        <td>${i.lastModified ? fmtTime(new Date(i.lastModified).getTime()) : '-'}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn" style="padding:2px 10px" onclick="bkRestoreKey('${escA(i.key)}')">恢复</button>
+          <button class="btn" style="padding:2px 10px" onclick="bkDownloadKey('${escA(i.key)}')">下载</button>
+          <button class="btn danger" style="padding:2px 10px" onclick="bkDeleteKey('${escA(i.key)}')">删除</button>
+        </td>
+      </tr>`
+    }).join('') + '</tbody></table>'
+}
+
+async function bkRefreshList () {
+  if (!(bkCfg && bkCfg.configured)) { bkRenderList(); return }
+  try {
+    const r = await api('/api/backup/list')
+    bkList = (r.backups || []).sort((a, b) => (a.key < b.key ? 1 : -1))
+    bkRenderList()
+  } catch (e) {
+    $('bk-list').innerHTML = `<span style="color:#f44336">${esc(e.message)}</span>`
+  }
+}
+
+async function loadBackup () {
+  if (!bkInited) initBackup()
+  try {
+    bkCfg = await api('/api/backup/config')
+    bkRenderForm()
+    bkRenderStatus()
+    await bkRefreshList()
+  } catch (e) { toast(e.message, true) }
+}
+
+async function bkRun () {
+  const btn = $('bk-run-btn')
+  btn.disabled = true
+  btn.textContent = '备份中…'
+  try {
+    const r = await api('/api/backup/run', { method: 'POST' })
+    toast(`备份成功: ${r.key.split('/').pop()} (${fmt(r.size)}${r.encrypted ? '，已加密' : ''})`)
+    await loadBackup()
+  } catch (e) { toast('备份失败: ' + e.message, true) } finally {
+    btn.disabled = false
+    btn.textContent = '立即备份'
+  }
+}
+
+async function bkRestoreKey (key) {
+  const name = key.split('/').pop()
+  const ok = await confirmModal('恢复备份', `将从云端备份恢复并覆盖当前配置目录\n（当前 config.json 会先留一份本地 .bak-restore-* 副本）：\n\n${name}\n\n恢复完成后需重启服务生效，确定继续？`)
+  if (!ok) return
+  try {
+    const r = await api('/api/backup/restore', { method: 'POST', body: JSON.stringify({ key }) })
+    toast(`恢复成功：${r.restoredCount} 个条目`)
+    const restart = await confirmModal('重启服务', '备份已恢复，重启服务后生效。\n现在重启？（代理约中断 15 秒）', false)
+    if (restart) {
+      await api('/api/service/restart', { method: 'POST' })
+      toast('服务正在重启，约 15 秒后恢复')
+    }
+  } catch (e) { toast('恢复失败: ' + e.message, true) }
+}
+
+async function bkDownloadKey (key) {
+  try {
+    const headers = {}
+    if (authToken()) headers.Authorization = 'Bearer ' + authToken()
+    const r = await fetch('/api/backup/download?key=' + encodeURIComponent(key), { headers })
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status
+      try { msg = (await r.json()).message || msg } catch { /* ignore */ }
+      throw new Error(msg)
+    }
+    const blob = await r.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = key.split('/').pop()
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000)
+  } catch (e) { toast('下载失败: ' + e.message, true) }
+}
+
+async function bkDeleteKey (key) {
+  const name = key.split('/').pop()
+  const ok = await confirmModal('删除备份', `确定删除云端备份？此操作不可恢复：\n\n${name}`)
+  if (!ok) return
+  try {
+    await api('/api/backup/delete', { method: 'POST', body: JSON.stringify({ key }) })
+    toast('已删除')
+    await bkRefreshList()
+    bkCfg = await api('/api/backup/config')
+    bkRenderStatus()
+  } catch (e) { toast('删除失败: ' + e.message, true) }
+}
+
 // ==================== Panel loader ====================
 function loadPanel(name, silent) {
   switch(name) {
@@ -1801,6 +2031,7 @@ function loadPanel(name, silent) {
     case 'cache': loadCache(silent); break;
     case 'logs': if (!logsInited) { initLogs(); } break;
     case 'config': loadConfig(silent); break;
+    case 'backup': loadBackup(); break;
   }
 }
 
@@ -1810,7 +2041,7 @@ api('/api/version').then(v => { const el = $('sb-ver'); if (el && v.version) el.
 loadDashboard();
 // Auto-refresh active panel every 10s (skip logs/config which are user-driven).
 // Logs has its own auto-refresh toggle; config never auto-refreshes.
-const AUTO_REFRESH_SKIP = new Set(['logs', 'config']);
+const AUTO_REFRESH_SKIP = new Set(['logs', 'config', 'backup']);
 function getActivePanel() {
   const active = document.querySelector('.panel.active');
   return active ? active.id : null;

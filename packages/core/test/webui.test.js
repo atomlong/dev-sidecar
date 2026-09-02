@@ -55,6 +55,33 @@ describe('webui plugin', () => {
   })
 })
 
+// 备份路由的 mock API（注入 context.backupApi，同 xrayApi 注入模式）
+const mockBackupApi = {
+  behavior: { testError: null, runError: null },
+  getMaskedConfig () {
+    return { configured: false, s3: { endpoint: '', region: 'auto', bucket: '', accessKeyId: '', secretAccessKey: '', prefix: 'dev-sidecar/' }, passphrase: '', keepLast: 7, schedule: { enabled: false, intervalHours: 24 }, lastBackupAt: 0, lastBackupKey: '', lastBackupSize: 0, lastError: '' }
+  },
+  saveConfig () { return { configured: true } },
+  async testConnection () { if (mockBackupApi.behavior.testError) throw mockBackupApi.behavior.testError; return true },
+  async runBackup () {
+    if (mockBackupApi.behavior.runError) throw mockBackupApi.behavior.runError
+    return { key: 'dev-sidecar/host1/20260902-000000.tar.gz', size: 1024, encrypted: false, deleted: [] }
+  },
+  async listBackups () {
+    return { prefix: 'dev-sidecar/host1/', backups: [{ key: 'dev-sidecar/host1/20260902-000000.tar.gz', size: 1024, lastModified: '2026-09-02T00:00:00.000Z', encrypted: false }] }
+  },
+  async restoreBackup (key) {
+    if (key === 'bad-key') throw new Error('非法的备份对象 key: bad-key')
+    return { key, restoredCount: 3, files: ['./config.json'], needsRestart: true }
+  },
+  async downloadBackup (key) {
+    if (!key.startsWith('dev-sidecar/')) throw new Error(`非法的备份对象 key: ${key}`)
+    return { body: Buffer.from('gzip-bytes'), name: '20260902-000000.tar.gz' }
+  },
+  async deleteBackup () { return true },
+  startSchedule () {}, stopSchedule () {},
+}
+
 describe('webui routes', () => {
   let server, baseUrl
 
@@ -77,6 +104,7 @@ describe('webui routes', () => {
       log: { info: () => {}, error: () => {} },
       server: { reload: async () => {} },
         xrayApi: null,
+        backupApi: mockBackupApi,
     })
     server = http.createServer(router)
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -939,5 +967,153 @@ describe('webui config view / reset / restart routes', () => {
     const r = await fetch(`${baseUrl}/api/xray/restart`, { method: 'POST' })
     assert.strictEqual(r.status, 202)
     assert.strictEqual(restartCalls, 1)
+  })
+})
+
+describe('webui backup routes (injected mock api)', () => {
+  let server, baseUrl
+  const mockApi = {
+    behavior: { testError: null, runError: null },
+    getMaskedConfig () { return { configured: false, keepLast: 7, schedule: { enabled: false, intervalHours: 24 } } },
+    saveConfig () { return { configured: true } },
+    async testConnection () { if (mockApi.behavior.testError) throw mockApi.behavior.testError; return true },
+    async runBackup () {
+      if (mockApi.behavior.runError) throw mockApi.behavior.runError
+      return { key: 'dev-sidecar/host1/20260902-000000.tar.gz', size: 1024, encrypted: false, deleted: [] }
+    },
+    async listBackups () { return { prefix: 'dev-sidecar/host1/', backups: [{ key: 'dev-sidecar/host1/20260902-000000.tar.gz', size: 1024, lastModified: '2026-09-02T00:00:00.000Z', encrypted: false }] } },
+    async restoreBackup (key) {
+      if (key === 'bad-key') throw new Error('非法的备份对象 key: bad-key')
+      return { key, restoredCount: 3, files: ['./config.json'], needsRestart: true }
+    },
+    async downloadBackup (key) {
+      if (!key.startsWith('dev-sidecar/')) throw new Error(`非法的备份对象 key: ${key}`)
+      return { body: Buffer.from('gzip-bytes'), name: '20260902-000000.tar.gz' }
+    },
+    async deleteBackup () { return true },
+    startSchedule () {}, stopSchedule () {},
+  }
+
+  before(async () => {
+    const { createRouter } = require('../src/modules/plugin/webui/routes')
+    const router = createRouter({
+      config: {
+        get: () => ({ server: { setting: { userBasePath: '/tmp' } }, plugin: { webui: { token: '' } } }),
+        update: () => {}, save: () => {}, reload: () => {},
+      },
+      event: { register: () => 1, unregister: () => {}, fire: () => {} },
+      log: { info: () => {}, error: () => {} },
+      server: { reload: async () => {} },
+      xrayApi: null,
+      backupApi: mockApi,
+    })
+    server = http.createServer(router)
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    baseUrl = `http://127.0.0.1:${server.address().port}`
+  })
+
+  after(async () => { await new Promise((resolve) => server.close(resolve)) })
+  beforeEach(() => { mockApi.behavior.testError = null; mockApi.behavior.runError = null })
+
+  it('GET /api/backup/config returns masked config', async () => {
+    const r = await fetch(`${baseUrl}/api/backup/config`)
+    const data = await r.json()
+    assert.strictEqual(r.status, 200)
+    assert.strictEqual(data.configured, false)
+    assert.strictEqual(data.keepLast, 7)
+  })
+
+  it('POST /api/backup/config saves and returns config; array body rejected', async () => {
+    const r = await fetch(`${baseUrl}/api/backup/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ s3: { bucket: 'b' }, keepLast: 3 }),
+    })
+    const data = await r.json()
+    assert.strictEqual(r.status, 200)
+    assert.strictEqual(data.status, 'ok')
+    assert.strictEqual(data.config.configured, true)
+
+    const bad = await fetch(`${baseUrl}/api/backup/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([]),
+    })
+    assert.strictEqual(bad.status, 400)
+  })
+
+  it('POST /api/backup/test maps upstream errors to 502, incomplete config to 400', async () => {
+    mockApi.behavior.testError = new Error('S3 连接测试失败: HTTP 403')
+    const r = await fetch(`${baseUrl}/api/backup/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    assert.strictEqual(r.status, 502)
+    assert.strictEqual((await r.json()).code, 'BACKUP_UPSTREAM_FAILED')
+
+    mockApi.behavior.testError = new Error('备份尚未配置完整：需要 endpoint / bucket / AccessKeyId / SecretAccessKey')
+    const r2 = await fetch(`${baseUrl}/api/backup/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    assert.strictEqual(r2.status, 400)
+    assert.strictEqual((await r2.json()).code, 'BACKUP_NOT_CONFIGURED')
+  })
+
+  it('POST /api/backup/run returns result; upstream failure 502', async () => {
+    const r = await fetch(`${baseUrl}/api/backup/run`, { method: 'POST' })
+    const data = await r.json()
+    assert.strictEqual(r.status, 200)
+    assert.strictEqual(data.key, 'dev-sidecar/host1/20260902-000000.tar.gz')
+    assert.strictEqual(data.size, 1024)
+
+    mockApi.behavior.runError = new Error('S3 PutObject 失败: HTTP 403')
+    const r2 = await fetch(`${baseUrl}/api/backup/run`, { method: 'POST' })
+    assert.strictEqual(r2.status, 502)
+    assert.strictEqual((await r2.json()).code, 'BACKUP_UPSTREAM_FAILED')
+  })
+
+  it('GET /api/backup/list returns backups', async () => {
+    const r = await fetch(`${baseUrl}/api/backup/list`)
+    const data = await r.json()
+    assert.strictEqual(r.status, 200)
+    assert.strictEqual(data.backups.length, 1)
+    assert.strictEqual(data.backups[0].key, 'dev-sidecar/host1/20260902-000000.tar.gz')
+  })
+
+  it('GET /api/backup/download streams attachment; invalid key 400', async () => {
+    const r = await fetch(`${baseUrl}/api/backup/download?key=${encodeURIComponent('dev-sidecar/host1/20260902-000000.tar.gz')}`)
+    assert.strictEqual(r.status, 200)
+    assert.strictEqual(r.headers.get('content-type'), 'application/gzip')
+    assert.match(r.headers.get('content-disposition'), /attachment; filename="20260902-000000\.tar\.gz"/)
+    assert.strictEqual(Buffer.from(await r.arrayBuffer()).toString(), 'gzip-bytes')
+
+    const bad = await fetch(`${baseUrl}/api/backup/download?key=${encodeURIComponent('other/x.tar.gz')}`)
+    assert.strictEqual(bad.status, 400)
+    assert.strictEqual((await bad.json()).code, 'INVALID_KEY')
+  })
+
+  it('POST /api/backup/restore requires key, maps validation errors to 400', async () => {
+    const noKey = await fetch(`${baseUrl}/api/backup/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    assert.strictEqual(noKey.status, 400)
+    assert.strictEqual((await noKey.json()).code, 'INVALID_BODY')
+
+    const bad = await fetch(`${baseUrl}/api/backup/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'bad-key' }) })
+    assert.strictEqual(bad.status, 400)
+    assert.strictEqual((await bad.json()).code, 'BACKUP_RESTORE_INVALID')
+
+    const ok = await fetch(`${baseUrl}/api/backup/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'dev-sidecar/host1/x.tar.gz' }) })
+    const data = await ok.json()
+    assert.strictEqual(ok.status, 200)
+    assert.strictEqual(data.needsRestart, true)
+    assert.strictEqual(data.restoredCount, 3)
+  })
+
+  it('POST /api/backup/delete requires key', async () => {
+    const noKey = await fetch(`${baseUrl}/api/backup/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    assert.strictEqual(noKey.status, 400)
+
+    const ok = await fetch(`${baseUrl}/api/backup/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'dev-sidecar/host1/x.tar.gz' }) })
+    assert.strictEqual(ok.status, 200)
+    assert.strictEqual((await ok.json()).status, 'ok')
+  })
+
+  it('unknown backup route falls through to 404', async () => {
+    const r = await fetch(`${baseUrl}/api/backup/unknown`)
+    assert.strictEqual(r.status, 404)
   })
 })
