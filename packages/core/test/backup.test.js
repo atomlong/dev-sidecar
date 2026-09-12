@@ -77,7 +77,8 @@ function tarList (buf) {
   const tmp = path.join(os.tmpdir(), `tarlist-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   fs.writeFileSync(tmp, buf)
   try {
-    return execFileSync('tar', ['-tzf', tmp], { encoding: 'utf8' }).split('\n').map(s => s.trim()).filter(Boolean)
+    // -f 用裸文件名 + cwd：Windows 下带盘符路径会被 GNU tar 误判为远程主机
+    return execFileSync('tar', ['-tzf', path.basename(tmp)], { encoding: 'utf8', cwd: os.tmpdir() }).split('\n').map(s => s.trim()).filter(Boolean)
   } finally {
     fs.rmSync(tmp, { force: true })
   }

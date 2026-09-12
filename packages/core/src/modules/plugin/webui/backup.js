@@ -152,9 +152,10 @@ function createBackupApi (context, overrides = {}) {
     return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
   }
 
-  function execTar (args) {
+  // -f 参数须传裸文件名 + cwd：Windows 路径（C:\...）会被 GNU tar 误判为远程主机语法
+  function execTar (args, cwd) {
     return new Promise((resolve, reject) => {
-      execFile('tar', args, { timeout: 120000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile('tar', args, { cwd, timeout: 120000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
         if (err) reject(new Error(`tar ${args[0]} 失败: ${stderr || err.message}`))
         else resolve(stdout)
       })
@@ -175,10 +176,11 @@ function createBackupApi (context, overrides = {}) {
   async function runBackup () {
     const cfg = loadConfig()
     const store = getStore(cfg)
-    const tmp = path.join(os.tmpdir(), `dev-sidecar-backup-${process.pid}-${Date.now()}`)
+    const tmpName = `dev-sidecar-backup-${process.pid}-${Date.now()}`
+    const tmpDir = os.tmpdir()
     try {
-      await execTar(buildTarArgs(tmp, userBasePath()))
-      let payload = fs.readFileSync(tmp)
+      await execTar(buildTarArgs(tmpName, userBasePath()), tmpDir)
+      let payload = fs.readFileSync(path.join(tmpDir, tmpName))
       let key = `${hostPrefix(cfg)}${tsName()}.tar.gz`
       if (cfg.passphrase) {
         payload = encrypt(payload, cfg.passphrase)
@@ -210,7 +212,7 @@ function createBackupApi (context, overrides = {}) {
       log.error('WebUI 备份失败:', err)
       throw err
     } finally {
-      try { fs.rmSync(tmp, { force: true }) } catch { /* ignore */ }
+      try { fs.rmSync(path.join(tmpDir, tmpName), { force: true }) } catch { /* ignore */ }
     }
   }
 
@@ -249,11 +251,12 @@ function createBackupApi (context, overrides = {}) {
     }
     if (!isGzip(payload)) throw new Error('备份内容不是有效的 gzip 归档（可能未加密但已损坏）')
 
-    const tmp = path.join(os.tmpdir(), `dev-sidecar-restore-${process.pid}-${Date.now()}`)
-    fs.writeFileSync(tmp, payload)
+    const tmpName = `dev-sidecar-restore-${process.pid}-${Date.now()}`
+    const tmpDir = os.tmpdir()
+    fs.writeFileSync(path.join(tmpDir, tmpName), payload)
     try {
       // 先列出归档内容：校验完整性 + 作为恢复清单返回
-      const listing = await execTar(['-tzf', tmp])
+      const listing = await execTar(['-tzf', tmpName], tmpDir)
       const files = listing.split('\n').map(s => s.trim()).filter(Boolean)
 
       const base = userBasePath()
@@ -262,11 +265,11 @@ function createBackupApi (context, overrides = {}) {
         const ts = tsName()
         fs.copyFileSync(configJson, path.join(base, `config.json.bak-restore-${ts}`))
       }
-      await execTar(['-xzf', tmp, '-C', base])
+      await execTar(['-xzf', tmpName, '-C', base], tmpDir)
       log.info(`WebUI 恢复备份完成: ${key}，共 ${files.length} 个条目`)
       return { key, restoredCount: files.length, files: files.slice(0, 50), needsRestart: true }
     } finally {
-      try { fs.rmSync(tmp, { force: true }) } catch { /* ignore */ }
+      try { fs.rmSync(path.join(tmpDir, tmpName), { force: true }) } catch { /* ignore */ }
     }
   }
 
